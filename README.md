@@ -6,7 +6,7 @@ per Custom Connector zur Analyse bereitstellt.
 
 Vollstaendige Spezifikation: [SPEC_visualizer-mcp.md](SPEC_visualizer-mcp.md).
 
-## Stand: Milestone M4 (MCP-Tools)
+## Stand: Milestone M6 (Antwortökonomie)
 
 Vorhanden:
 
@@ -35,9 +35,9 @@ Noch nicht vorhanden: die optionalen MCP-Prompts aus SPEC ss9.3
 |---|---|
 | `list_beans()` | Bohnen mit Bezugszahl, Zeitraum, Muehleneinstellungen |
 | `list_shots(bean?, roaster?, profile?, since?, until?, limit, cursor?)` | kompakte Liste, neueste zuerst |
-| `get_shot(id\|"latest", bean?, include_curve, max_points)` | Metadaten + Metriken + Kurve + Profil-Kurzfassung |
+| `get_shot(id\|"latest", bean?, include_curve, max_points)` | Metadaten + Metriken + Kurvenform + Profil-Kurzfassung |
 | `get_shot_metrics(id)` | nur die Metriken |
-| `compare_shots(ids[2..4], include_curves)` | Gegenueberstellung mit Differenz zum ersten |
+| `compare_shots(ids[2..4], include_profile, include_curves)` | Gegenueberstellung mit Differenz zum ersten, Profilen und Abweichungshinweis |
 | `list_profiles()` | Profile mit ihren Versionen |
 | `get_profile(shot_id? \| name? \| version_hash?)` | vollstaendige Sollwerte |
 | `sync_now()` | sofortiger Abgleich (einzige schreibende Operation, idempotent) |
@@ -60,21 +60,44 @@ von `warnings` (Feld ist `null`, nicht 0).
 Tools ohne diese Felder (`list_beans`, `status`) wiederholen die
 Metrik-Erklaerung nicht — sie waere dort Ballast, den jede Tool-Liste mitschleppt.
 
+### Verlauf: `curve_shape` statt Rohzahlen
+
+Jeder Bezug bringt eine abschnittsweise Beschreibung seines Verlaufs mit,
+abgeleitet aus den Phasenmarken der Maschine — je Abschnitt Anfangs- und
+Endwert fuer Druck und Waagenfluss, Richtung und ob der Verlauf linear ist.
+Beim Referenz-Shot sind das 579 B gegenueber rund 2 900 B Punktarrays, und
+Fragen nach Anstieg, Plateau oder Phasendauer lassen sich damit ohne eine
+einzige Rohzahl beantworten.
+
+Die Punktarrays gibt es weiterhin, aber nur auf Anforderung
+(`include_curve=true` bzw. `include_curves=true`). Sie kommen als parallele
+Listen (`t`, `p`, `fi`, `fo`, `w`, `tb`) — das spart gegenueber einer
+Objektliste mit denselben Kurzschluesseln rund 49 %, gegenueber einer mit
+sprechenden Spaltennamen rund 70 %.
+
 ### Antwortbudget
 
-SPEC ss9 setzt ~15 kB je Antwort. Gemessen am echten Archiv:
+SPEC ss9 setzt ~15 kB je Antwort, SPEC ss17 zieht die Schrauben an. Gemessen am
+echten Archiv, vor und nach M6:
 
-| Aufruf | Groesse |
-|---|---|
-| `status()` | 0,7 kB |
-| `list_shots(limit=10)` | 3,3 kB |
-| `get_shot("latest")` | 5,1 kB |
-| `compare_shots(3 ids, include_curves)` | 8,9 kB |
+| Aufruf | vor M6 | nach M6 |
+|---|---:|---:|
+| Tool-Definitionen (alle 9, gehen bei jeder Anfrage mit) | 10,4 kB | 6,9 kB |
+| `status()` | 0,7 kB | 0,7 kB |
+| `list_shots(limit=10)` | 3,3 kB | 3,3 kB |
+| `get_shot("latest")` | 5,0 kB | **2,1 kB** |
+| `get_shot(id, include_curve=true)` | 4,6 kB | 4,0 kB |
+| `compare_shots(2)` inkl. Profile | 3 Aufrufe, 3,7 kB | **1 Aufruf, 4,2 kB** |
 
-Kurven kommen als parallele Arrays (`t`, `p`, `fi`, `fo`, `w`, `tb`). Das spart
-gegenueber einer Objektliste mit denselben Kurzschluesseln rund 49 %, gegenueber
-einer mit sprechenden Spaltennamen rund 70 %. Ein Test haelt beide Schranken
-fest.
+Tests halten diese Schranken fest — sie sollen anschlagen, wenn etwas
+zurueckwaechst.
+
+### Messung je Aufruf
+
+`telemetry.py` loggt pro Tool-Aufruf `tool`, `dur_ms` und `bytes`. Bewusst
+**keine** Parameterwerte, keine URL, keinen Pfad: Argumente sind der
+wahrscheinlichste Weg, auf dem irgendwann etwas Vertrauliches in eine Logzeile
+geraet.
 
 ### Frische-Check bei `get_shot("latest")`
 

@@ -201,7 +201,10 @@ async def test_get_shot_by_id(mcp) -> None:
     assert result["metrics"]["max_pressure_global"] == 5.4
     assert result["profile"]["title"] == "D-Flow / default"
     assert len(result["profile"]["steps"]) == 3
-    assert "curve" in result
+
+    # SPEC ss17.1: Form immer, Punktarrays nur auf Anforderung.
+    assert result["curve_shape"]["segments"]
+    assert "curve" not in result
 
     # Cache-Interna gehoeren nicht in die Antwort.
     assert "metrics_version" not in result["metrics"]
@@ -225,11 +228,16 @@ async def test_get_shot_unknown_id(mcp) -> None:
     assert "shot_not_found" in str(excinfo.value)
 
 
-async def test_get_shot_without_curve_is_smaller(mcp) -> None:
-    with_curve = await call(mcp, "get_shot", {"id": REFERENCE})
-    without = await call(mcp, "get_shot", {"id": REFERENCE, "include_curve": False})
-    assert "curve" not in without
-    assert size_of(without) < size_of(with_curve)
+async def test_shape_is_much_smaller_than_the_point_arrays(mcp) -> None:
+    """Die Begruendung fuer den Default-Wechsel in SPEC ss17.1."""
+    lean = await call(mcp, "get_shot", {"id": REFERENCE})
+    full = await call(mcp, "get_shot", {"id": REFERENCE, "include_curve": True})
+
+    assert "curve" not in lean
+    assert "curve" in full
+    assert size_of(lean) < size_of(full)
+    # Die Form allein kostet einen Bruchteil der Punktarrays.
+    assert size_of(lean["curve_shape"]) * 3 < size_of(full["curve"])
 
 
 async def test_shot_without_profile_reports_none(mcp) -> None:
@@ -243,7 +251,9 @@ async def test_shot_without_profile_reports_none(mcp) -> None:
 
 
 async def test_curve_is_compact_arrays(mcp) -> None:
-    curve = (await call(mcp, "get_shot", {"id": REFERENCE}))["curve"]
+    curve = (await call(
+        mcp, "get_shot", {"id": REFERENCE, "include_curve": True}
+    ))["curve"]
     assert set(curve) <= {"t", "p", "fi", "fo", "w", "tb"}
     lengths = {len(v) for v in curve.values()}
     assert len(lengths) == 1, "alle Kanaele muessen gleich lang sein"
@@ -253,7 +263,9 @@ async def test_curve_respects_max_points_and_keeps_the_peaks(mcp) -> None:
     metrics = await call(mcp, "get_shot_metrics", {"id": REFERENCE})
     for max_points in (10, 25, 60, 120):
         curve = (await call(
-            mcp, "get_shot", {"id": REFERENCE, "max_points": max_points}
+            mcp,
+            "get_shot",
+            {"id": REFERENCE, "include_curve": True, "max_points": max_points},
         ))["curve"]
         assert len(curve["t"]) <= max_points
 
@@ -267,7 +279,9 @@ async def test_curve_respects_max_points_and_keeps_the_peaks(mcp) -> None:
 
 
 async def test_max_points_is_capped_at_400(mcp) -> None:
-    curve = (await call(mcp, "get_shot", {"id": REFERENCE, "max_points": 9999}))["curve"]
+    curve = (await call(
+        mcp, "get_shot", {"id": REFERENCE, "include_curve": True, "max_points": 9999}
+    ))["curve"]
     assert len(curve["t"]) <= 400
 
 
@@ -280,7 +294,9 @@ async def test_tiny_budget_still_keeps_the_mandatory_points(mcp, max_points: int
     """
     metrics = await call(mcp, "get_shot_metrics", {"id": REFERENCE})
     curve = (await call(
-        mcp, "get_shot", {"id": REFERENCE, "max_points": max_points}
+        mcp,
+        "get_shot",
+        {"id": REFERENCE, "include_curve": True, "max_points": max_points},
     ))["curve"]
 
     assert len(curve["t"]) <= 4
@@ -299,7 +315,9 @@ async def test_missing_channels_are_omitted(db: Database, config: Config) -> Non
         row["temp_basket"] = None
     db.upsert_shot(shot_row_from_detail(payload, "2026-08-01T10:00:00Z"), rows)
 
-    curve = (await call(build_mcp(config, db), "get_shot", {"id": REFERENCE}))["curve"]
+    curve = (await call(
+        build_mcp(config, db), "get_shot", {"id": REFERENCE, "include_curve": True}
+    ))["curve"]
     assert "tb" not in curve
     assert "p" in curve
 
@@ -350,12 +368,20 @@ async def test_compare_skips_deltas_for_null_fields(mcp) -> None:
     assert "peak_pressure_infusion" in result["deltas"][0]["vs_reference"]
 
 
-async def test_compare_with_curves_uses_60_points(mcp) -> None:
-    result = await call(
+async def test_compare_splits_the_point_budget_across_shots(mcp) -> None:
+    """Vier Shots mit je 60 Punkten sprengen das Antwortbudget (gemessen 18 kB)."""
+    two = await call(
         mcp, "compare_shots", {"ids": [REFERENCE, RECENT], "include_curves": True}
     )
-    for entry in result["shots"]:
-        assert len(entry["curve"]["t"]) <= 60
+    three = await call(
+        mcp,
+        "compare_shots",
+        {"ids": [REFERENCE, RECENT, BROKEN], "include_curves": True},
+    )
+
+    assert all(len(e["curve"]["t"]) <= 50 for e in two["shots"])
+    assert all(len(e["curve"]["t"]) <= 34 for e in three["shots"])
+    assert size_of(three) < size_of(two) * 2, "mehr Shots kosten unterproportional"
 
 
 @pytest.mark.parametrize("count", [1, 5])
@@ -433,6 +459,9 @@ async def test_legacy_profile_reports_empty_steps(mcp) -> None:
         ("get_profile", {"shot_id": REFERENCE}),
         ("compare_shots", {"ids": [REFERENCE, RECENT]}),
         ("compare_shots", {"ids": [REFERENCE, RECENT, BROKEN], "include_curves": True}),
+        # Schlimmster Fall: die Hoechstzahl an Shots mit allem dran.
+        ("compare_shots", {"ids": [REFERENCE, RECENT, BROKEN, REFERENCE],
+                           "include_curves": True}),
     ],
 )
 async def test_response_budget(mcp, tool: str, args: dict) -> None:
@@ -449,7 +478,9 @@ async def test_compact_arrays_beat_object_lists(mcp) -> None:
     70 %. Die 60 % der SPEC liegen dazwischen - je nachdem, womit man
     vergleicht.
     """
-    curve = (await call(mcp, "get_shot", {"id": REFERENCE}))["curve"]
+    curve = (await call(
+        mcp, "get_shot", {"id": REFERENCE, "include_curve": True}
+    ))["curve"]
     keys = [k for k in curve if k != "t"]
 
     short_keys = [

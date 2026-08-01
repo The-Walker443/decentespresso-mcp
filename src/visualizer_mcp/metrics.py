@@ -291,6 +291,121 @@ def downsample_curve(
     return curve
 
 
+# --------------------------------------------------------------- Kurvenform
+#
+# SPEC ss17: fuer die meisten Fragen genuegt die *Form* des Verlaufs. Sie kostet
+# rund ein Zehntel der Punktarrays und laesst sich ohne Rechnen lesen.
+
+#: Unterhalb dieser Aenderung ueber einen Abschnitt gilt der Verlauf als konstant.
+FLAT_THRESHOLD = {"p": 0.2, "fo": 0.15}
+
+#: Maximale Abweichung von der Geraden zwischen Anfangs- und Endpunkt, als
+#: Anteil der Spannweite im Abschnitt. Darueber heisst der Verlauf nicht linear.
+LINEARITY_TOLERANCE = 0.15
+
+SHAPE_CHANNELS = {"p": "pressure", "fo": "flow_out"}
+
+
+def curve_shape(
+    rows: Sequence[Mapping[str, Any]], metrics: Mapping[str, Any] | None = None
+) -> dict[str, Any]:
+    """Abschnittsweise Beschreibung des Verlaufs statt roher Messpunkte.
+
+    Die Abschnittsgrenzen sind die Phasenmarken der Maschine
+    (``espresso_state_change``) - dieselbe Quelle wie ``pi_end``. Hat ein Shot
+    keine Marken, dienen ``pi_end`` und das Shot-Ende als Grenzen; ``source``
+    haelt fest, welcher Weg griff.
+
+    Je Abschnitt und Kanal: Anfangs- und Endwert, Richtung und ob der Verlauf
+    linear ist. ``p`` ist der Druck in bar, ``fo`` der aus der Waage abgeleitete
+    Fluss in ml/s.
+    """
+    ordered = sorted(rows, key=lambda r: r["elapsed"])
+    if not ordered:
+        return {"segments": [], "markers": {}, "source": "none"}
+
+    times = [float(r["elapsed"]) for r in ordered]
+    metrics = metrics or {}
+
+    boundaries = phase_boundaries(ordered)
+    if boundaries:
+        source = "state_change"
+    elif metrics.get("pi_end") is not None:
+        boundaries = [float(metrics["pi_end"])]
+        source = "markers"
+    else:
+        boundaries = []
+        source = "none"
+
+    edges = [times[0], *[b for b in boundaries if times[0] < b < times[-1]], times[-1]]
+
+    segments: list[dict[str, Any]] = []
+    for start, end in zip(edges, edges[1:], strict=False):
+        window = [i for i, t in enumerate(times) if start <= t <= end]
+        if len(window) < 2:
+            continue
+        segment: dict[str, Any] = {"from": _r_time(start), "to": _r_time(end)}
+        for key, column in SHAPE_CHANNELS.items():
+            described = _describe(
+                [times[i] for i in window],
+                [None if ordered[i].get(column) is None else float(ordered[i][column])
+                 for i in window],
+                key,
+            )
+            if described is not None:
+                segment[key] = described
+        segments.append(segment)
+
+    markers = {
+        name: metrics.get(name)
+        for name in ("t_first_drops", "pi_end", "t_peak")
+        if metrics.get(name) is not None
+    }
+    return {"segments": segments, "markers": markers, "source": source}
+
+
+def _describe(
+    times: Sequence[float], values: Sequence[float | None], channel: str
+) -> dict[str, Any] | None:
+    """Anfang, Ende, Richtung und Linearitaet eines Kanals im Abschnitt."""
+    pairs = [(t, v) for t, v in zip(times, values, strict=True) if v is not None]
+    if len(pairs) < 2:
+        return None
+
+    first, last = pairs[0][1], pairs[-1][1]
+    delta = last - first
+    flat = FLAT_THRESHOLD[channel]
+    direction = "flat" if abs(delta) < flat else ("rising" if delta > 0 else "falling")
+
+    digits = 1 if channel == "p" else 2
+    return {
+        "from": _round(first, digits),
+        "to": _round(last, digits),
+        "dir": direction,
+        "linear": _is_linear(pairs, flat),
+    }
+
+
+def _is_linear(pairs: Sequence[tuple[float, float]], flat: float) -> bool:
+    """Weicht der Verlauf nennenswert von der Geraden zwischen den Enden ab?
+
+    Ein flacher Abschnitt gilt immer als linear - dort waere die relative
+    Abweichung durch die winzige Spannweite sonst beliebig gross.
+    """
+    if len(pairs) < 3:
+        return True
+    span = max(v for _, v in pairs) - min(v for _, v in pairs)
+    if span < flat:
+        return True
+
+    (t0, v0), (t1, v1) = pairs[0], pairs[-1]
+    if t1 == t0:
+        return True
+    slope = (v1 - v0) / (t1 - t0)
+    deviation = max(abs(v - (v0 + slope * (t - t0))) for t, v in pairs)
+    return deviation / span <= LINEARITY_TOLERANCE
+
+
 def phase_boundaries(rows: Sequence[Mapping[str, Any]]) -> list[float]:
     """Phasengrenzen aus ``state_change``.
 

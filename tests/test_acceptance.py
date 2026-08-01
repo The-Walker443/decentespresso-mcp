@@ -83,16 +83,24 @@ async def test_criterion_3_latest_is_complete_and_within_budget(
     warm_metrics_cache(db)
 
     async with Client(build_mcp(config, db)) as client:
-        result = (await client.call_tool("get_shot", {"id": "latest"})).data
+        lean = (await client.call_tool("get_shot", {"id": "latest"})).data
+        full = (await client.call_tool(
+            "get_shot", {"id": "latest", "include_curve": True}
+        )).data
 
-    # Vier Bestandteile in einer Antwort.
-    assert result["shot"]["id"] == REFERENCE
-    assert result["metrics"]["pi_end"] is not None
-    assert result["curve"]["t"]
-    assert result["profile"]["title"] == "D-Flow / default"
+    # Vier Bestandteile in einer Antwort. Der Verlauf kommt seit SPEC ss17 als
+    # curve_shape; die Punktarrays sind die Ausnahme.
+    assert lean["shot"]["id"] == REFERENCE
+    assert lean["metrics"]["pi_end"] is not None
+    assert lean["curve_shape"]["segments"]
+    assert lean["profile"]["title"] == "D-Flow / default"
 
-    size = len(json.dumps(result, ensure_ascii=False).encode("utf-8"))
-    assert size <= BUDGET_BYTES, f"Kriterium 3: Antwort ist {size} B, erlaubt sind 15000"
+    for label, payload in (("ohne Punktarrays", lean), ("mit Punktarrays", full)):
+        size = len(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+        assert size <= BUDGET_BYTES, (
+            f"Kriterium 3 ({label}): Antwort ist {size} B, erlaubt sind 15000"
+        )
+    assert full["curve"]["t"]
 
 
 # --- Kriterium 4: Profilaenderung erzeugt neue Version, alter Shot bleibt -----

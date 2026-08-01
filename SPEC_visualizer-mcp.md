@@ -558,6 +558,8 @@ mit Zusammenfassung loggen (`new=2 updated=1 profiles=0 dur=1.2s`).
 - **M3** `metrics.py` + Caching.
 - **M4** MCP-Tools (§9) + Inspector-Test.
 - **M5** Härtung (read-only FS, Log-Filter), README/Betriebsteil, Abnahmetests.
+- **M6** Antwortökonomie (§17): `curve_shape`, `compare_shots` in einem Aufruf,
+  gestraffte Docstrings, Messung je Aufruf.
 
 Nach jedem Milestone: Tests grün, kurzer Commit. API-Schemas in M1 zuerst gegen
 https://apidocs.visualizer.coffee/ verifizieren, bevor Felder festgezurrt werden.
@@ -629,3 +631,104 @@ kann es nicht ohne Anmeldung ziehen. Zwei Wege:
 
 Kriterium 2 und 5 aus §13 lassen sich nur dort prüfen. Die Schrittfolge samt
 Erfolgskriterien steht im README unter „Abnahme auf dem Host".
+
+---
+
+## 17. Antwortökonomie (M6)
+
+**Problem.** Jede Runde eines Gesprächs verarbeitet den gesamten bisherigen
+Kontext neu. Zwei Dinge treiben ihn: Antworten, die mehr liefern als die Frage
+braucht, und Fragen, die mehrere Aufrufe kosten. Beides ist behebbar, ohne an
+der Analysequalität zu sparen.
+
+**Nicht angetastet:** die Metrikdefinitionen aus §8 (`METRICS_VERSION` bleibt),
+die Tool-Namen und die Semantik in den `INSTRUCTIONS`.
+
+### 17.1 Kurvenform statt Rohzahlen
+
+Neues Feld `curve_shape`, immer mitgeliefert von `get_shot` und `compare_shots`.
+Es beschreibt den Verlauf abschnittsweise entlang der Phasenmarken aus
+`state_change` — dieselbe Quelle wie `pi_end`:
+
+```json
+{"segments": [{"from": 6.2, "to": 22.9,
+               "p":  {"from": 3.0, "to": 5.4,  "dir": "rising",  "linear": false},
+               "fo": {"from": 2.09,"to": 1.8,  "dir": "falling", "linear": false}}],
+ "markers": {"t_first_drops": 5.3, "pi_end": 6.2, "t_peak": 7.2},
+ "source": "state_change"}
+```
+
+`dir` vergleicht Anfangs- und Endwert (`flat` unterhalb 0.2 bar bzw. 0.15 ml/s),
+`linear` beschreibt den Weg dazwischen: maximale Abweichung von der Geraden,
+bezogen auf die Spannweite im Abschnitt, Grenze 15 %. Beides zusammen — ein
+Abschnitt kann `flat` und trotzdem nicht linear sein, wenn er eine Delle hat.
+`source` hält fest, woher die Grenzen stammen: `state_change` (Maschinenmarken),
+`markers` (ersatzweise `pi_end`) oder `none`.
+
+Folgerichtig kehren sich die Vorgaben aus §9.1 um: **`include_curve` in
+`get_shot` hat jetzt Default `false`**, `max_points` den Default 60 statt 120.
+Die Punktarrays bleiben unverändert verfügbar, sind aber die Ausnahme.
+
+**Korrektur zu §9.2:** Dort steht „optional Kurven (dann `max_points=60` je
+Shot)". Vier Shots mit je 60 Punkten ergeben zusammen mit `curve_shape` und den
+Profilen 18,2 kB und sprengen damit das Antwortbudget. `compare_shots` verteilt
+deshalb ein Gesamtbudget von 100 Punkten auf die verglichenen Shots (mindestens
+20 je Shot): 2 Shots → 47, 3 → 30, 4 → 23 Punkte. Der schlimmste Fall liegt
+damit bei 13,4 kB. Ein Test prüft genau diesen Fall.
+
+### 17.2 `compare_shots` in einem Aufruf
+
+Liefert je Shot zusätzlich die Profil-Kurzfassung (Titel, `version_hash[:8]`,
+`semantic_hash[:8]`, Typ, Kopf-Sollwerte, Schrittzahl) und setzt
+`profile_notice`, wenn die Bezüge nicht auf denselben Sollwerten liefen. Drei
+Fälle, absichtlich unterschiedlich scharf formuliert:
+
+| Lage | Hinweis |
+|---|---|
+| gleicher `version_hash` | keiner |
+| verschiedene Version, gleicher `semantic_hash` | „rein kosmetisch" |
+| abweichender `semantic_hash` | „Achtung … Unterschiede können vom Profil kommen" |
+| mindestens ein Profil fehlt | „Vergleich der Sollwerte ist unvollständig" |
+
+Der dritte Fall ist der Grund für das Feld: ohne ihn liest man einen
+Metrikunterschied leicht als Folge des Mahlgrads, obwohl das Profil ein anderes
+war. Abschaltbar über `include_profile=false`.
+
+### 17.3 Docstrings ohne Doppelung
+
+Die vollständige Begriffserklärung steht in den `INSTRUCTIONS` — sie sind
+ohnehin immer im Kontext. Die Tool-Docstrings nennen nur noch Zweck,
+Parameterbedeutung und verweisen für die Begriffe dorthin. Die ausführlichen
+Warntexte zu `pi_end`, den beiden Druckmaxima und `warnings` sind aus den
+einzelnen Tools entfernt.
+
+Ein Test hält eine Obergrenze für die Summe aller Tool-Definitionen fest und
+prüft, dass die Glossartexte nicht in einzelne Docstrings zurückwandern.
+
+### 17.4 Messbarkeit
+
+`telemetry.py` loggt je Tool-Aufruf `tool`, `dur_ms` und `bytes` — **keine**
+Parameterwerte, keine URL, keinen Pfad. Argumente sind der wahrscheinlichste
+Weg, auf dem irgendwann etwas Vertrauliches in eine Logzeile gerät.
+
+Gemessen am selben Archiv, vorher/nachher in Byte:
+
+| Aufruf | vor M6 | nach M6 | |
+|---|---:|---:|---|
+| Tool-Definitionen (alle 9, gehen bei jeder Anfrage mit) | 10 399 | 6 876 | −34 % |
+| `get_shot("latest")` | 5 021 | 2 092 | −58 % |
+| `get_shot(id)` | 4 626 | 1 868 | −60 % |
+| `compare_shots(2)` inkl. Profile | 1 680 + 2×1 013¹ | 4 234 | 3 Aufrufe → 1 |
+| `get_shot(id, include_curve=true)` | 4 626 | 3 959² | −14 % |
+| `list_shots(limit=10)` | 3 277 | 3 277 | ±0 |
+
+¹ Vor M6 lieferte `compare_shots` keine Profile; derselbe Informationsstand
+kostete zwei zusätzliche `get_profile`-Aufrufe und damit drei Gesprächsrunden.
+
+² Enthält jetzt zusätzlich `curve_shape` und ist trotzdem kleiner, weil
+`max_points` von 120 auf 60 gesunken ist. Wer mehr Punkte braucht, fordert sie
+weiterhin an (Maximum 400).
+
+Von den verbleibenden 6 876 B der Tool-Definitionen sind rund 3 600 B
+JSON-Schema der Parameter. Tiefer kommt man nur über weniger Parameter, nicht
+über kürzere Texte.

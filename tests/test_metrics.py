@@ -12,6 +12,7 @@ from visualizer_mcp.db import Database
 from visualizer_mcp.metrics import (
     METRICS_VERSION,
     compute_metrics,
+    curve_shape,
     metrics_for_shot,
     phase_boundaries,
     warm_metrics_cache,
@@ -126,6 +127,110 @@ def test_pour_phase_metrics(reference: dict) -> None:
 
 def test_dip_is_measured_from_the_infusion_peak(reference: dict) -> None:
     assert reference["pressure_dip_after_peak"] == 0.5
+
+
+# ---------------------------------------------------------------- Kurvenform
+
+
+def test_curve_shape_segments_follow_the_phase_markers(reference_rows, reference) -> None:
+    shape = curve_shape(reference_rows, reference)
+
+    assert shape["source"] == "state_change"
+    # Zwei Marken (5.53, 6.21) -> drei Abschnitte.
+    assert len(shape["segments"]) == 3
+    assert [s["from"] for s in shape["segments"]] == [0.0, 5.5, 6.2]
+    assert shape["segments"][-1]["to"] == 22.9
+
+    # Abschnitte schliessen lueckenlos aneinander an.
+    for earlier, later in zip(shape["segments"], shape["segments"][1:], strict=False):
+        assert earlier["to"] == later["from"]
+
+
+def test_curve_shape_describes_direction_and_linearity(reference_rows, reference) -> None:
+    shape = curve_shape(reference_rows, reference)
+    first, _, last = shape["segments"]
+
+    # Praeinfusion: Druck steigt von 0 an.
+    assert first["p"]["from"] == 0.0
+    assert first["p"]["dir"] == "rising"
+
+    # Bezugsphase: Druck steigt weiter bis 5.4 bar.
+    assert last["p"]["dir"] == "rising"
+    assert last["p"]["to"] == 5.4
+    assert isinstance(last["p"]["linear"], bool)
+    assert last["fo"]["dir"] in {"rising", "falling", "flat"}
+
+
+def test_curve_shape_carries_the_markers(reference_rows, reference) -> None:
+    markers = curve_shape(reference_rows, reference)["markers"]
+    assert markers["pi_end"] == reference["pi_end"] == 6.2
+    assert markers["t_peak"] == reference["t_peak"] == 7.2
+    assert markers["t_first_drops"] == reference["t_first_drops"] == 5.3
+
+
+def test_curve_shape_falls_back_to_markers_without_state_change() -> None:
+    payload = detail("shot_without_state_change.json")
+    rows = series_rows_from_detail(payload)
+    metrics = compute_metrics(rows, dose_g=18.0, yield_g=36.2)
+
+    shape = curve_shape(rows, metrics)
+    assert shape["source"] == "markers"
+    # Ohne Maschinenmarken teilt pi_end den Bezug in zwei Abschnitte.
+    assert len(shape["segments"]) == 2
+    assert shape["segments"][0]["to"] == metrics["pi_end"]
+
+
+def test_curve_shape_without_anything_is_one_segment() -> None:
+    rows = [
+        {"elapsed": t / 10, "pressure": 6.0, "flow_out": 2.0, "state_change": None}
+        for t in range(30)
+    ]
+    shape = curve_shape(rows, {})
+    assert shape["source"] == "none"
+    assert len(shape["segments"]) == 1
+    assert shape["markers"] == {}
+
+
+def test_curve_shape_flags_flat_and_linear() -> None:
+    # Konstanter Druck, linear steigender Fluss.
+    rows = [
+        {"elapsed": t / 10, "pressure": 9.0, "flow_out": t / 10, "state_change": None}
+        for t in range(40)
+    ]
+    segment = curve_shape(rows, {})["segments"][0]
+    assert segment["p"]["dir"] == "flat"
+    assert segment["p"]["linear"] is True
+    assert segment["fo"]["dir"] == "rising"
+    assert segment["fo"]["linear"] is True
+
+
+def test_curve_shape_detects_a_curved_course() -> None:
+    # Halbe Sinuswelle: gleiche Endpunkte, aber deutlich gekruemmt.
+    import math
+
+    rows = [
+        {"elapsed": t / 10, "pressure": 5 * math.sin(math.pi * t / 39),
+         "flow_out": None, "state_change": None}
+        for t in range(40)
+    ]
+    segment = curve_shape(rows, {})["segments"][0]
+    assert segment["p"]["dir"] == "flat", "Anfang und Ende liegen gleich hoch"
+    assert segment["p"]["linear"] is False, "der Weg dazwischen ist es nicht"
+
+
+def test_curve_shape_omits_channels_without_data() -> None:
+    rows = [
+        {"elapsed": t / 10, "pressure": 6.0, "flow_out": None, "state_change": None}
+        for t in range(30)
+    ]
+    segment = curve_shape(rows, {})["segments"][0]
+    assert "p" in segment
+    assert "fo" not in segment
+
+
+def test_curve_shape_handles_an_empty_series() -> None:
+    shape = curve_shape([], {})
+    assert shape == {"segments": [], "markers": {}, "source": "none"}
 
 
 # ------------------------------------------------------------------ Fallback

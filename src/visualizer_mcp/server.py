@@ -27,7 +27,7 @@ from starlette.responses import PlainTextResponse, Response
 from . import __version__
 from .config import Config
 from .db import Database
-from .metrics import METRICS_VERSION, downsample_curve, metrics_for_shot
+from .metrics import METRICS_VERSION, curve_shape, downsample_curve, metrics_for_shot
 from .sync import (
     QUICK_SYNC_MAX_AGE_S,
     STATE_BACKFILL_DONE,
@@ -37,6 +37,7 @@ from .sync import (
     open_database,
     periodic_sync,
 )
+from .telemetry import CallMetricsMiddleware
 from .visualizer_client import VisualizerClient, VisualizerError
 
 log = logging.getLogger(__name__)
@@ -49,8 +50,15 @@ STALE_SYNC_WARN_DAYS = 7
 
 DEFAULT_LIMIT = 10
 MAX_LIMIT = 50
-DEFAULT_MAX_POINTS = 120
-COMPARE_MAX_POINTS = 60
+#: SPEC ss17.1: die Punktarrays sind die Ausnahme, nicht die Regel - deshalb
+#: niedriger als der Vorschlag aus ss9.1 (120).
+DEFAULT_MAX_POINTS = 60
+
+#: Punkte, die sich *alle* verglichenen Shots zusammen teilen. SPEC ss9.2 nennt
+#: pauschal 60 je Shot - damit sprengen vier Shots mit Kurven das Antwortbudget
+#: (gemessen 18.2 kB). Aufgeteilt bleibt auch der schlimmste Fall darunter.
+COMPARE_POINT_BUDGET = 100
+COMPARE_MIN_POINTS = 20
 NOTES_PREVIEW_CHARS = 160
 
 READ_ONLY = {"readOnlyHint": True, "openWorldHint": False}
@@ -93,9 +101,25 @@ BEGRIFFE, die in den Metriken auftauchen:
 - `null` bedeutet durchgaengig "nicht erfasst", nie "Wert ist 0". Das gilt auch
   fuer `drink_tds`, `drink_ey` und `enjoyment`.
 
-Kurven kommen als parallele Arrays (`t`, `p`, `fi`, `fo`, `w`, `tb`), nicht als
-Objektliste, und sind ausgeduennt. Fehlt ein Kanal, gab es dafuer keinen
-einzigen Messwert.\
+VERLAUF - zwei Darstellungen, und die erste reicht fast immer:
+
+- `curve_shape` kommt immer mit. Es beschreibt den Bezug abschnittsweise
+  entlang der Phasenmarken der Maschine: je Abschnitt `from`/`to` (Zeit) und
+  fuer Druck (`p`) und Waagenfluss (`fo`) jeweils Anfangswert, Endwert,
+  Richtung (`rising` | `falling` | `flat`) und `linear` (ob der Verlauf
+  zwischen den Enden gerade ist oder gekruemmt). `markers` nennt die markanten
+  Zeitpunkte, `source` sagt, woher die Abschnittsgrenzen stammen
+  (`state_change` = Maschinenmarken, `markers` = ersatzweise aus `pi_end`,
+  `none` = nur ein Abschnitt). Damit lassen sich Fragen nach Anstieg, Abfall,
+  Plateau, Dauer einer Phase und Vergleich zweier Bezuege beantworten, ohne
+  eine einzige Rohzahl.
+
+- Die Punktarrays (`t`, `p`, `fi`, `fo`, `w`, `tb`, parallele Listen) kommen
+  nur auf ausdrueckliche Anforderung (`include_curve` bzw. `include_curves`).
+  Sie sind rund zehnmal so gross wie `curve_shape`. Nur anfordern, wenn es um
+  Formdetails geht, die `curve_shape` nicht hergibt - etwa Schwingungen
+  innerhalb eines Abschnitts. Fehlt ein Kanal, gab es dafuer keinen einzigen
+  Messwert.\
 """
 
 
@@ -111,16 +135,19 @@ def build_mcp(
     weiter, nur ``sync_now`` und der Frische-Check von ``get_shot("latest")``
     entfallen. Tests nutzen das, um ohne Netz auszukommen.
     """
-    mcp = FastMCP(name=SERVER_NAME, instructions=INSTRUCTIONS, version=__version__)
+    mcp = FastMCP(
+        name=SERVER_NAME,
+        instructions=INSTRUCTIONS,
+        version=__version__,
+        middleware=[CallMetricsMiddleware()],
+    )
 
     @mcp.tool(annotations=READ_ONLY)
     async def list_beans() -> dict[str, Any]:
-        """Alle Bohnen im Archiv mit Bezugszahl, Zeitraum und Muehleneinstellung.
+        """Alle Bohnen im Archiv mit Bezugszahl, Zeitraum und Muehleneinstellungen.
 
-        Einstieg fuer jede Frage der Form "was habe ich zuletzt getrunken" oder
-        "welche Bohnen gibt es". Einheiten: Zeitstempel ISO8601 UTC.
-        `grinder_setting` ist Freitext der Muehle (z. B. "4,2") und laesst sich
-        nur innerhalb derselben Muehle vergleichen.
+        Einstieg fuer "welche Bohnen gibt es". Zeiten ISO8601 UTC,
+        `grinder_setting` ist Freitext der Muehle (z. B. "4,2").
         """
         rows = await asyncio.to_thread(db.list_beans)
         return {
@@ -151,26 +178,17 @@ def build_mcp(
     ) -> dict[str, Any]:
         """Kompakte Liste der Bezuege, neueste zuerst.
 
-        Filter sind Teilstrings, Gross-/Kleinschreibung egal: `bean` trifft
-        Marke oder Sorte, `roaster` nur die Marke, `profile` den Profilnamen.
-        `since`/`until` nehmen ISO8601 (`2026-07-31` oder
-        `2026-07-31T19:00:00Z`) oder relative Kuerzel: `7d`, `12h`, `2w`, `1m`,
-        `1y` - jeweils "innerhalb der letzten ...".
+        Filter sind Teilstrings ohne Beachtung der Gross-/Kleinschreibung:
+        `bean` trifft Marke oder Sorte, `roaster` nur die Marke, `profile` den
+        Profilnamen. `since`/`until` nehmen ISO8601 (`2026-07-31`) oder relative
+        Kuerzel (`12h`, `7d`, `2w`, `1m`, `1y`). `warnings` ist die Anzahl
+        unzuverlaessiger Metriken dieses Shots.
 
-        Einheiten: `dose`/`yield` in g, `duration` in s, Druck in bar.
-        `peak_pressure_infusion` ist das Druckmaximum bis kurz nach der
-        Praeinfusion, nicht das Maximum des ganzen Bezugs (dafuer `get_shot`).
-        `null` heisst nicht erfasst. Ist `warnings` > 0, sind fuer diesen Shot
-        Metriken unzuverlaessig - Details liefert `get_shot_metrics`.
+        Bei mehr Treffern als `limit` kommt `next_cursor`; unveraendert als
+        `cursor` zurueckschicken. Die erste Seite gleicht vorher mit Visualizer
+        ab, wenn noetig (`freshness`); Folgeseiten nicht.
 
-        Bei mehr Treffern als `limit` kommt `next_cursor` zurueck; diesen Wert
-        unveraendert als `cursor` erneut schicken.
-
-        Auf der ersten Seite (ohne `cursor`) prueft der Server vorher auf
-        Frische und gleicht ab, wenn der letzte Sync mehr als zwei Minuten her
-        ist; das Ergebnis steht in `freshness`. Beim Blaettern unterbleibt das
-        bewusst - ein Abgleich mitten in der Paginierung koennte die
-        Treffermenge unter dem Cursor verschieben.
+        Einheiten und Begriffe: siehe Server-Anweisungen.
         """
         capped = max(1, min(int(limit), MAX_LIMIT))
         offset = _decode_cursor(cursor)
@@ -202,40 +220,20 @@ def build_mcp(
     async def get_shot(
         id: str = "latest",
         bean: str | None = None,
-        include_curve: bool = True,
+        include_curve: bool = False,
         max_points: int = DEFAULT_MAX_POINTS,
     ) -> dict[str, Any]:
-        """Ein Bezug vollstaendig: Metadaten, Metriken, Kurve, Profil-Kurzfassung.
+        """Ein Bezug: Metadaten, Metriken, Kurvenform, Profil-Kurzfassung.
 
-        `id` ist eine Shot-UUID oder `"latest"` fuer den neuesten Bezug;
-        zusammen mit `bean` der neueste Bezug dieser Bohne. Bei `"latest"`
-        prueft der Server vorher auf Frische und synchronisiert, wenn der letzte
-        Abgleich mehr als zwei Minuten her ist - ein eben gezogener Bezug ist
-        damit sofort da. Ob das passiert ist, steht in `freshness`.
+        `id` ist eine Shot-UUID oder `"latest"` (mit `bean` der neueste dieser
+        Bohne); bei `"latest"` gleicht der Server vorher ab, wenn noetig.
 
-        Einheiten: Druck bar, Fluss ml/s, Gewicht g, Temperatur Grad Celsius,
-        Zeit s.
+        Das mitgelieferte `curve_shape` reicht fuer die allermeisten Fragen.
+        `include_curve=true` haengt zusaetzlich die Punktarrays an, ausgeduennt
+        auf `max_points` (Standard 60, Maximum 400) - nur fuer Formdetails, die
+        die Form nicht hergibt.
 
-        Zu den Metriken:
-        - `pi_end` ist das Ende der Praeinfusion und stammt aus einer
-          Phasenmarke der Maschine; `pi_end_source` unterscheidet
-          `state_change` (echte Marke) von `heuristic` (Naeherung ueber 60 %
-          des Druckmaximums, nur wenn der Shot keine Marken hatte).
-        - `peak_pressure_infusion` ist das Druckmaximum im Fenster
-          `[0, pi_end + 2 s]` und beschreibt den Puckaufbau.
-          `max_pressure_global` ist das Maximum des ganzen Bezugs; bei
-          ansteigenden Profilen liegt es am Schluss und sagt ueber den
-          Puckaufbau nichts aus.
-        - Eine nicht leere `warnings`-Liste heisst: die dort genannten Felder
-          sind `null`, weil die Grundlage fehlte (meist die Waage). Nicht als 0
-          lesen und nicht ueberlesen.
-
-        Die Kurve kommt als parallele Arrays: `t` Zeit, `p` Druck, `fi`
-        Pumpenfluss, `fo` Fluss aus der Waage, `w` Gewicht, `tb`
-        Korbtemperatur. Sie ist auf `max_points` ausgeduennt (Standard 120,
-        Maximum 400); erster und letzter Punkt sowie beide Druckmaxima sind
-        immer enthalten. `include_curve=false` spart Platz, wenn nur die Zahlen
-        gebraucht werden.
+        Verlauf, Einheiten und Begriffe: siehe Server-Anweisungen.
         """
         freshness = None
         if id == "latest" and coordinator is not None:
@@ -255,33 +253,25 @@ def build_mcp(
             raise ToolError(f"shot_not_found: Kein Bezug mit der Kennung {shot_id!r}.")
 
         metrics = await asyncio.to_thread(metrics_for_shot, db, shot_id)
+        series = await asyncio.to_thread(_series, db, shot_id)
         payload: dict[str, Any] = {
             "shot": _full_shot(row),
             "metrics": _public_metrics(metrics),
+            "curve_shape": curve_shape(series, metrics),
             "profile": await asyncio.to_thread(_profile_summary, db, row["profile_id"]),
         }
         if freshness is not None:
             payload["freshness"] = freshness
         if include_curve:
-            payload["curve"] = await asyncio.to_thread(
-                _curve, db, shot_id, metrics, max_points
-            )
+            payload["curve"] = _curve(series, metrics, max_points)
         return payload
 
     @mcp.tool(annotations=READ_ONLY)
     async def get_shot_metrics(id: str) -> dict[str, Any]:
-        """Nur die abgeleiteten Metriken eines Bezugs, ohne Kurve und Profil.
+        """Nur die abgeleiteten Metriken eines Bezugs, ohne Form, Kurve, Profil.
 
-        Einheiten: Druck bar, Fluss ml/s, Temperatur Grad Celsius, Zeit s.
-
-        `pi_end` ist ein von der Maschine gemeldeter Phasenwechsel (Ende der
-        Praeinfusion); `pi_end_source` = `state_change` bedeutet echte Marke,
-        `heuristic` eine Naeherung ueber 60 % des Druckmaximums fuer Shots ohne
-        Marken. `peak_pressure_infusion` betrifft nur den Puckaufbau bis kurz
-        nach der Praeinfusion, `max_pressure_global` den ganzen Bezug - beide
-        sind getrennt, weil sie bei ansteigenden Profilen weit auseinander
-        liegen. Steht etwas in `warnings`, ist das jeweilige Feld `null`, weil
-        die Messgrundlage fehlte; das ist kein Nullwert.
+        Schmalste Antwort, wenn nur Zahlen gebraucht werden. Einheiten und
+        Begriffe: siehe Server-Anweisungen.
         """
         metrics = await asyncio.to_thread(metrics_for_shot, db, id)
         if metrics is None:
@@ -290,25 +280,22 @@ def build_mcp(
 
     @mcp.tool(annotations=READ_ONLY)
     async def compare_shots(
-        ids: list[str], include_curves: bool = False
+        ids: list[str],
+        include_profile: bool = True,
+        include_curves: bool = False,
     ) -> dict[str, Any]:
-        """Zwei bis vier Bezuege nebeneinander, mit Differenz zum ersten.
+        """Zwei bis vier Bezuege nebeneinander - Metriken, Form, Profile, Deltas.
 
-        Der erste Eintrag in `ids` ist die Bezugsgroesse; `deltas` enthaelt je
-        weiterem Shot die Differenz zu ihm (positiv = groesser als der erste).
-        Einheiten wie ueberall: Druck bar, Fluss ml/s, Zeit s, Gewicht g.
+        Der erste Eintrag in `ids` ist die Bezugsgroesse; `deltas` nennt je
+        weiterem Shot die Differenz zu ihm. Felder, die dort `null` sind, fehlen.
 
-        Vorsicht bei zwei Stellen: `pi_end` ist nur dann auf die
-        Zehntelsekunde vergleichbar, wenn bei allen Shots
-        `pi_end_source == "state_change"` steht - sonst mischen sich
-        Maschinenmarke und Naeherung. Und `peak_pressure_infusion` ist die
-        Groesse fuer den Puckaufbau; `max_pressure_global` kann bei
-        ansteigenden Profilen allein vom Profilverlauf abweichen. Felder, die
-        bei einem Shot `null` sind, tauchen in `deltas` nicht auf - der Grund
-        steht in dessen `warnings`.
+        `include_profile` (Standard true) liefert je Shot die Profil-Kurzfassung
+        und setzt `profile_notice`, wenn die Bezuege nicht auf denselben
+        Sollwerten liefen - ein separater `get_profile`-Aufruf eruebrigt sich
+        damit meist. `include_curves=true` haengt Punktarrays an; ueblicherweise
+        genuegt das mitgelieferte `curve_shape`.
 
-        `include_curves=true` haengt je Shot eine auf 60 Punkte ausgeduennte
-        Kurve an.
+        Verlauf, Einheiten und Begriffe: siehe Server-Anweisungen.
         """
         if not 2 <= len(ids) <= 4:
             raise ToolError(
@@ -316,46 +303,57 @@ def build_mcp(
                 f"bekommen hat es {len(ids)}."
             )
 
+        per_shot_points = max(COMPARE_MIN_POINTS, COMPARE_POINT_BUDGET // len(ids))
+
         entries: list[dict[str, Any]] = []
+        profiles: list[dict[str, Any] | None] = []
         for shot_id in ids:
             row = await asyncio.to_thread(db.get_shot_row, shot_id)
             if row is None:
                 raise ToolError(f"shot_not_found: Kein Bezug mit der Kennung {shot_id!r}.")
             metrics = await asyncio.to_thread(metrics_for_shot, db, shot_id)
+            series = await asyncio.to_thread(_series, db, shot_id)
             entry: dict[str, Any] = {
                 "id": shot_id,
                 "started_at": row["started_at"],
                 "bean": _bean_label(row),
-                "profile": row["profile_name"],
+                "profile_name": row["profile_name"],
                 "grinder_setting": row["grinder_setting"],
                 "dose_g": row["dose_g"],
                 "yield_g": row["yield_g"],
                 **_public_metrics(metrics),
+                "curve_shape": curve_shape(series, metrics),
             }
+            profile = (
+                await asyncio.to_thread(_profile_brief, db, row["profile_id"])
+                if include_profile
+                else None
+            )
+            profiles.append(profile)
+            if profile is not None:
+                entry["profile"] = profile
             if include_curves:
-                entry["curve"] = await asyncio.to_thread(
-                    _curve, db, shot_id, metrics, COMPARE_MAX_POINTS
-                )
+                entry["curve"] = _curve(series, metrics, per_shot_points)
             entries.append(entry)
 
-        return {
+        payload: dict[str, Any] = {
             "reference": ids[0],
             "shots": entries,
             "deltas": [_delta(entries[0], other) for other in entries[1:]],
         }
+        if include_profile:
+            notice = _profile_notice(profiles)
+            if notice:
+                payload["profile_notice"] = notice
+        return payload
 
     @mcp.tool(annotations=READ_ONLY)
     async def list_profiles() -> dict[str, Any]:
         """Alle Profile mit ihren Versionen.
 
-        Ein Profil bekommt eine neue Version, sobald sich seine Datei auf der
-        Maschine aendert. `version_hash` (hier auf 8 Zeichen gekuerzt) ist die
-        Identitaet einer Version - daran haengt jeder Bezug, der mit ihr lief.
-        `semantic_hash` gruppiert daneben Versionen, die identisch bruehen und
-        sich nur kosmetisch unterscheiden (Notiztext, Formatierung): gleicher
-        `semantic_hash` heisst gleiche Sollwerte, auch bei verschiedenem
-        `version_hash`. Zum Vergleichen von Bezuegen ist `semantic_hash` der
-        richtige Schluessel.
+        `version_hash` ist die Identitaet einer Version, `semantic_hash`
+        gruppiert Versionen mit gleichen Sollwerten - Naeheres in den
+        Server-Anweisungen.
         """
         rows = await asyncio.to_thread(db.profile_overview)
         grouped: dict[str, list[dict[str, Any]]] = {}
@@ -380,23 +378,15 @@ def build_mcp(
         name: str | None = None,
         version_hash: str | None = None,
     ) -> dict[str, Any]:
-        """Die Sollwerte eines Profils - genau eine Angabe machen.
+        """Die vollstaendigen Sollwerte eines Profils - genau eine Angabe machen.
 
-        `shot_id` liefert die Version, mit der dieser Bezug tatsaechlich lief
-        (auch wenn das Profil spaeter geaendert wurde). `version_hash` (Praefix
-        genuegt) trifft eine bestimmte Version, `name` die zuletzt gesehene
-        Version dieses Namens.
+        `shot_id` liefert die Version, mit der dieser Bezug lief; `version_hash`
+        (Praefix genuegt) eine bestimmte, `name` die zuletzt gesehene dieses
+        Namens. In den Schritten ist `target` bar bei `mode: pressure`, sonst
+        ml/s; `exit` ist `null` ohne aktive Abbruchbedingung. Legacy-Profile
+        haben keine Schritte, ihre Sollwerte stehen in `legacy_settings`.
 
-        Einheiten in den Schritten: `target` ist Druck in bar, wenn `mode` auf
-        `pressure` steht, sonst Fluss in ml/s; `temp_c` Grad Celsius,
-        `duration_s` Sekunden. `exit` ist die Abbruchbedingung des Schrittes
-        und `null`, wenn keine aktiv ist - im TCL stehen dann zwar Werte, die
-        Maschine wertet sie aber nicht aus.
-
-        Bei Legacy-Profilen (`type` = `pressure` oder `flow`) ist `steps` leer:
-        solche Profile beschreiben ihren Verlauf ueber Kopf-Sollwerte statt
-        ueber Schritte. `parse_ok: false` heisst, die Profildatei war nicht
-        lesbar; dann taugen nur `title` und `notes`.
+        Zum blossen Vergleich zweier Bezuege genuegt `compare_shots`.
         """
         given = [bool(shot_id), bool(name), bool(version_hash)]
         if sum(given) != 1:
@@ -441,15 +431,10 @@ def build_mcp(
     async def sync_now() -> dict[str, Any]:
         """Holt neue und geaenderte Bezuege sofort von visualizer.coffee.
 
-        Die einzige Operation, die nach aussen geht; sie schreibt nichts zu
-        Visualizer und ist beliebig wiederholbar. Normalerweise unnoetig - der
-        Server synchronisiert selbst, und `get_shot("latest")` prueft ohnehin
-        auf Frische.
-
-        `errors` sind voruebergehende Probleme (Netz, Schreibfehler); solange
-        welche auftreten, wiederholt der naechste Lauf dieselben Bezuege.
-        `warnings` sind endgueltige Befunde (Bezug ohne Profil, unlesbare
-        Profildatei) - die aendern sich durch Wiederholen nicht.
+        Meist unnoetig: der Server synchronisiert selbst, und `get_shot`/
+        `list_shots` pruefen ohnehin auf Frische. Schreibt nichts zu Visualizer,
+        beliebig wiederholbar. `errors` sind voruebergehende Probleme,
+        `warnings` endgueltige Befunde.
         """
         if coordinator is None:
             raise ToolError(
@@ -465,10 +450,9 @@ def build_mcp(
     async def status() -> dict[str, Any]:
         """Zustand des Archivs: Bestand, letzter Sync, offene Warnungen.
 
-        Zeiten sind ISO8601 in UTC. `shots` zaehlt die lokal archivierten
-        Bezuege, `series_points` die gespeicherten Messpunkte. `warnings` meldet
-        unter anderem, wenn der letzte Sync so lange her ist, dass Bezuege aus
-        dem 1-Monats-Fenster des Visualizer-Free-Tiers gefallen sein koennten.
+        Zeiten ISO8601 UTC. `warnings` meldet unter anderem einen zu lange
+        zurueckliegenden Sync - Visualizer Free haelt nur ein 1-Monats-Fenster
+        vor.
         """
         return await asyncio.to_thread(_status_payload, config, db)
 
@@ -562,10 +546,13 @@ def _public_metrics(metrics: dict[str, Any] | None) -> dict[str, Any]:
     return {k: v for k, v in metrics.items() if k not in ("metrics_version", "n_points")}
 
 
+def _series(db: Database, shot_id: str) -> list[dict[str, Any]]:
+    return [dict(r) for r in db.series_for_shot(shot_id)]
+
+
 def _curve(
-    db: Database, shot_id: str, metrics: dict[str, Any] | None, max_points: int
+    rows: list[dict[str, Any]], metrics: dict[str, Any] | None, max_points: int
 ) -> dict[str, Any]:
-    rows = [dict(r) for r in db.series_for_shot(shot_id)]
     metrics = metrics or {}
     return downsample_curve(
         rows,
@@ -601,6 +588,63 @@ def _profile_summary(db: Database, profile_id: int | None) -> dict[str, Any] | N
             for s in parsed.get("steps") or []
         ],
     }
+
+
+def _profile_brief(db: Database, profile_id: int | None) -> dict[str, Any] | None:
+    """Kurzfassung fuer ``compare_shots`` - Kopf-Sollwerte, keine Schrittliste.
+
+    Reicht fuer die Frage "liefen die Bezuege auf demselben Profil"; die
+    vollstaendigen Schritte liefert ``get_profile``.
+    """
+    if profile_id is None:
+        return None
+    row = db.get_profile_row(profile_id)
+    if row is None:
+        return None
+    parsed = json.loads(row["parsed_json"])
+    brief: dict[str, Any] = {
+        "title": parsed.get("title") or row["name"],
+        "type": parsed.get("type"),
+        "version_hash": row["version_hash"][:8],
+        "semantic_hash": (row["semantic_hash"] or "")[:8] or None,
+        "target_weight_g": parsed.get("target_weight_g"),
+        "target_temp_c": parsed.get("target_temp_c"),
+        "step_count": len(parsed.get("steps") or []),
+    }
+    if parsed.get("legacy_settings"):
+        brief["legacy_settings"] = parsed["legacy_settings"]
+    return brief
+
+
+def _profile_notice(profiles: list[dict[str, Any] | None]) -> str | None:
+    """Warnt, wenn die verglichenen Bezuege nicht dieselben Sollwerte hatten.
+
+    Ohne diesen Hinweis liest man Unterschiede leicht als Folge der Einstellung,
+    obwohl sie vom Profil kommen.
+    """
+    known = [p for p in profiles if p]
+    if not known:
+        return None
+    # Fehlende Profile zuerst: sonst verschluckt die Zwei-Profile-Schranke
+    # unten genau den Fall, in dem nur eines archiviert ist.
+    if len(known) != len(profiles):
+        return ("Fuer mindestens einen Bezug ist kein Profil archiviert - der "
+                "Vergleich der Sollwerte ist unvollstaendig.")
+    if len(known) < 2:
+        return None
+
+    versions = {p["version_hash"] for p in known}
+    if len(versions) == 1:
+        return None
+
+    semantics = {p["semantic_hash"] for p in known}
+    if len(semantics) == 1:
+        return ("Die Bezuege liefen auf verschiedenen Profilversionen, die aber "
+                "identisch bruehen (gleicher semantic_hash) - der Unterschied "
+                "ist rein kosmetisch.")
+    return ("Achtung: Die Bezuege liefen auf Profilen mit unterschiedlichen "
+            "Sollwerten (abweichender semantic_hash). Unterschiede in den "
+            "Metriken koennen vom Profil kommen, nicht von Mahlgrad oder Dosis.")
 
 
 #: Felder, deren Differenz sich zu vergleichen lohnt.
@@ -697,7 +741,7 @@ def _status_payload(config: Config, db: Database) -> dict[str, Any]:
     return {
         "server": SERVER_NAME,
         "version": __version__,
-        "milestone": "M4",
+        "milestone": "M6",
         "shots": db.count_shots(),
         "series_points": db.count_series_points(),
         "profile_versions": db.count_profiles(),
