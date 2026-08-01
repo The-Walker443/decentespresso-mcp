@@ -145,6 +145,34 @@ def _synthetic(*, with_markers: bool) -> list[dict]:
     return rows
 
 
+def test_heuristic_fallback_on_a_real_series_without_markers() -> None:
+    """SPEC ss13: eigener Fixture-Test fuer den Heuristikpfad.
+
+    Die Fixture ist der Referenz-Shot ohne ``espresso_state_change`` - so sieht
+    ein Shot aus, dessen Firmware den Kanal nicht liefert. Der Pfad bleibt
+    geprueft, obwohl im Archiv bisher immer ``state_change`` griff.
+    """
+    payload = detail("shot_without_state_change.json")
+    assert "espresso_state_change" not in payload["data"]
+    rows = series_rows_from_detail(payload)
+    assert phase_boundaries(rows) == []
+
+    metrics = compute_metrics(rows, dose_g=18.0, yield_g=36.2)
+    assert metrics["pi_end_source"] == "heuristic"
+    # 0.6 x 5.43 bar = 3.258 bar, erstmals erreicht bei t = 6.43.
+    assert metrics["pi_end"] == 6.4
+    assert any("Phasenmarken" in w for w in metrics["warnings"])
+
+    # Der Unterschied zur Markenfassung ist klein, aber vorhanden - und genau
+    # deshalb wird die Quelle mitgeliefert.
+    with_markers = compute_metrics(
+        series_rows_from_detail(detail("shot_reference.json")), dose_g=18.0, yield_g=36.2
+    )
+    assert with_markers["pi_end"] == 6.2
+    assert with_markers["pi_end_source"] == "state_change"
+    assert metrics["peak_pressure_infusion"] == with_markers["peak_pressure_infusion"]
+
+
 def test_fallback_heuristic_without_markers() -> None:
     metrics = compute_metrics(_synthetic(with_markers=False))
     # 0.6 x 10 bar = 6 bar, erstmals erreicht bei t = 3.0.

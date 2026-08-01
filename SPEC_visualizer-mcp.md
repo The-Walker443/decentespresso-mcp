@@ -8,7 +8,8 @@
 >   nachträglich geänderte Shots).
 > - §8: `pi_end` primär aus den Phasenmarken; `peak_pressure` aufgeteilt in
 >   `peak_pressure_infusion` und `max_pressure_global`.
-> - §13: Erwartungswerte des Referenz-Shots präzisiert.
+> - §13: Erwartungswerte des Referenz-Shots an §8 angeglichen (`end_pressure`
+>   ≈ 5.3, `t_first_drops` ≈ 5.3), jeweils mit Begründung.
 
 ---
 
@@ -461,11 +462,27 @@ mit Zusammenfassung loggen (`new=2 updated=1 profiles=0 dur=1.2s`).
 **Unit (pytest, offline mit Fixtures):**
 - TCL-Parser: D-Flow-Beispiel → erwartete Steps/Notes; kaputtes TCL → `parse_ok=false` ohne Exception.
 - Metriken: Referenz-Shot (Fixture = realer Shot `6eb25d36…`) → erwartete Werte:
-  `peak_pressure_infusion` ≈ 4.1 bar, `end_pressure` ≈ 5.4 bar,
-  `t_first_drops` ≈ 4.8 s, `duration` ≈ 22.9 s.
+  `peak_pressure_infusion` ≈ 4.1 bar, `end_pressure` ≈ 5.3 bar,
+  `t_first_drops` ≈ 5.3 s, `duration` ≈ 22.9 s, `pi_end` ≈ 6.2 s
+  (Quelle `state_change`).
   Bei diesem D-Flow-Shot ist `max_pressure_global` ≈ 5.4 bar und fällt mit dem
   Schlusspunkt zusammen — genau deshalb sind Infusions- und Globalmaximum
   getrennte Felder.
+
+  Zwei dieser Werte wurden mit Fassung 1.1 an §8 angeglichen, nicht umgekehrt:
+  - `end_pressure` ≈ 5.3 statt 5.4: §8 mittelt über die letzten 2 s (hier
+    5.320). Der letzte Einzelmesswert allein wäre 5.43, reagiert aber auf
+    einen einzigen Ausreißer — der Mittelwert ist das robustere Maß.
+  - `t_first_drops` ≈ 5.3 statt 4.8: die Schwelle bleibt bei `weight > 0.3 g`.
+    Das erste Gewicht überhaupt fällt bei 4.77 s mit 0.20 g an, liegt damit
+    aber im Rauschband der Waage (Auflösung ~0.1 g, Tropfenaufprall und
+    Vibration erzeugen dort Ausschläge). Eine Schwelle unterhalb 0.3 g würde
+    je nach Waage und Tassenstellung schwanken und die Werte über Shots
+    hinweg unvergleichbar machen — genau das soll §8 verhindern.
+
+- pi_end-Fallback: eigener Fixture-Test mit einer Zeitreihe **ohne**
+  Phasenmarken → `pi_end_source == "heuristic"`. Der Pfad bleibt geprüft, auch
+  solange im Archiv ausschließlich `state_change` greift.
 - Downsampling: Peak-Punkt bleibt stets enthalten; `len ≤ max_points`.
 - Sync-Dedupe: zweifacher Lauf derselben Daten → keine Duplikate.
 

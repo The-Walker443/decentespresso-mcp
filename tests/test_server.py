@@ -56,11 +56,23 @@ def test_unknown_paths_return_bare_404(config: Config, db: Database) -> None:
             assert response.content == b"", path
 
 
-async def test_status_reports_empty_archive(config: Config, db: Database) -> None:
+async def test_all_spec_tools_are_exposed(config: Config, db: Database) -> None:
     async with Client(build_mcp(config, db)) as client:
         tools = {tool.name: tool for tool in await client.list_tools()}
-        assert set(tools) == {"status"}
-        assert tools["status"].annotations.readOnlyHint is True
+
+    # SPEC ss9.2
+    assert set(tools) == {
+        "list_beans", "list_shots", "get_shot", "get_shot_metrics",
+        "compare_shots", "list_profiles", "get_profile", "sync_now", "status",
+    }
+    # Alles ausser sync_now ist read-only (SPEC ss9).
+    for name, tool in tools.items():
+        expected = name != "sync_now"
+        assert tool.annotations.readOnlyHint is expected, name
+
+
+async def test_status_reports_empty_archive(config: Config, db: Database) -> None:
+    async with Client(build_mcp(config, db)) as client:
         payload = (await client.call_tool("status", {})).data
 
     assert payload["server"] == SERVER_NAME

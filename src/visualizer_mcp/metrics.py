@@ -211,6 +211,77 @@ def warm_metrics_cache(db: Database) -> int:
     return len(pending)
 
 
+#: SPEC ss9.1 - Kanalnamen in der kompakten Kurvenausgabe. Kurz, weil jeder
+#: Buchstabe pro Messpunkt einmal im Antwortbudget landet.
+CURVE_CHANNELS = {
+    "p": "pressure",
+    "fi": "flow_in",
+    "fo": "flow_out",
+    "w": "weight",
+    "tb": "temp_basket",
+}
+
+CURVE_ROUNDING = {"t": 2, "p": 2, "fi": 2, "fo": 2, "w": 1, "tb": 1}
+
+MAX_CURVE_POINTS = 400
+
+
+def downsample_curve(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    max_points: int = 120,
+    keep_times: Sequence[float | None] = (),
+) -> dict[str, list[float | None]]:
+    """Zeitreihe auf ``max_points`` ausduennen (SPEC ss9.1).
+
+    Gleichmaessig ueber die **Zeit**, nicht ueber den Index - bei ungleichen
+    Abtastabstaenden bliebe sonst ein dicht abgetasteter Abschnitt
+    ueberrepraesentiert. Garantiert enthalten sind erster und letzter Punkt
+    sowie jeder Zeitpunkt aus ``keep_times`` (die beiden Druckmaxima).
+
+    Rueckgabe sind parallele Arrays (``t``, ``p``, ``fi``, ``fo``, ``w``,
+    ``tb``) statt einer Objektliste - das spart rund 60 % Zeichen. Kanaele
+    ohne einen einzigen Messwert fehlen ganz.
+    """
+    if not rows:
+        return {"t": []}
+    ordered = sorted(rows, key=lambda r: r["elapsed"])
+    times = [float(r["elapsed"]) for r in ordered]
+    budget = max(2, min(int(max_points), MAX_CURVE_POINTS))
+
+    mandatory = {0, len(ordered) - 1}
+    for wanted in keep_times:
+        if wanted is not None:
+            mandatory.add(min(range(len(times)), key=lambda i: abs(times[i] - wanted)))
+
+    if len(ordered) <= budget:
+        chosen = range(len(ordered))
+    else:
+        span = times[-1] - times[0]
+        slots = max(0, budget - len(mandatory))
+        picked = set(mandatory)
+        if slots and span > 0:
+            for step in range(slots):
+                target = times[0] + span * step / max(1, slots - 1)
+                picked.add(min(range(len(times)), key=lambda i: abs(times[i] - target)))
+        # Die Rasterpunkte koennen auf Pflichtpunkte fallen; dann bleibt die
+        # Auswahl kleiner als das Budget, nie groesser.
+        chosen = sorted(picked)[:budget]
+
+    curve: dict[str, list[float | None]] = {
+        "t": [_round(times[i], CURVE_ROUNDING["t"]) for i in chosen]
+    }
+    for key, column in CURVE_CHANNELS.items():
+        values = [
+            _round(None if ordered[i].get(column) is None else float(ordered[i][column]),
+                   CURVE_ROUNDING[key])
+            for i in chosen
+        ]
+        if any(v is not None for v in values):
+            curve[key] = values
+    return curve
+
+
 def phase_boundaries(rows: Sequence[Mapping[str, Any]]) -> list[float]:
     """Phasengrenzen aus ``state_change``.
 

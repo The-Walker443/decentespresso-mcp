@@ -177,6 +177,128 @@ class Database:
             ).fetchone()
             return row["lo"], row["hi"]
 
+    # ------------------------------------------------------------- Abfragen
+
+    def list_beans(self) -> list[dict[str, Any]]:
+        """Bohnen mit Bezugszahl, Zeitraum und genutzten Muehleneinstellungen.
+
+        Die Einstellungen kommen als eigene Abfrage statt via GROUP_CONCAT: sie
+        sind Freitext und enthalten selbst Kommas ("4,2"), eine verkettete
+        Liste liesse sich nicht mehr zuverlaessig zerlegen.
+        """
+        with self._lock:
+            beans = list(self._conn.execute("""
+                SELECT bean_brand, bean_type,
+                       COUNT(*) AS shot_count,
+                       MIN(started_at) AS first_shot,
+                       MAX(started_at) AS last_shot,
+                       (SELECT x.grinder_setting FROM shots x
+                         WHERE x.bean_brand IS s.bean_brand AND x.bean_type IS s.bean_type
+                         ORDER BY x.started_at DESC LIMIT 1) AS last_grinder_setting,
+                       (SELECT x.grinder_model FROM shots x
+                         WHERE x.bean_brand IS s.bean_brand AND x.bean_type IS s.bean_type
+                         ORDER BY x.started_at DESC LIMIT 1) AS last_grinder_model
+                FROM shots s
+                GROUP BY s.bean_brand, s.bean_type
+                ORDER BY last_shot DESC
+            """))
+            settings: dict[tuple[Any, Any], list[str]] = {}
+            for row in self._conn.execute(
+                "SELECT DISTINCT bean_brand, bean_type, grinder_setting FROM shots "
+                "WHERE grinder_setting IS NOT NULL ORDER BY grinder_setting"
+            ):
+                key = (row["bean_brand"], row["bean_type"])
+                settings.setdefault(key, []).append(row["grinder_setting"])
+
+        return [
+            {**dict(bean),
+             "grinder_settings": settings.get((bean["bean_brand"], bean["bean_type"]), [])}
+            for bean in beans
+        ]
+
+    def query_shots(
+        self,
+        *,
+        bean: str | None = None,
+        roaster: str | None = None,
+        profile: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        limit: int = 10,
+        offset: int = 0,
+    ) -> tuple[list[sqlite3.Row], int]:
+        """Gefilterte Shots plus Gesamtzahl. Textfilter sind Teilstring, case-insensitiv.
+
+        ``bean`` trifft Marke *oder* Sorte, ``roaster`` nur die Marke.
+        """
+        where: list[str] = []
+        params: list[Any] = []
+        if bean:
+            where.append("(LOWER(bean_brand) LIKE ? OR LOWER(bean_type) LIKE ?)")
+            params += [f"%{bean.lower()}%"] * 2
+        if roaster:
+            where.append("LOWER(bean_brand) LIKE ?")
+            params.append(f"%{roaster.lower()}%")
+        if profile:
+            where.append("LOWER(profile_name) LIKE ?")
+            params.append(f"%{profile.lower()}%")
+        if since:
+            where.append("started_at >= ?")
+            params.append(since)
+        if until:
+            where.append("started_at <= ?")
+            params.append(until)
+
+        clause = f"WHERE {' AND '.join(where)}" if where else ""
+        with self._lock:
+            total = self._conn.execute(
+                f"SELECT COUNT(*) AS n FROM shots {clause}", params
+            ).fetchone()["n"]
+            rows = list(self._conn.execute(
+                f"SELECT * FROM shots {clause} ORDER BY started_at DESC LIMIT ? OFFSET ?",
+                [*params, limit, offset],
+            ))
+        return rows, total
+
+    def get_shot_row(self, shot_id: str) -> sqlite3.Row | None:
+        with self._lock:
+            return self._conn.execute(
+                "SELECT * FROM shots WHERE id = ?", (shot_id,)
+            ).fetchone()
+
+    def latest_shot_id(self, bean: str | None = None) -> str | None:
+        clause = ""
+        params: list[Any] = []
+        if bean:
+            clause = "WHERE LOWER(bean_brand) LIKE ? OR LOWER(bean_type) LIKE ?"
+            params = [f"%{bean.lower()}%"] * 2
+        with self._lock:
+            row = self._conn.execute(
+                f"SELECT id FROM shots {clause} ORDER BY started_at DESC LIMIT 1", params
+            ).fetchone()
+        return row["id"] if row else None
+
+    def get_profile_row(self, profile_id: int) -> sqlite3.Row | None:
+        with self._lock:
+            return self._conn.execute(
+                "SELECT * FROM profiles WHERE id = ?", (profile_id,)
+            ).fetchone()
+
+    def find_profile(
+        self, *, version_hash: str | None = None, name: str | None = None
+    ) -> sqlite3.Row | None:
+        """Version per Hash-Praefix, sonst die neueste Version eines Namens."""
+        with self._lock:
+            if version_hash:
+                return self._conn.execute(
+                    "SELECT * FROM profiles WHERE version_hash LIKE ? ORDER BY last_seen DESC",
+                    (f"{version_hash}%",),
+                ).fetchone()
+            return self._conn.execute(
+                "SELECT * FROM profiles WHERE LOWER(name) LIKE ? ORDER BY last_seen DESC",
+                (f"%{(name or '').lower()}%",),
+            ).fetchone()
+
     def series_for_shot(self, shot_id: str) -> list[sqlite3.Row]:
         with self._lock:
             return list(self._conn.execute(

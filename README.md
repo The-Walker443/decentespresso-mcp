@@ -6,7 +6,7 @@ per Custom Connector zur Analyse bereitstellt.
 
 Vollstaendige Spezifikation: [SPEC_visualizer-mcp.md](SPEC_visualizer-mcp.md).
 
-## Stand: Milestone M3 (Metriken)
+## Stand: Milestone M4 (MCP-Tools)
 
 Vorhanden:
 
@@ -24,9 +24,66 @@ Vorhanden:
   (`tcl_profile.py`)
 - Abgeleitete Metriken nach SPEC ss8 (Fassung 1.1) mit Cache in `shot_metrics`
   (`metrics.py`)
-- `status`-Tool mit echten Bestandszahlen
+- Alle neun Tools aus SPEC ss9.2 (`server.py`)
 
-Noch nicht vorhanden: die Analyse-Tools aus SPEC ss9.2 (M4). Siehe SPEC ss14.
+Noch nicht vorhanden: die optionalen MCP-Prompts aus SPEC ss9.3
+(`dial_in_check`, `bean_history`) und die Haertung aus M5. Siehe SPEC ss14.
+
+## Tools
+
+| Tool | Zweck |
+|---|---|
+| `list_beans()` | Bohnen mit Bezugszahl, Zeitraum, Muehleneinstellungen |
+| `list_shots(bean?, roaster?, profile?, since?, until?, limit, cursor?)` | kompakte Liste, neueste zuerst |
+| `get_shot(id\|"latest", bean?, include_curve, max_points)` | Metadaten + Metriken + Kurve + Profil-Kurzfassung |
+| `get_shot_metrics(id)` | nur die Metriken |
+| `compare_shots(ids[2..4], include_curves)` | Gegenueberstellung mit Differenz zum ersten |
+| `list_profiles()` | Profile mit ihren Versionen |
+| `get_profile(shot_id? \| name? \| version_hash?)` | vollstaendige Sollwerte |
+| `sync_now()` | sofortiger Abgleich (einzige schreibende Operation, idempotent) |
+| `status()` | Bestand, letzter Sync, Warnungen |
+
+Filter sind Teilstrings ohne Beachtung der Gross-/Kleinschreibung. `bean` trifft
+Marke *oder* Sorte, `roaster` nur die Marke. `since`/`until` nehmen ISO8601 oder
+relative Kuerzel (`12h`, `7d`, `2w`, `1m`, `1y`).
+
+### Was die Docstrings leisten muessen
+
+Claude bekommt die Zahlen ohne Einheiten und muss sie trotzdem richtig deuten.
+Deshalb steht die Begriffserklaerung zweimal: einmal vollstaendig im
+Server-Prompt (`INSTRUCTIONS` in `server.py`, immer im Kontext) und einmal
+verkuerzt in jedem Tool, das die betroffenen Felder liefert. Erklaert werden
+Einheiten, die Semantik von `pi_end` samt `pi_end_source`, der Unterschied
+zwischen `peak_pressure_infusion` und `max_pressure_global` sowie die Bedeutung
+von `warnings` (Feld ist `null`, nicht 0).
+
+Tools ohne diese Felder (`list_beans`, `status`) wiederholen die
+Metrik-Erklaerung nicht — sie waere dort Ballast, den jede Tool-Liste mitschleppt.
+
+### Antwortbudget
+
+SPEC ss9 setzt ~15 kB je Antwort. Gemessen am echten Archiv:
+
+| Aufruf | Groesse |
+|---|---|
+| `status()` | 0,7 kB |
+| `list_shots(limit=10)` | 3,3 kB |
+| `get_shot("latest")` | 5,1 kB |
+| `compare_shots(3 ids, include_curves)` | 8,9 kB |
+
+Kurven kommen als parallele Arrays (`t`, `p`, `fi`, `fo`, `w`, `tb`). Das spart
+gegenueber einer Objektliste mit denselben Kurzschluesseln rund 49 %, gegenueber
+einer mit sprechenden Spaltennamen rund 70 %. Ein Test haelt beide Schranken
+fest.
+
+### Frische-Check bei `get_shot("latest")`
+
+Liegt der letzte Abgleich mehr als zwei Minuten zurueck, synchronisiert der
+Server vor der Antwort — ein eben gezogener Bezug ist damit sofort da. Das
+Ergebnis steht im Feld `freshness`. Schlaegt der Abgleich fehl, kommt trotzdem
+eine Antwort aus dem Archiv, mit Hinweis: veraltete Daten sind besser als keine.
+Hintergrundschleife, `sync_now` und der Frische-Check teilen sich ein Lock, damit
+nie zwei Laeufe gleichzeitig schreiben.
 
 ### Metriken: `state_change` und `pi_end`
 
@@ -135,6 +192,10 @@ python -m venv .venv
 .venv/Scripts/python -m pytest
 .venv/Scripts/python -m ruff check src tests
 ```
+
+Die Fixtures unter `tests/fixtures/` sind echte, anonymisierte API-Antworten
+(Kontokennungen ersetzt) — darunter der Referenz-Shot aus SPEC ss13, ein Shot
+mit defekter Waage und drei Versionen desselben Profils.
 
 Lokal starten (ohne Docker):
 

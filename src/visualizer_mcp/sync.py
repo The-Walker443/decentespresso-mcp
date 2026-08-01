@@ -11,6 +11,7 @@ import json
 import logging
 import time
 from dataclasses import asdict, dataclass, field
+from datetime import UTC, datetime
 from typing import Any
 
 from .db import Database, utc_now_iso
@@ -301,9 +302,61 @@ def _persist(db: Database, result: SyncResult, newest_updated_at: int | None) ->
         db.set_state(STATE_BACKFILL_DONE, utc_now_iso())
 
 
+#: SPEC ss9.2: get_shot("latest") prueft vorher auf Frische. Zwei Minuten sind
+#: kurz genug, dass ein eben gezogener Shot auftaucht, und lang genug, dass eine
+#: Folge von Fragen nicht jedes Mal Visualizer anfasst.
+QUICK_SYNC_MAX_AGE_S = 120
+
+
+class SyncCoordinator:
+    """Buendelt alle Sync-Ausloeser hinter einem Lock.
+
+    Hintergrundschleife, ``sync_now`` und der Frische-Check von
+    ``get_shot("latest")`` teilen sich denselben Client. Ohne das Lock koennten
+    zwei Laeufe denselben Shot gleichzeitig schreiben und den Cursor
+    widerspruechlich setzen.
+    """
+
+    def __init__(self, client: VisualizerClient, db: Database) -> None:
+        self._client = client
+        self._db = db
+        self._lock = asyncio.Lock()
+
+    async def run(self, *, full: bool | None = None) -> SyncResult:
+        async with self._lock:
+            if full is None:
+                full = await asyncio.to_thread(
+                    lambda: not self._db.get_state(STATE_BACKFILL_DONE)
+                )
+            return await run_sync(self._client, self._db, full=full)
+
+    async def ensure_fresh(self, max_age_s: int = QUICK_SYNC_MAX_AGE_S) -> SyncResult | None:
+        """Synchronisiert nur, wenn der letzte Lauf zu lange her ist.
+
+        ``None`` heisst: der Bestand galt bereits als frisch, es gab keinen
+        Netzzugriff.
+        """
+        age = await asyncio.to_thread(self._age_seconds)
+        if age is not None and age < max_age_s:
+            return None
+        return await self.run()
+
+    def _age_seconds(self) -> float | None:
+        stamp = self._db.get_state(STATE_LAST_SYNC)
+        if not stamp:
+            return None
+        try:
+            parsed = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+        return (datetime.now(UTC) - parsed).total_seconds()
+
+    async def aclose(self) -> None:
+        await self._client.aclose()
+
+
 async def periodic_sync(
-    client: VisualizerClient,
-    db: Database,
+    coordinator: SyncCoordinator,
     interval_min: int,
     *,
     stop: asyncio.Event | None = None,
@@ -315,9 +368,8 @@ async def periodic_sync(
     """
     stop = stop or asyncio.Event()
     while not stop.is_set():
-        full = await asyncio.to_thread(lambda: not db.get_state(STATE_BACKFILL_DONE))
         try:
-            await run_sync(client, db, full=full)
+            await coordinator.run()
         except Exception:  # noqa: BLE001 - die Schleife muss ueberleben
             log.exception("sync loop iteration failed")
         try:
