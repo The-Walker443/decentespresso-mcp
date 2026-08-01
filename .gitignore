@@ -1,5 +1,7 @@
 # Secrets & Laufzeitdaten
 .env
+.env.*
+!.env.example
 data/
 *.db
 *.db-wal

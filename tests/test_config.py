@@ -69,11 +69,16 @@ def test_secret_must_be_url_safe(valid_env: dict[str, str]) -> None:
     assert any("A-Za-z0-9_-" in p for p in excinfo.value.problems)
 
 
-@pytest.mark.parametrize("raw", ["0", "1441", "nope", "15.5"])
+@pytest.mark.parametrize("raw", ["-1", "1441", "nope", "15.5"])
 def test_bad_sync_interval_is_rejected(valid_env: dict[str, str], raw: str) -> None:
     valid_env["SYNC_INTERVAL_MIN"] = raw
     with pytest.raises(ConfigError):
         Config.from_env(valid_env)
+
+
+def test_sync_interval_zero_disables_the_worker(valid_env: dict[str, str]) -> None:
+    valid_env["SYNC_INTERVAL_MIN"] = "0"
+    assert Config.from_env(valid_env).sync_interval_min == 0
 
 
 def test_bad_log_level_is_rejected(valid_env: dict[str, str]) -> None:
@@ -87,10 +92,19 @@ def test_log_level_is_case_insensitive(valid_env: dict[str, str]) -> None:
     assert Config.from_env(valid_env).log_level == "DEBUG"
 
 
-def test_relative_db_path_is_rejected(valid_env: dict[str, str]) -> None:
-    valid_env["DB_PATH"] = "shots.db"
+@pytest.mark.parametrize("raw", ["shots.db", "./data/shots.db", "data/shots.db"])
+def test_relative_db_path_is_rejected(valid_env: dict[str, str], raw: str) -> None:
+    valid_env["DB_PATH"] = raw
     with pytest.raises(ConfigError):
         Config.from_env(valid_env)
+
+
+@pytest.mark.parametrize("raw", ["/data/shots.db", "D:/dev/data/shots.db",
+                                 r"C:\dev\data\shots.db"])
+def test_absolute_db_paths_are_accepted(valid_env: dict[str, str], raw: str) -> None:
+    # Container laeuft unter Linux, entwickelt wird auch unter Windows.
+    valid_env["DB_PATH"] = raw
+    assert Config.from_env(valid_env).db_path == raw
 
 
 def test_base_url_needs_scheme(valid_env: dict[str, str]) -> None:

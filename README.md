@@ -6,7 +6,7 @@ per Custom Connector zur Analyse bereitstellt.
 
 Vollstaendige Spezifikation: [SPEC_visualizer-mcp.md](SPEC_visualizer-mcp.md).
 
-## Stand: Milestone M0 (Geruest)
+## Stand: Milestone M1 (Client, DB, Backfill)
 
 Vorhanden:
 
@@ -14,12 +14,45 @@ Vorhanden:
 - Strukturiertes key=value-Logging auf stdout mit Secret-Redaction (`logging_setup.py`)
 - FastMCP-Server (Streamable HTTP) unter `/<MCP_PATH_SECRET>/mcp`, `/healthz`,
   alle anderen Pfade `404` ohne Body (`server.py`)
-- `status`-Tool (Platzhalter, meldet ehrlich `milestone: M0`)
-- Datenbankschema als `migrations/001_init.sql` (noch nicht angewendet)
-- Dockerfile + compose.yaml, non-root, read-only Root-FS
+- Visualizer-Client mit Basic Auth, Ratelimiter, ETag und Backoff
+  (`visualizer_client.py`)
+- SQLite mit Migrationsrunner, Upserts, Sync-Zustand (`db.py`)
+- Sync-Worker: Backfill ueber alle Seiten, inkrementell via `updated_after`,
+  Hintergrundschleife alle `SYNC_INTERVAL_MIN` (`sync.py`)
+- `status`-Tool mit echten Bestandszahlen
 
-Noch nicht vorhanden: Visualizer-Client, Sync, TCL-Parser, Metriken, die Tools aus
-SPEC ss9.2. Siehe SPEC ss14 (M1-M5).
+Noch nicht vorhanden: TCL-Parser und Profilversionierung (M2), Metriken (M3), die
+Analyse-Tools aus SPEC ss9.2 (M4). Siehe SPEC ss14.
+
+## Visualizer-API — verifizierter Stand
+
+Gegen <https://apidocs.visualizer.coffee/> geprueft am 2026-08-01
+(OpenAPI 3.1, Visualizer API v1.15.0), zusaetzlich mit echten Requests bestaetigt:
+
+| Endpunkt | Liefert |
+|---|---|
+| `GET /api/me` | `{id, name, public, avatar_url}` — prueft die Credentials |
+| `GET /api/shots?page=&items=` | pro Shot **nur** `{id, clock, updated_at}` plus `paging{count,page,limit,pages}` |
+| `GET /api/shots/{id}` | volles Detail inkl. `timeframe[]` und `data.espresso_*[]` |
+| `GET /api/shots/{id}/profile` | Roh-TCL, `application/x-tcl` |
+| `GET /api/shots/{id}/profile?format=json` | von Visualizer geparstes Profil |
+
+Was dabei anders ist als in der Spec angenommen:
+
+- **Zeitreihen kommen als Strings**, nicht als Zahlen — auch `timeframe`.
+- **`updated_after` (Unix-Sekunden) + `sort=updated_at` existieren.** Der
+  inkrementelle Sync nutzt das statt der Seitenheuristik aus SPEC ss6.2 und
+  findet damit auch nachtraeglich geaenderte Shots.
+- **ETag/`If-None-Match` liefert 304** auf Liste und Detail.
+- **Ratelimits:** 50 req/min pro IP, 200 req/10 min pro IP und pro Nutzer. Der
+  Client haelt mit einem Sliding-Window-Limiter Abstand (40/min, 170/10 min).
+- **Die Dosis steht im Detail-JSON** als `bean_weight` — der Vorbehalt in
+  SPEC ss7.2 gilt nur fuer den CSV-Weg.
+- **`brewdata` ist bei DE1-Uploads leer**; das Profil braucht einen eigenen Request.
+- Leere Felder (`private_notes`, `metadata`) fehlen im Response komplett.
+
+Das vollstaendige Feldmapping steht als Tabelle im Docstring von
+`shot_row_from_detail()` in [visualizer_client.py](src/visualizer_mcp/visualizer_client.py).
 
 ## Entwicklung
 
@@ -77,6 +110,20 @@ docker compose exec visualizer-mcp visualizer-mcp --print-connector-url
 Ergibt `https://<host>/<MCP_PATH_SECRET>/mcp` — diese URL in claude.ai unter
 Einstellungen → Connectors → „Add custom connector" eintragen, OAuth-Felder leer.
 
+### Sync von Hand
+
+Der Server synchronisiert im Hintergrund selbst; der erste Lauf ist automatisch ein
+Backfill. Manuell:
+
+```bash
+docker compose exec visualizer-mcp visualizer-mcp --backfill    # alle Seiten
+docker compose exec visualizer-mcp visualizer-mcp --sync-once   # nur Neues/Geaendertes
+```
+
+Beide geben eine JSON-Zusammenfassung aus und beenden sich mit Exit-Code 1, wenn
+einzelne Shots fehlgeschlagen sind. Bei Fehlern wird der Cursor **nicht**
+weitergeschoben — sonst bliebe ein fehlgeschlagener Shot dauerhaft ungeholt.
+
 ## Konfiguration
 
 | Variable | Default | Bedeutung |
@@ -84,7 +131,7 @@ Einstellungen → Connectors → „Add custom connector" eintragen, OAuth-Felde
 | `VISUALIZER_EMAIL` | — | Visualizer-Login (Basic Auth), landet auch im User-Agent |
 | `VISUALIZER_PASSWORD` | — | Visualizer-Passwort |
 | `MCP_PATH_SECRET` | — | ≥32 Zeichen `[A-Za-z0-9_-]`, ersetzt die Authentifizierung |
-| `SYNC_INTERVAL_MIN` | `15` | Poll-Intervall in Minuten (1–1440), ab M1 wirksam |
+| `SYNC_INTERVAL_MIN` | `15` | Poll-Intervall in Minuten (0–1440); `0` schaltet die Hintergrundschleife ab |
 | `DB_PATH` | `/data/shots.db` | SQLite-Datei, muss absolut sein |
 | `LOG_LEVEL` | `INFO` | `DEBUG`…`CRITICAL` |
 | `TZ` | `Europe/Berlin` | Anzeige-Zeitzone; gespeichert wird immer UTC |
@@ -104,7 +151,24 @@ Probleme auf einmal auf.
 - Container: non-root (UID 10001), `read_only: true`, `no-new-privileges`, nur
   `/data` und `/tmp` beschreibbar.
 
-## Backup (ab M1 relevant)
+## Abweichungen vom Datenmodell der Spec
+
+Gegenueber SPEC ss5 hat `001_init.sql` drei Ergaenzungen. Alle drei wurden vor dem
+ersten Backfill eingezogen, damit spaeter kein Re-Sync noetig wird:
+
+- `shots.private_notes` — Visualizer liefert dem Eigentuemer ein eigenes Notizfeld
+  neben `espresso_notes`. Ohne Spalte waere die interessantere der beiden Notizen
+  nur im `raw_json` gelandet.
+- `shots.updated_at` — Unix-Sekunden, dient als Cursor fuer `updated_after` und
+  als Erkennung, ob ein bekannter Shot neu geladen werden muss.
+- `shot_series.state_change` — `espresso_state_change` ist die Phasenmarke, die
+  SPEC ss8 fuer `pi_end` bevorzugt. Der Sentinel `-10000000.0` wird zu `NULL`.
+
+Ausserdem: `drink_tds`, `drink_ey` und `enjoyment` werden auf `NULL` gesetzt, wenn
+Visualizer `0` liefert — das heisst dort „nicht erfasst", und eine TDS von 0 %
+wuerde jede Auswertung verzerren.
+
+## Backup
 
 ```bash
 sqlite3 ./data/shots.db ".backup ./data/backup/shots-$(date +%F).db"

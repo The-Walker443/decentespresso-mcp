@@ -1,8 +1,10 @@
-"""Entrypoint: Config laden, Logging aufsetzen, uvicorn starten."""
+"""Entrypoint: Config laden, Logging aufsetzen, Server oder Sync starten."""
 
 from __future__ import annotations
 
 import argparse
+import asyncio
+import json
 import logging
 import sys
 
@@ -10,8 +12,11 @@ import uvicorn
 
 from . import __version__
 from .config import Config, ConfigError
+from .db import Database
 from .logging_setup import setup_logging
 from .server import build_app
+from .sync import run_sync
+from .visualizer_client import VisualizerClient, VisualizerError
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -24,6 +29,16 @@ def main(argv: list[str] | None = None) -> int:
             "beendet sich. Nur manuell aufrufen - die URL landet sonst dauerhaft "
             "in 'docker logs'."
         ),
+    )
+    parser.add_argument(
+        "--backfill",
+        action="store_true",
+        help="Einmaliger vollstaendiger Sync ueber alle Seiten, dann Ende.",
+    )
+    parser.add_argument(
+        "--sync-once",
+        action="store_true",
+        help="Einmaliger inkrementeller Sync, dann Ende.",
     )
     parser.add_argument("--version", action="version", version=__version__)
     args = parser.parse_args(argv)
@@ -49,6 +64,10 @@ def main(argv: list[str] | None = None) -> int:
 
     setup_logging(config.log_level, secrets=config.secret_values())
     log = logging.getLogger("visualizer_mcp")
+
+    if args.backfill or args.sync_once:
+        return asyncio.run(_run_sync_cli(config, full=args.backfill))
+
     log.info(
         "starting",
         extra={
@@ -78,6 +97,30 @@ def main(argv: list[str] | None = None) -> int:
         access_log=False,  # Access-Logs wuerden den Secret-Pfad protokollieren
     )
     return 0
+
+
+async def _run_sync_cli(config: Config, *, full: bool) -> int:
+    log = logging.getLogger("visualizer_mcp")
+    db = Database(config.db_path)
+    db.migrate()
+    client = VisualizerClient(
+        config.visualizer_email,
+        config.visualizer_password,
+        user_agent=config.user_agent,
+    )
+    try:
+        account = await client.get_me()
+        log.info("authenticated", extra={"fields": {"account": account.get("name")}})
+        result = await run_sync(client, db, full=full)
+    except VisualizerError as exc:
+        log.error("sync failed", extra={"fields": {"error": exc.code, "detail": str(exc)}})
+        return 1
+    finally:
+        await client.aclose()
+        db.close()
+
+    print(json.dumps(result.as_dict(), indent=2, ensure_ascii=False))
+    return 1 if result.errors else 0
 
 
 if __name__ == "__main__":

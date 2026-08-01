@@ -1,0 +1,72 @@
+{
+  "title": "D-Flow / default",
+  "author": "Damian",
+  "notes": "A simple to use profiling system By Damian Brakel\\n        D-Flow's Default profile is provided as an example profile for you to get started in creating your own\n\nDownloaded from Visualizer",
+  "beverage_type": "espresso",
+  "steps": [
+    {
+      "exit": {
+        "type": "pressure",
+        "value": "2.1",
+        "condition": "over"
+      },
+      "flow": "8",
+      "name": "Filling",
+      "pump": "pressure",
+      "sensor": "coffee",
+      "volume": "100",
+      "weight": "5.00",
+      "limiter": {
+        "range": "0.2",
+        "value": "0"
+      },
+      "seconds": "25.00",
+      "pressure": "3.0",
+      "transition": "fast",
+      "temperature": "88"
+    },
+    {
+      "flow": "8",
+      "name": "Infusing",
+      "pump": "pressure",
+      "sensor": "coffee",
+      "volume": "100.00",
+      "weight": "4.00",
+      "limiter": {
+        "range": "0.2",
+        "value": "0"
+      },
+      "seconds": "20",
+      "pressure": "3.0",
+      "transition": "fast",
+      "temperature": "88"
+    },
+    {
+      "flow": "1.7",
+      "name": "Pouring",
+      "pump": "flow",
+      "sensor": "coffee",
+      "volume": "0",
+      "weight": "0.00",
+      "limiter": {
+        "range": "0.2",
+        "value": "8.5"
+      },
+      "seconds": "127",
+      "pressure": "4.8",
+      "transition": "fast",
+      "temperature": "88"
+    }
+  ],
+  "tank_temperature": "0",
+  "target_weight": "36",
+  "target_volume": "0",
+  "target_volume_count_start": "2",
+  "legacy_profile_type": "settings_2c",
+  "type": "advanced",
+  "lang": "en",
+  "hidden": "0",
+  "reference_file": "D-Flow____default",
+  "changes_since_last_espresso": "",
+  "version": "2"
+}

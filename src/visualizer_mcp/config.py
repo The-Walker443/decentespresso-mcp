@@ -11,7 +11,7 @@ import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import PurePosixPath
+from pathlib import PurePosixPath, PureWindowsPath
 
 from . import __version__
 
@@ -109,11 +109,12 @@ class Config:
                     "(es wird Teil der URL)"
                 )
 
-        interval = _int_in_range(src, "SYNC_INTERVAL_MIN", 15, 1, 1440, problems)
+        # 0 schaltet die Hintergrundschleife ab (manueller Sync bleibt moeglich).
+        interval = _int_in_range(src, "SYNC_INTERVAL_MIN", 15, 0, 1440, problems)
         db_path = src.get("DB_PATH", "/data/shots.db").strip() or "/data/shots.db"
-        if not PurePosixPath(db_path).is_absolute() and "\\" not in db_path:
-            # Relative Pfade zeigen im Container ins Nirgendwo; im Test egal.
-            problems.append(f"DB_PATH sollte absolut sein, ist aber {db_path!r}")
+        if not _is_absolute_path(db_path):
+            # Relative Pfade zeigen im Container ins Nirgendwo.
+            problems.append(f"DB_PATH muss absolut sein, ist aber {db_path!r}")
 
         log_level = src.get("LOG_LEVEL", "INFO").strip().upper() or "INFO"
         if log_level not in _LOG_LEVELS:
@@ -144,6 +145,16 @@ class Config:
             host=host,
             port=port,
         )
+
+
+def _is_absolute_path(path: str) -> bool:
+    """Absolut im Container (POSIX) wie in der lokalen Entwicklung (Windows).
+
+    Die Pruefung ist bewusst plattformunabhaengig: der Container laeuft unter
+    Linux, entwickelt wird aber auch unter Windows - ``os.path.isabs`` wuerde je
+    nach Host unterschiedlich urteilen.
+    """
+    return PurePosixPath(path).is_absolute() or PureWindowsPath(path).is_absolute()
 
 
 def _req_str(src: Mapping[str, str], key: str, problems: list[str]) -> str | None:

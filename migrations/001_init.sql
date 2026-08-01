@@ -1,8 +1,6 @@
 -- 001_init: Grundschema (SPEC ss5).
--- Wird beim Start von db.py (M1) idempotent angewendet.
-
-PRAGMA journal_mode = WAL;
-PRAGMA foreign_keys = ON;
+-- Wird beim Start von db.py idempotent angewendet. PRAGMAs setzt db.py auf der
+-- Verbindung, nicht hier - Migrationen bleiben reines DDL.
 
 CREATE TABLE IF NOT EXISTS shots (
   id              TEXT PRIMARY KEY,          -- Visualizer-UUID
@@ -21,8 +19,10 @@ CREATE TABLE IF NOT EXISTS shots (
   drink_tds       REAL,
   drink_ey        REAL,
   enjoyment       INTEGER,
-  notes           TEXT,
+  notes           TEXT,                      -- espresso_notes (oeffentlich)
+  private_notes   TEXT,                      -- nur fuer den Eigentuemer geliefert
   raw_json        TEXT NOT NULL,             -- kompletter API-Response
+  updated_at      INTEGER NOT NULL,          -- Unix-Sekunden, Cursor fuer updated_after
   synced_at       TEXT NOT NULL
 );
 
@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS shot_series (     -- 1 Zeile pro Messpunkt
   weight      REAL,
   temp_mix    REAL,
   temp_basket REAL,
+  state_change REAL,                         -- espresso_state_change, Phasenmarke fuer pi_end (M3)
   PRIMARY KEY (shot_id, elapsed)
 );
 
@@ -56,3 +57,4 @@ CREATE TABLE IF NOT EXISTS sync_state (      -- Key-Value: letzter Lauf, Cursor,
 
 CREATE INDEX IF NOT EXISTS idx_shots_bean ON shots(bean_brand, bean_type, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_shots_started ON shots(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_shots_updated ON shots(updated_at DESC);

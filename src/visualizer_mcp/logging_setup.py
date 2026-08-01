@@ -96,4 +96,8 @@ def setup_logging(level: str = "INFO", secrets: Iterable[str] = ()) -> None:
         noisy = logging.getLogger(name)
         noisy.handlers.clear()
         noisy.propagate = True
+    # httpx loggt jede Anfrage einzeln; der Sync-Worker fasst selbst zusammen.
+    # Auf DEBUG bleiben die Einzelanfragen sichtbar.
+    if root.level > logging.DEBUG:
+        logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
