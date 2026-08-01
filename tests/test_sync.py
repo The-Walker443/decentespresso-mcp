@@ -13,10 +13,15 @@ from visualizer_mcp.sync import (
     STATE_BACKFILL_DONE,
     STATE_CURSOR,
     STATE_NO_PROFILE,
-    backfill_semantic_hashes,
+    reparse_profiles,
     run_sync,
 )
-from visualizer_mcp.tcl_profile import parse_profile, semantic_hash, version_hash
+from visualizer_mcp.tcl_profile import (
+    PARSER_VERSION,
+    parse_profile,
+    semantic_hash,
+    version_hash,
+)
 from visualizer_mcp.visualizer_client import ShotNotFound
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
@@ -330,35 +335,74 @@ async def test_semantic_hash_groups_cosmetically_identical_versions(
     assert len({r["semantic_hash"] for r in rows}) == 1, "gebrüht wird identisch"
 
 
-def test_backfill_semantic_hashes_fills_older_rows(db: Database) -> None:
-    raw = (FIXTURES / "profile_default_a.tcl").read_text(encoding="utf-8")
-    parsed = parse_profile(raw)
-    # Zustand vor Migration 002 nachstellen: Version ohne semantic_hash.
+def _store_stale_profile(db: Database, raw: str) -> int:
+    """Legt eine Version so ab, wie ein aelterer Parser sie hinterlassen haette."""
+    stale = {"title": "Alt", "parse_ok": True, "steps": [], "parser_version": 1}
     profile_id, _ = db.upsert_profile(
-        name=parsed["title"], version_hash=version_hash(raw), semantic_hash=None,
-        raw_tcl=raw, parsed_json=json.dumps(parsed), profile_notes=None,
+        name="Alt", version_hash=version_hash(raw), semantic_hash=None,
+        raw_tcl=raw, parsed_json=json.dumps(stale), profile_notes=None,
         seen_at="2026-08-01T10:00:00Z",
     )
-    assert len(db.profiles_missing_semantic_hash()) == 1
-
-    assert backfill_semantic_hashes(db) == 1
-    assert backfill_semantic_hashes(db) == 0, "idempotent"
-
-    stored = db._conn.execute(
-        "SELECT semantic_hash FROM profiles WHERE id = ?", (profile_id,)
-    ).fetchone()["semantic_hash"]
-    assert stored == semantic_hash(parsed)
+    return profile_id
 
 
-def test_backfill_leaves_unparsable_profiles_null(db: Database) -> None:
-    broken = parse_profile("profile_title {Kaputt\n")
+def test_reparse_updates_profiles_from_an_older_parser(db: Database) -> None:
+    raw = (FIXTURES / "profile_default_a.tcl").read_text(encoding="utf-8")
+    profile_id = _store_stale_profile(db, raw)
+
+    assert reparse_profiles(db) == 1
+    assert reparse_profiles(db) == 0, "idempotent"
+
+    row = db._conn.execute(
+        "SELECT name, parsed_json, semantic_hash, raw_tcl FROM profiles WHERE id = ?",
+        (profile_id,),
+    ).fetchone()
+    fresh = parse_profile(raw)
+
+    assert row["name"] == fresh["title"] == "Default"
+    assert json.loads(row["parsed_json"])["parser_version"] == PARSER_VERSION
+    assert json.loads(row["parsed_json"])["legacy_settings"]["target_pressure_bar"] == 8.6
+    assert row["semantic_hash"] == semantic_hash(fresh)
+    assert row["raw_tcl"] == raw, "das Roh-TCL bleibt unangetastet"
+
+
+def test_reparse_keeps_the_version_hash(db: Database) -> None:
+    # Die Identitaet einer Version haengt an der Datei, nicht an unserer Deutung.
+    raw = (FIXTURES / "profile_default_a.tcl").read_text(encoding="utf-8")
+    _store_stale_profile(db, raw)
+    before = db._conn.execute("SELECT version_hash FROM profiles").fetchone()[0]
+
+    reparse_profiles(db)
+
+    after = db._conn.execute("SELECT version_hash FROM profiles").fetchone()[0]
+    assert before == after == version_hash(raw)
+
+
+def test_reparse_leaves_unparsable_profiles_null(db: Database) -> None:
+    broken_tcl = "profile_title {Kaputt\n"
     db.upsert_profile(
         name="Kaputt", version_hash="deadbeef", semantic_hash=None,
-        raw_tcl="profile_title {Kaputt\n", parsed_json=json.dumps(broken),
+        raw_tcl=broken_tcl, parsed_json=json.dumps({"parser_version": 1}),
         profile_notes=None, seen_at="2026-08-01T10:00:00Z",
     )
-    assert backfill_semantic_hashes(db) == 0
-    assert len(db.profiles_missing_semantic_hash()) == 1
+    assert reparse_profiles(db) == 1
+
+    row = db._conn.execute("SELECT semantic_hash, parsed_json FROM profiles").fetchone()
+    assert row["semantic_hash"] is None
+    assert json.loads(row["parsed_json"])["parse_ok"] is False
+    assert reparse_profiles(db) == 0, "auch der Fehlerfall wird nicht endlos wiederholt"
+
+
+def test_reparse_leaves_current_profiles_alone(db: Database) -> None:
+    raw = (FIXTURES / "profile_default_a.tcl").read_text(encoding="utf-8")
+    parsed = parse_profile(raw)
+    db.upsert_profile(
+        name=parsed["title"], version_hash=version_hash(raw),
+        semantic_hash=semantic_hash(parsed), raw_tcl=raw,
+        parsed_json=json.dumps(parsed), profile_notes=parsed.get("notes"),
+        seen_at="2026-08-01T10:00:00Z",
+    )
+    assert reparse_profiles(db) == 0
 
 
 async def test_profiles_are_backfilled_for_shots_synced_before_m2(

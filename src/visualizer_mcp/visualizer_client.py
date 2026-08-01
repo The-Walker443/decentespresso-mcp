@@ -66,6 +66,17 @@ class Unreachable(VisualizerError):
     code = "visualizer_unreachable"
 
 
+class RequestRejected(VisualizerError):
+    """Ein 4xx, das kein Wiederholen rechtfertigt (400, 403, 405, 422, ...).
+
+    Ohne diese Klasse waere daraus eine ``httpx.HTTPStatusError`` geworden - die
+    faengt der Sync-Worker nicht, und ein einzelner abweisender Endpunkt haette
+    den ganzen Lauf beendet.
+    """
+
+    code = "visualizer_rejected"
+
+
 class RateLimited(VisualizerError):
     code = "rate_limited"
 
@@ -162,6 +173,7 @@ class VisualizerClient:
     async def _get(
         self, path: str, *, params: dict[str, Any] | None = None,
         etag: str | None = None, accept: str | None = None,
+        not_found_statuses: tuple[int, ...] = (404,),
     ) -> httpx.Response:
         headers: dict[str, str] = {}
         if etag:
@@ -187,13 +199,19 @@ class VisualizerClient:
                     # Muss vor raise_for_status() raus: httpx wertet 304 als
                     # Redirect-Fehler, obwohl es die erwartete ETag-Antwort ist.
                     return response
-                if response.status_code == 401:
+                if response.status_code in (401, 403):
                     raise AuthFailed(
-                        "Visualizer lehnt die Anmeldung ab (401) - "
+                        f"Visualizer lehnt den Zugriff ab ({response.status_code}) - "
                         "VISUALIZER_EMAIL/VISUALIZER_PASSWORD pruefen."
                     )
-                if response.status_code == 404:
+                if response.status_code in not_found_statuses:
                     raise ShotNotFound(f"Nicht gefunden: {path}")
+                if 400 <= response.status_code < 500 and response.status_code != 429:
+                    # Kein Retry: die Anfrage ist falsch, nicht der Zeitpunkt.
+                    raise RequestRejected(
+                        f"Visualizer weist die Anfrage ab ({response.status_code}) "
+                        f"fuer {path}."
+                    )
                 if response.status_code == 429 or response.status_code >= 500:
                     last_error = (
                         RateLimited("Visualizer drosselt (429).")
@@ -275,18 +293,28 @@ class VisualizerClient:
             return None
         return response.json()
 
+    #: Am Profil-Endpunkt heisst 422 laut API-Doku "Shot has no profile" - fuer
+    #: uns dasselbe wie 404 und kein Grund, es erneut zu versuchen.
+    _PROFILE_NOT_FOUND = (404, 422)
+
     async def get_profile_tcl(self, shot_id: str) -> str:
         """``GET /shots/{id}/profile`` - Rohprofil, Content-Type application/x-tcl."""
-        response = await self._get(f"/shots/{shot_id}/profile")
+        response = await self._get(
+            f"/shots/{shot_id}/profile", not_found_statuses=self._PROFILE_NOT_FOUND
+        )
         return response.text
 
     async def get_profile_json(self, shot_id: str) -> dict[str, Any]:
         """``GET /shots/{id}/profile?format=json`` - von Visualizer geparstes Profil.
 
-        Dient in M2 als Gegenprobe zum eigenen TCL-Parser; die Versionierung
-        haengt weiterhin am Hash des Roh-TCL (SPEC ss5).
+        Dient als Gegenprobe zum eigenen TCL-Parser; die Versionierung haengt
+        weiterhin am Hash des Roh-TCL (SPEC ss5).
         """
-        response = await self._get(f"/shots/{shot_id}/profile", params={"format": "json"})
+        response = await self._get(
+            f"/shots/{shot_id}/profile",
+            params={"format": "json"},
+            not_found_statuses=self._PROFILE_NOT_FOUND,
+        )
         return response.json()
 
 

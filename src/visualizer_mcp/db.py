@@ -412,17 +412,32 @@ class Database:
             self._conn.commit()
             return int(cursor.lastrowid), True
 
-    def profiles_missing_semantic_hash(self) -> list[sqlite3.Row]:
-        """Versionen, die vor Migration 002 angelegt wurden (``id``, ``parsed_json``)."""
+    def all_profiles_for_reparse(self) -> list[sqlite3.Row]:
+        """Alle Versionen mit Roh-TCL - Grundlage fuer ein Neu-Parsen."""
         with self._lock:
             return list(self._conn.execute(
-                "SELECT id, parsed_json FROM profiles WHERE semantic_hash IS NULL"
+                "SELECT id, raw_tcl, parsed_json, semantic_hash FROM profiles ORDER BY id"
             ))
 
-    def set_profile_semantic_hash(self, profile_id: int, value: str | None) -> None:
+    def update_profile_parse(
+        self,
+        profile_id: int,
+        *,
+        name: str,
+        parsed_json: str,
+        semantic_hash: str | None,
+        profile_notes: str | None,
+    ) -> None:
+        """Schreibt das Ergebnis eines Neu-Parsens.
+
+        ``raw_tcl`` und ``version_hash`` bleiben unangetastet - die Identitaet
+        einer Version haengt an der Datei, nicht an unserer Deutung.
+        """
         with self._lock:
             self._conn.execute(
-                "UPDATE profiles SET semantic_hash = ? WHERE id = ?", (value, profile_id)
+                "UPDATE profiles SET name = ?, parsed_json = ?, semantic_hash = ?, "
+                "profile_notes = ? WHERE id = ?",
+                (name, parsed_json, semantic_hash, profile_notes, profile_id),
             )
             self._conn.commit()
 

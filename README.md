@@ -130,6 +130,20 @@ rechnet dann alles neu, ohne Migration und ohne Re-Sync. Ein erneuter Upsert
 eines Shots verwirft dessen Cache ebenfalls, weil Zeitreihe, Dosis und
 Bezugsgewicht sich geaendert haben koennen.
 
+### Profile: `libtk8.6` ist Pflicht
+
+SPEC ss7.1 parst mit `tkinter.Tcl()`. In `python:*-slim` ist `_tkinter`
+einkompiliert, die Tk-Laufzeitbibliotheken fehlen aber — schon `import tkinter`
+scheitert dort an `ImportError: libtk8.6.so: cannot open shared object file`.
+Das Dockerfile installiert deshalb `libtk8.6`; wird die Zeile entfernt, macht
+der Smoke-Step im Build-Workflow den Build rot.
+
+Als zweite Sicherung ist der Import weich: faellt der Interpreter aus, parst
+`tcl_profile.py` mit einem eigenen Listensplitter weiter, statt den Dienst
+sterben zu lassen. Beide Wege werden auf **allen** Fixtures gegeneinander
+geprueft, inklusive der Frage, welche Eingaben sie ablehnen; ein Test simuliert
+zusaetzlich den Importfehler.
+
 ### Profile: was der Parser leistet und was nicht
 
 Der eigene Parser ist die Referenz — an dem TCL, das er liest, haengt auch der
@@ -340,8 +354,20 @@ Probleme auf einmal auf.
 - Kein Secret in Logs oder Tool-Antworten: die Redaction sitzt im Log-Formatter und
   erfasst auch Tracebacks und Fremdbibliotheken. Getestet in
   `tests/test_logging_redaction.py`.
+- Die Redaction kennt nicht nur das Klartextpasswort, sondern auch den
+  base64-Teil des `Authorization`-Headers — die Form, in der es tatsaechlich
+  ueber die Leitung geht. Zusaetzlich maskiert ein Ausdruck jeden
+  `Authorization`-Header unabhaengig vom Inhalt.
+- Ist das Passwort kuerzer als 8 Zeichen, warnt der Server beim Start: so kurze
+  Werte laesst der Filter bewusst durch, weil er sonst zufaellige
+  Uebereinstimmungen im Text zerschiessen wuerde.
 - uvicorn-Access-Logs sind aus — sie wuerden den Secret-Pfad jeder Anfrage
   protokollieren.
+- `/healthz` ist ueber den Tunnel erreichbar, solange das Ingress den Hostnamen
+  pauschal weiterleitet. Die Route liefert nur `ok` — keine Zahlen, keine
+  Version, kein Hinweis auf den Secret-Pfad. Wer sie schliessen will, ergaenzt
+  im `cloudflared`-Ingress vor der Catch-all-Regel einen Eintrag mit
+  `path: ^/healthz$` und `service: http_status:404` (SPEC ss10.1).
 - Container: non-root (UID 10001), `read_only: true`, `no-new-privileges`, nur
   `/data` und `/tmp` beschreibbar.
 
@@ -370,15 +396,35 @@ werden beim Start automatisch angewendet und rueckwirkend befuellt.
 `version_hash` (sha256 des normalisierten Roh-TCL) ist die **Identitaet** einer
 Profilversion — daran haengt die Verknuepfung eines Shots, und sie bleibt
 unangetastet. `semantic_hash` ist reine **Gruppierung**: er laeuft ueber eine
-kanonisierte Form der bruehrelevanten Felder aus `parsed_json` (Schritte mit
-Modus, Zielwert, Temperatur, Dauer, Uebergang und *aktiver* Abbruchbedingung;
-dazu Typ, Getraenkeart, Zielgewicht und Zieltemperatur).
+kanonisierte Form der bruehrelevanten Felder aus `parsed_json`:
 
-Nicht enthalten: `title`, `author`, `notes`, der Name eines Schrittes und alle
-per `exit_if 0` deaktivierten Schwellwerte. Anlass war ein Echtfall — zwei
-Versionen des Default-Profils unterschieden sich nur durch zwei leere
-Zusatzschluessel und ein doppeltes Leerzeichen in den Notizen. Bei nicht
-parsebaren Profilen ist der Wert `NULL`.
+- Typ, Getraenkeart, Zielgewicht, Zieltemperatur
+- bei Advanced-Profilen die Schritte mit Modus, Zielwert, Temperatur, Dauer,
+  Uebergang und *aktiver* Abbruchbedingung
+- bei Legacy-Profilen der Block `legacy_settings` — Zieldruck bzw. Ziel-Flow,
+  Hold- und Decline-Zeiten, Praeinfusionsparameter, Begrenzer und die
+  Temperaturstufen, sofern eingeschaltet
+
+Nicht enthalten: `title`, `author`, `notes`, der Name eines Schrittes, alle per
+`exit_if 0` deaktivierten Schwellwerte und die Kopf-Sollwerte des jeweils
+*anderen* Profiltyps — die DE1-App schreibt `flow_profile_*` auch in ein
+Druckprofil, wertet sie dort aber nicht aus. Bei nicht parsebaren Profilen ist
+der Wert `NULL`.
+
+Anlass fuer den Hash war ein Echtfall: zwei Versionen des Default-Profils
+unterschieden sich nur durch zwei leere Zusatzschluessel und ein doppeltes
+Leerzeichen in den Notizen. Anlass fuer `legacy_settings` war die Gegenprobe —
+ohne die Kopf-Sollwerte waeren zwei Versionen mit 8,6 und 8,9 bar Bruehdruck
+semantisch gleich gewesen.
+
+### Neu-Parsen nach Parseraenderungen
+
+`parsed_json` traegt eine `parser_version`. Aendert sich, welche Felder der
+Parser liefert, wird `PARSER_VERSION` in `tcl_profile.py` hochgezaehlt; der
+naechste Start parst dann alle Profile aus dem gespeicherten `raw_tcl` neu und
+schreibt `parsed_json`, `semantic_hash`, Name und Notizen fort. `raw_tcl` und
+`version_hash` bleiben unberuehrt — die Identitaet einer Version haengt an der
+Datei, nicht an unserer Deutung. Kein Re-Sync, keine Migration.
 
 ## Abnahme auf dem Host
 

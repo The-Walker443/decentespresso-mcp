@@ -8,7 +8,6 @@ dependencies = [
     "httpx>=0.27",
 ]
 
-# apscheduler kommt erst mit M1 (Sync-Worker) dazu - siehe SPEC ss3.
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",

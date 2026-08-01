@@ -66,15 +66,72 @@ jobs:
             type=raw,value=latest
             type=sha,format=long
 
-      - uses: docker/build-push-action@v6
+      # Erst lokal laden, damit der Smoke-Test im *gebauten* Image laufen kann.
+      # Der zweite Build weiter unten trifft dank Cache nur noch den Push.
+      - name: Build (lokal laden)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: visualizer-mcp:smoke
+          # Baucache zwischen Laeufen: der pip-Schritt dominiert die Laufzeit.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke-Test im gebauten Image
+        # Prueft genau das, was sich lokal nicht pruefen laesst: dass der
+        # Profilparser im Container laeuft.
+        #
+        # Der Interpreter wird hier *erzwungen*. In python:*-slim ist _tkinter
+        # einkompiliert, aber ohne libtk8.6 scheitert 'import tkinter' an
+        # "libtk8.6.so: cannot open shared object file". Faellt die apt-Zeile im
+        # Dockerfile weg, soll der Build rot werden - nicht der Container beim
+        # Start. Genau dieser Absturz ist einmal in Produktion passiert.
+        run: |
+          docker run --rm visualizer-mcp:smoke python - <<'PY'
+          import tkinter                     # bricht ohne libtk8.6 sofort ab
+          from visualizer_mcp.tcl_profile import (
+              TCL_IMPORT_ERROR, TCL_INTERPRETER_AVAILABLE, parse_profile, semantic_hash,
+          )
+
+          assert TCL_INTERPRETER_AVAILABLE, (
+              "Tcl-Interpreter fehlt im Image - libtk8.6 im Dockerfile pruefen. "
+              f"Importfehler: {TCL_IMPORT_ERROR}"
+          )
+          print(f"Tcl-Interpreter im Image: ok (Tk {tkinter.TkVersion})")
+
+          raw = (
+              "advanced_shot {}\n"
+              "author Decent\n"
+              "beverage_type espresso\n"
+              "espresso_pressure 8.9\n"
+              "espresso_temperature 88.0\n"
+              "final_desired_shot_weight 40.0\n"
+              "preinfusion_time 20\n"
+              "profile_title {Smoke Test}\n"
+              "profile_notes {Zwei Zeilen\nmit Umbruch}\n"
+              "settings_profile_type settings_2a\n"
+          )
+          parsed = parse_profile(raw)
+          assert parsed["parse_ok"] is True, parsed
+          assert parsed["title"] == "Smoke Test", parsed["title"]
+          assert parsed["type"] == "pressure", parsed["type"]
+          assert parsed["legacy_settings"]["target_pressure_bar"] == 8.9
+          assert "\n" in parsed["notes"], "mehrzeilige Klammer nicht erkannt"
+          assert semantic_hash(parsed)
+
+          import visualizer_mcp.server  # noqa: F401  - App-Import muss tragen
+          print("Profilparser im Image: ok")
+          PY
+
+      - name: Push
+        uses: docker/build-push-action@v6
         with:
           context: .
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          # Baucache zwischen Laeufen: der pip-Schritt dominiert die Laufzeit.
           cache-from: type=gha
-          cache-to: type=gha,mode=max
 
       - name: Summary
         run: |

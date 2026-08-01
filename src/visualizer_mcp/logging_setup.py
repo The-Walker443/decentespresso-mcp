@@ -18,8 +18,9 @@ from typing import Any
 REDACTED = "***REDACTED***"
 
 #: Kuerzere Werte werden nicht ersetzt - sonst zerlegt ein Passwort wie "abc"
-#: jede zweite Logzeile.
-_MIN_REDACT_LEN = 8
+#: jede zweite Logzeile. ``Config.startup_warnings`` weist darauf hin, wenn das
+#: konfigurierte Passwort darunter liegt.
+MIN_REDACT_LEN = 8
 
 _RESERVED = frozenset(logging.LogRecord("", 0, "", 0, "", None, None).__dict__) | {
     "message",
@@ -58,7 +59,7 @@ def redact(text: str, secrets: Iterable[str]) -> str:
     Header-Ausdruck faengt zusaetzlich ab, was hier niemand kennt.
     """
     for secret in secrets:
-        if secret and len(secret) >= _MIN_REDACT_LEN:
+        if secret and len(secret) >= MIN_REDACT_LEN:
             text = text.replace(secret, REDACTED)
     return _AUTH_HEADER.sub(_mask_auth, text)
 

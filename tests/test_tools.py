@@ -261,7 +261,7 @@ async def test_curve_respects_max_points_and_keeps_the_peaks(mcp) -> None:
         assert curve["t"][0] == 0.0
         assert curve["t"][-1] == pytest.approx(22.95, abs=0.01)
         assert metrics["t_peak"] == pytest.approx(
-            min(curve["t"], key=lambda t: abs(t - metrics["t_peak"])), abs=0.05
+            min(curve["t"], key=lambda t: abs(t - metrics["t_peak"])), abs=0.051
         )
         assert max(curve["p"]) == pytest.approx(metrics["max_pressure_global"], abs=0.05)
 
@@ -269,6 +269,27 @@ async def test_curve_respects_max_points_and_keeps_the_peaks(mcp) -> None:
 async def test_max_points_is_capped_at_400(mcp) -> None:
     curve = (await call(mcp, "get_shot", {"id": REFERENCE, "max_points": 9999}))["curve"]
     assert len(curve["t"]) <= 400
+
+
+@pytest.mark.parametrize("max_points", [1, 2, 3])
+async def test_tiny_budget_still_keeps_the_mandatory_points(mcp, max_points: int) -> None:
+    """Pflichtpunkte haben Vorrang vor max_points.
+
+    Sonst schnitte ein max_points=2 den Druckpeak weg, obwohl er als garantiert
+    beschrieben ist. Die Kurve wird dadurch hoechstens vier Punkte lang.
+    """
+    metrics = await call(mcp, "get_shot_metrics", {"id": REFERENCE})
+    curve = (await call(
+        mcp, "get_shot", {"id": REFERENCE, "max_points": max_points}
+    ))["curve"]
+
+    assert len(curve["t"]) <= 4
+    assert curve["t"][0] == 0.0
+    assert curve["t"][-1] == pytest.approx(22.95, abs=0.01)
+    for wanted in (metrics["t_peak"], metrics["t_max_pressure_global"]):
+        # Metrikzeiten sind auf 0.1 s gerundet, Kurvenzeiten auf 0.01 s - der
+        # naechstgelegene Punkt darf also bis zu 0.05 s daneben liegen.
+        assert min(abs(t - wanted) for t in curve["t"]) <= 0.051
 
 
 async def test_missing_channels_are_omitted(db: Database, config: Config) -> None:

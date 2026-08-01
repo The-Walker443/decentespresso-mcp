@@ -63,6 +63,8 @@ def main(argv: list[str] | None = None) -> int:
 
     setup_logging(config.log_level, secrets=config.secret_values())
     log = logging.getLogger("visualizer_mcp")
+    for warning in config.startup_warnings():
+        log.warning(warning)
 
     if args.backfill or args.sync_once:
         return asyncio.run(_run_sync_cli(config, full=args.backfill))

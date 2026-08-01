@@ -16,7 +16,7 @@ from typing import Any
 
 from .db import Database, utc_now_iso
 from .metrics import warm_metrics_cache
-from .tcl_profile import parse_profile, semantic_hash, version_hash
+from .tcl_profile import PARSER_VERSION, parse_profile, semantic_hash, version_hash
 from .visualizer_client import (
     ShotNotFound,
     VisualizerClient,
@@ -70,36 +70,52 @@ def open_database(db_path: str) -> Database:
     """
     db = Database(db_path)
     db.migrate()
-    backfill_semantic_hashes(db)
+    reparse_profiles(db)
     warm_metrics_cache(db)
     return db
 
 
-def backfill_semantic_hashes(db: Database) -> int:
-    """Berechnet ``semantic_hash`` fuer Versionen aus der Zeit vor Migration 002.
+def reparse_profiles(db: Database) -> int:
+    """Parst Profile neu, deren ``parsed_json`` von einem aelteren Parser stammt.
 
-    Laeuft aus ``parsed_json``, nicht aus dem Roh-TCL - es geht um genau die
-    semantische Sicht, die der Parser schon erzeugt hat. Idempotent.
+    Ausgangspunkt ist das gespeicherte ``raw_tcl``, nicht das alte
+    ``parsed_json`` - ein neuer Parser liefert per Definition andere Felder, die
+    im alten JSON gar nicht stehen. ``version_hash`` bleibt unberuehrt: die
+    Identitaet einer Version haengt an der Datei, nicht an unserer Deutung.
+
+    Idempotent; laeuft bei jedem Start und tut nichts, wenn alles aktuell ist.
     """
-    pending = db.profiles_missing_semantic_hash()
-    if not pending:
-        return 0
-    filled = 0
-    for row in pending:
+    changed = 0
+    for row in db.all_profiles_for_reparse():
         try:
-            parsed = json.loads(row["parsed_json"])
+            previous = json.loads(row["parsed_json"])
         except json.JSONDecodeError:
+            previous = {}
+        stale = (
+            previous.get("parser_version") != PARSER_VERSION
+            or (row["semantic_hash"] is None and previous.get("parse_ok"))
+        )
+        if not stale:
             continue
-        value = semantic_hash(parsed)
-        if value is None:
-            # parse_ok=false: es gibt keine semantische Sicht. NULL ist korrekt,
-            # der Datensatz wird bei jedem Start erneut geprueft (billig).
-            continue
-        db.set_profile_semantic_hash(row["id"], value)
-        filled += 1
-    if filled:
-        log.info("semantic hashes backfilled", extra={"fields": {"profiles": filled}})
-    return filled
+
+        parsed = parse_profile(row["raw_tcl"])
+        db.update_profile_parse(
+            row["id"],
+            name=parsed.get("title") or "(ohne Titel)",
+            parsed_json=json.dumps(parsed, ensure_ascii=False),
+            # parse_ok=false liefert None - ohne Parse gibt es keine
+            # semantische Sicht, NULL ist die richtige Aussage.
+            semantic_hash=semantic_hash(parsed),
+            profile_notes=parsed.get("notes"),
+        )
+        changed += 1
+
+    if changed:
+        log.info(
+            "profiles reparsed",
+            extra={"fields": {"profiles": changed, "parser_version": PARSER_VERSION}},
+        )
+    return changed
 
 
 async def run_sync(

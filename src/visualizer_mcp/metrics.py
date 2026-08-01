@@ -239,6 +239,12 @@ def downsample_curve(
     ueberrepraesentiert. Garantiert enthalten sind erster und letzter Punkt
     sowie jeder Zeitpunkt aus ``keep_times`` (die beiden Druckmaxima).
 
+    Diese Pflichtpunkte haben Vorrang vor ``max_points``: ist das Budget
+    kleiner als ihre Anzahl, kommen trotzdem alle zurueck. Andernfalls koennte
+    ein ``max_points=2`` den Druckpeak wegschneiden, obwohl er als garantiert
+    beschrieben ist. Die Kurve ist damit hoechstens vier Punkte laenger als
+    angefordert.
+
     Rueckgabe sind parallele Arrays (``t``, ``p``, ``fi``, ``fo``, ``w``,
     ``tb``) statt einer Objektliste - das spart rund 60 % Zeichen. Kanaele
     ohne einen einzigen Messwert fehlen ganz.
@@ -254,11 +260,14 @@ def downsample_curve(
         if wanted is not None:
             mandatory.add(min(range(len(times)), key=lambda i: abs(times[i] - wanted)))
 
-    if len(ordered) <= budget:
+    # Pflichtpunkte duerfen nie wegfallen - notfalls wird das Budget angehoben.
+    effective = max(budget, len(mandatory))
+
+    if len(ordered) <= effective:
         chosen = range(len(ordered))
     else:
         span = times[-1] - times[0]
-        slots = max(0, budget - len(mandatory))
+        slots = max(0, effective - len(mandatory))
         picked = set(mandatory)
         if slots and span > 0:
             for step in range(slots):
@@ -266,7 +275,7 @@ def downsample_curve(
                 picked.add(min(range(len(times)), key=lambda i: abs(times[i] - target)))
         # Die Rasterpunkte koennen auf Pflichtpunkte fallen; dann bleibt die
         # Auswahl kleiner als das Budget, nie groesser.
-        chosen = sorted(picked)[:budget]
+        chosen = sorted(picked)[:effective]
 
     curve: dict[str, list[float | None]] = {
         "t": [_round(times[i], CURVE_ROUNDING["t"]) for i in chosen]

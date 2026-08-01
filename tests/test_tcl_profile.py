@@ -10,9 +10,11 @@ import pytest
 
 from visualizer_mcp.tcl_profile import (
     PROFILE_TYPE_BY_SETTINGS,
+    TCL_INTERPRETER_AVAILABLE,
     normalize_tcl,
     parse_profile,
     semantic_hash,
+    split_list,
     version_hash,
 )
 
@@ -85,6 +87,43 @@ def test_legacy_profile_has_no_steps(legacy: dict) -> None:
     assert legacy["target_weight_g"] == 40.0
 
 
+# ---------------------------------------------------------- legacy_settings
+
+
+def test_legacy_settings_capture_the_head_values(legacy: dict) -> None:
+    """Ohne Schritte stecken die Sollwerte eines Legacy-Profils hier."""
+    settings = legacy["legacy_settings"]
+    assert settings["target_pressure_bar"] == 8.9
+    assert settings["hold_time_s"] == 4
+    assert settings["decline_time_s"] == 35
+    assert settings["pressure_end_bar"] == 6
+    assert settings["preinfusion_time_s"] == 20
+    assert settings["preinfusion_stop_pressure_bar"] == 4
+    assert settings["preinfusion_flow_rate_mls"] == 8
+    # espresso_temperature_steps_enabled ist 1 -> die Stufen zaehlen.
+    assert settings["temperature_steps_c"] == [88, 86, 86, 86]
+
+
+def test_pressure_profile_omits_the_unused_flow_block(legacy: dict) -> None:
+    # Die DE1-App schreibt flow_profile_* auch in ein Druckprofil, wertet sie
+    # dort aber nicht aus - mitgehasht ergaeben sie Scheinversionen.
+    assert "flow_profile_hold" in tcl("profile_recent.tcl")
+    assert not any(k.startswith("flow_") for k in legacy["legacy_settings"])
+
+
+def test_advanced_profile_has_no_legacy_settings(advanced: dict) -> None:
+    # Dort sind dieselben Felder Altlasten ohne Wirkung.
+    assert "espresso_pressure 6.0" in tcl("profile_reference.tcl")
+    assert advanced["legacy_settings"] is None
+
+
+def test_disabled_temperature_steps_are_omitted(legacy: dict) -> None:
+    raw = tcl("profile_recent.tcl").replace(
+        "espresso_temperature_steps_enabled 1", "espresso_temperature_steps_enabled 0"
+    )
+    assert "temperature_steps_c" not in parse_profile(raw)["legacy_settings"]
+
+
 def test_notes_survive_multiline_braces(advanced: dict) -> None:
     assert advanced["notes"].startswith("A simple to use profiling system")
     assert "Downloaded from Visualizer" in advanced["notes"]
@@ -151,6 +190,51 @@ def test_brewing_change_changes_the_semantic_hash() -> None:
     assert sem("profile_default_a.tcl") != sem("profile_default_b.tcl")
 
 
+def test_pressure_only_change_changes_the_semantic_hash() -> None:
+    """Der Fall, der den legacy_settings-Block noetig gemacht hat.
+
+    Die Fixture unterscheidet sich von profile_default_a.tcl in genau einer
+    Zeile: espresso_pressure 8.6 -> 8.9, Temperatur unveraendert. Ohne die
+    Kopf-Sollwerte im Hash waeren beide Versionen semantisch gleich gewesen -
+    obwohl mit einem Bar mehr gebrueht wird.
+    """
+    base = tcl("profile_default_a.tcl")
+    louder = tcl("profile_default_a_pressure_only.tcl")
+
+    diff = [(a, b) for a, b in zip(base.splitlines(), louder.splitlines(), strict=True)
+            if a != b]
+    assert diff == [("espresso_pressure 8.6", "espresso_pressure 8.9")]
+
+    assert parse_profile(base)["target_temp_c"] == parse_profile(louder)["target_temp_c"]
+    assert sem("profile_default_a.tcl") != sem("profile_default_a_pressure_only.tcl")
+
+
+@pytest.mark.parametrize(
+    ("original", "replacement"),
+    [
+        ("espresso_hold_time 4", "espresso_hold_time 9"),
+        ("espresso_decline_time 35", "espresso_decline_time 20"),
+        ("pressure_end 6.0", "pressure_end 4.0"),
+        ("preinfusion_time 20", "preinfusion_time 12"),
+        ("preinfusion_stop_pressure 4.0", "preinfusion_stop_pressure 3.0"),
+        ("espresso_temperature_1 86.0", "espresso_temperature_1 84.0"),
+    ],
+)
+def test_every_legacy_head_value_moves_the_hash(original: str, replacement: str) -> None:
+    raw = tcl("profile_recent.tcl")
+    assert original in raw
+    changed = raw.replace(original, replacement)
+    assert semantic_hash(parse_profile(raw)) != semantic_hash(parse_profile(changed))
+
+
+def test_unused_flow_block_does_not_move_the_hash() -> None:
+    # Gegenprobe: an einem Druckprofil ist flow_profile_hold wirkungslos.
+    raw = tcl("profile_recent.tcl")
+    changed = raw.replace("flow_profile_hold 2", "flow_profile_hold 7")
+    assert version_hash(raw) != version_hash(changed)
+    assert semantic_hash(parse_profile(raw)) == semantic_hash(parse_profile(changed))
+
+
 def test_semantic_hash_ignores_title_author_and_notes() -> None:
     raw = tcl("profile_reference.tcl")
     edited = (
@@ -202,6 +286,144 @@ def test_semantic_hash_is_none_for_unparsable_profiles() -> None:
 
 def test_semantic_hash_differs_between_unrelated_profiles() -> None:
     assert sem("profile_reference.tcl") != sem("profile_recent.tcl")
+
+
+# ------------------------------------------------- Parser ohne Tcl-Interpreter
+#
+# Der Interpreter ist der vorgesehene Weg; libtk8.6 im Dockerfile sorgt dafuer,
+# dass er auch im Container laeuft. Faellt er trotzdem aus, darf der Server
+# nicht sterben - der eigene Listensplitter muss dann dasselbe liefern wie der
+# Interpreter. Hier auf allen Fixtures gegengeprueft.
+
+
+def test_module_import_survives_a_broken_tkinter(monkeypatch) -> None:
+    """Der Produktionsfall: _tkinter da, libtk8.6.so nicht.
+
+    Damals starb der Container beim Import. Das Modul muss stattdessen laden,
+    ``TCL_INTERPRETER_AVAILABLE`` auf False setzen, den Grund festhalten und
+    weiterparsen.
+    """
+    import builtins
+    import importlib
+    import sys
+
+    real_import = builtins.__import__
+
+    def refuse_tkinter(name, *args, **kwargs):
+        if name == "tkinter" or name.startswith("tkinter."):
+            raise ImportError("libtk8.6.so: cannot open shared object file")
+        return real_import(name, *args, **kwargs)
+
+    module = sys.modules["visualizer_mcp.tcl_profile"]
+    monkeypatch.setattr(builtins, "__import__", refuse_tkinter)
+    monkeypatch.delitem(sys.modules, "tkinter", raising=False)
+    try:
+        crippled = importlib.reload(module)
+
+        assert crippled.TCL_INTERPRETER_AVAILABLE is False
+        assert "libtk8.6.so" in crippled.TCL_IMPORT_ERROR
+
+        parsed = crippled.parse_profile(tcl("profile_recent.tcl"))
+        assert parsed["parse_ok"] is True
+        assert parsed["title"] == "Default"
+        assert parsed["legacy_settings"]["target_pressure_bar"] == 8.9
+        assert crippled.semantic_hash(parsed)
+    finally:
+        # Zustand wiederherstellen, sonst sehen alle folgenden Tests das
+        # verkrueppelte Modul.
+        monkeypatch.undo()
+        importlib.reload(module)
+
+    assert module.TCL_INTERPRETER_AVAILABLE is TCL_INTERPRETER_AVAILABLE
+
+ALL_TCL_FIXTURES = sorted(p.name for p in FIXTURES.glob("*.tcl"))
+
+
+def test_there_are_fixtures_to_compare() -> None:
+    assert len(ALL_TCL_FIXTURES) >= 5
+
+
+@pytest.mark.skipif(
+    not TCL_INTERPRETER_AVAILABLE, reason="ohne tkinter gibt es nichts zu vergleichen"
+)
+@pytest.mark.parametrize("name", ALL_TCL_FIXTURES)
+def test_both_backends_split_identically(name: str) -> None:
+    raw = tcl(name)
+    assert split_list(raw, prefer_tcl=True) == split_list(raw, prefer_tcl=False)
+
+
+@pytest.mark.skipif(
+    not TCL_INTERPRETER_AVAILABLE, reason="ohne tkinter gibt es nichts zu vergleichen"
+)
+@pytest.mark.parametrize("name", ALL_TCL_FIXTURES)
+def test_both_backends_parse_identically(name: str) -> None:
+    raw = tcl(name)
+    with_tcl = parse_profile(raw, prefer_tcl=True)
+    without = parse_profile(raw, prefer_tcl=False)
+    assert with_tcl == without
+    assert semantic_hash(with_tcl) == semantic_hash(without)
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("a b c", ["a", "b", "c"]),
+        ("  a   b  ", ["a", "b"]),
+        ("a {b c} d", ["a", "b c", "d"]),
+        ("a {b {c d} e}", ["a", "b {c d} e"]),          # Verschachtelung bleibt roh
+        ("a {}", ["a", ""]),                             # leere Klammer
+        ('a "b c" d', ["a", "b c", "d"]),                # Anfuehrungszeichen
+        (r'a "b\nc"', ["a", "b\nc"]),                    # Ersetzung in Quotes
+        (r"a {b\nc}", ["a", r"b\nc"]),                   # keine Ersetzung in Klammern
+        ("a\nb\tc", ["a", "b", "c"]),                    # Zeilenumbruch trennt
+        ("", []),
+    ],
+)
+def test_fallback_split_matches_tcl_semantics(raw: str, expected: list[str]) -> None:
+    assert split_list(raw, prefer_tcl=False) == expected
+    if TCL_INTERPRETER_AVAILABLE:
+        assert split_list(raw, prefer_tcl=True) == expected
+
+
+#: Kaputte Listen. Tcl wirft TclError, der Fallback ValueError - parse_profile
+#: faengt beides. Entscheidend ist, dass beide *dieselben* Eingaben ablehnen.
+BROKEN_LISTS = ["{unbalanciert", 'a "offen', "a {b}c"]
+
+#: Sieht kaputt aus, ist es aber nicht: eine schliessende Klammer im blanken
+#: Wort ist in Tcl ein normales Zeichen.
+ODD_BUT_VALID = {
+    "a {b} c}": ["a", "b", "c}"],
+    "a }b": ["a", "}b"],
+    "a b{c": ["a", "b{c"],
+}
+
+
+@pytest.mark.parametrize("raw", BROKEN_LISTS)
+def test_fallback_rejects_broken_lists(raw: str) -> None:
+    with pytest.raises(ValueError):
+        split_list(raw, prefer_tcl=False)
+
+
+@pytest.mark.skipif(not TCL_INTERPRETER_AVAILABLE, reason="braucht tkinter")
+@pytest.mark.parametrize("raw", BROKEN_LISTS)
+def test_tcl_rejects_the_same_inputs(raw: str) -> None:
+    from visualizer_mcp.tcl_profile import TclError
+
+    with pytest.raises((TclError, ValueError)):
+        split_list(raw, prefer_tcl=True)
+
+
+@pytest.mark.parametrize(("raw", "expected"), ODD_BUT_VALID.items())
+def test_odd_but_valid_lists_are_accepted(raw: str, expected: list[str]) -> None:
+    assert split_list(raw, prefer_tcl=False) == expected
+    if TCL_INTERPRETER_AVAILABLE:
+        assert split_list(raw, prefer_tcl=True) == expected
+
+
+def test_parse_without_tcl_survives_broken_input() -> None:
+    parsed = parse_profile("profile_title {Kaputt\n", prefer_tcl=False)
+    assert parsed["parse_ok"] is False
+    assert parsed["title"] == "Kaputt"
 
 
 # ------------------------------------------------------------------ Robustheit

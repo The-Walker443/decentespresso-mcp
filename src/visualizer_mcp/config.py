@@ -76,6 +76,25 @@ class Config:
         raw = f"{self.visualizer_email}:{self.visualizer_password}".encode()
         return base64.b64encode(raw).decode()
 
+    def startup_warnings(self) -> list[str]:
+        """Nicht-fatale Befunde, die beim Start ins Log gehoeren.
+
+        Getrennt von ``ConfigError``: das hier verhindert keinen Start, sollte
+        aber auffallen.
+        """
+        from .logging_setup import MIN_REDACT_LEN
+
+        warnings: list[str] = []
+        if len(self.visualizer_password) < MIN_REDACT_LEN:
+            # Der Log-Filter laesst zu kurze Werte durch, weil er sonst jede
+            # zufaellige Uebereinstimmung im Text zerschiessen wuerde. Ein so
+            # kurzes Passwort kann also in einer Logzeile stehenbleiben.
+            warnings.append(
+                f"VISUALIZER_PASSWORD ist kuerzer als {MIN_REDACT_LEN} Zeichen und "
+                "wird deshalb NICHT aus Logs entfernt. Bitte ein laengeres setzen."
+            )
+        return warnings
+
     def secret_values(self) -> tuple[str, ...]:
         """Werte, die der Log-Filter (``logging_setup``) nie durchlassen darf.
 

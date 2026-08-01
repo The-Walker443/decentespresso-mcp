@@ -1,7 +1,21 @@
 FROM python:3.12-slim
 
-# Kein 'tk'-Paket: der TCL-Parser (M2) nutzt tkinter.Tcl(), das ohne X-Display
-# laeuft. Erst nachziehen, falls sich das im Container widerlegt (SPEC ss7.1).
+# libtk8.6 ist fuer den Profilparser noetig (SPEC ss7.1).
+#
+# Das Modul _tkinter IST in python:*-slim einkompiliert - was fehlt, sind die
+# Tk-Laufzeitbibliotheken, gegen die es linkt. Ohne sie scheitert schon
+# 'import tkinter' mit:
+#     ImportError: libtk8.6.so: cannot open shared object file
+# libtk8.6 zieht libtcl8.6 und die noetigen X11-Bibliotheken als Abhaengigkeiten
+# mit; das Metapaket 'tk' (mit wish und Werkzeugen) braucht es nicht.
+#
+# Der Smoke-Step im Build-Workflow prueft, dass der Interpreter im fertigen
+# Image wirklich laeuft - faellt diese Zeile weg, wird der Build rot statt der
+# Container.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends libtk8.6 \
+    && rm -rf /var/lib/apt/lists/*
+
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \

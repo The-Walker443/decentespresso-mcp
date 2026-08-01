@@ -13,9 +13,11 @@ import pytest
 from visualizer_mcp.visualizer_client import (
     AuthFailed,
     RateLimiter,
+    RequestRejected,
     ShotNotFound,
     Unreachable,
     VisualizerClient,
+    VisualizerError,
 )
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
@@ -80,6 +82,57 @@ async def test_429_is_retried_then_succeeds() -> None:
     async with make_client(handler) as client:
         assert await client.get_me() == {"id": "x"}
     assert calls["n"] == 3
+
+
+async def test_422_on_the_profile_endpoint_means_no_profile() -> None:
+    # Laut API-Doku heisst 422 dort "Shot has no profile" - fuer uns dasselbe
+    # wie 404 und kein Grund fuer einen erneuten Versuch.
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(422, json={"error": "Shot has no profile"})
+
+    async with make_client(handler) as client:
+        with pytest.raises(ShotNotFound):
+            await client.get_profile_tcl("shot-ohne-profil")
+        with pytest.raises(ShotNotFound):
+            await client.get_profile_json("shot-ohne-profil")
+
+    assert calls["n"] == 2, "kein Retry"
+
+
+async def test_422_elsewhere_is_a_rejection_not_a_missing_shot() -> None:
+    # Auf /shots bedeutet 422 "Invalid pagination/sort/updated_after".
+    async with make_client(lambda r: httpx.Response(422, json={"error": "bad"})) as c:
+        with pytest.raises(RequestRejected) as excinfo:
+            await c.list_shots(page=0)
+    assert excinfo.value.code == "visualizer_rejected"
+
+
+@pytest.mark.parametrize("status", [400, 405, 409, 418])
+async def test_unexpected_4xx_becomes_a_structured_error(status: int) -> None:
+    # Frueher waere daraus eine httpx.HTTPStatusError geworden, die der
+    # Sync-Worker nicht faengt - ein Endpunkt haette den Lauf beendet.
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(status, text="nope")
+
+    async with make_client(handler) as client:
+        with pytest.raises(RequestRejected) as excinfo:
+            await client.get_me()
+
+    assert isinstance(excinfo.value, VisualizerError)
+    assert str(status) in str(excinfo.value)
+    assert calls["n"] == 1, "4xx wird nicht wiederholt"
+
+
+async def test_403_is_treated_as_auth_failure() -> None:
+    async with make_client(lambda r: httpx.Response(403, json={"error": "nope"})) as c:
+        with pytest.raises(AuthFailed):
+            await c.get_me()
 
 
 async def test_persistent_5xx_gives_up_with_unreachable() -> None:

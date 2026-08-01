@@ -210,10 +210,38 @@ steps = [dict_from(tcl.splitlist(s))  # advanced_shot: Liste von Step-Strings
          for s in tcl.splitlist(d["advanced_shot"])]
 ```
 
-(Läuft headless ohne Display; im Container Paket `tk` nur falls nötig — zuerst ohne
-testen, `Tcl()` braucht kein X. Fallback bei Parse-Fehler: Rohtext speichern,
+(Läuft headless ohne Display. Fallback bei Parse-Fehler: Rohtext speichern,
 `profile_notes`/`title` per tolerantem Zeilen-Scan extrahieren, Flag
 `parse_ok=false` im JSON.)
+
+**Container-Umgebung (Fassung 1.1, nach einem Produktionsabsturz präzisiert):**
+Der Entwurf lag richtig — `Tcl()` braucht kein X —, aber `python:*-slim`
+braucht trotzdem eine Zutat. `_tkinter` ist dort einkompiliert, die
+Tk-Laufzeitbibliotheken fehlen jedoch; schon `import tkinter` scheitert an
+
+```
+ImportError: libtk8.6.so: cannot open shared object file
+```
+
+Das Dockerfile installiert deshalb `libtk8.6`
+(`apt-get install -y --no-install-recommends libtk8.6`, zieht `libtcl8.6` und
+die nötigen X11-Bibliotheken als Abhängigkeiten mit). Das Metapaket `tk` mit
+`wish` und Werkzeugen ist nicht nötig.
+
+Zwei Sicherungen, damit derselbe Fehler nicht zweimal in Produktion auffällt:
+
+- Der Import von `tkinter` in `tcl_profile.py` ist weich. Fällt der Interpreter
+  aus, setzt das Modul `TCL_INTERPRETER_AVAILABLE = False`, hält den Grund in
+  `TCL_IMPORT_ERROR` fest und parst mit einem eigenen Listensplitter
+  (`_split_tcl_list`) weiter — blanke Wörter, `{...}` mit Verschachtelung und
+  Zeilenumbrüchen, `"..."` mit Backslash-Ersetzungen, keine Ersetzung innerhalb
+  von Klammern. Ein Profilparser ist kein Grund, den Dienst nicht zu starten.
+  Ein Test simuliert den Importfehler und prüft genau das.
+- Der Smoke-Step im Build-Workflow **erzwingt** den Interpreter im fertigen
+  Image. Fehlt die apt-Zeile, wird der Build rot statt der Container.
+
+Beide Parser-Wege werden auf allen Fixtures gegeneinander geprüft, inklusive
+der Frage, welche Eingaben sie ablehnen.
 
 **Parser-Output (`parsed_json`):**
 
@@ -318,7 +346,27 @@ Maßnahmen (v1, pragmatisch):
 1. **Geheimer Pfad statt Auth:** MCP-Endpoint unter
    `https://<hostname>/<MCP_PATH_SECRET>/mcp` mit `MCP_PATH_SECRET` = 32+ Zeichen
    zufällig (`openssl rand -hex 24`). Alle anderen Pfade → 404 ohne Body.
-   `/healthz` nur ohne Secret-Pfad intern (Docker-Healthcheck), nicht im Tunnel-Ingress.
+
+   **Ausnahme `/healthz`** (Stand der Umsetzung, korrigiert gegenüber dem
+   Entwurf): Die Route liegt auf derselben ASGI-App wie der MCP-Endpoint und
+   ist damit über den Tunnel erreichbar, sofern das Ingress den Hostnamen
+   pauschal weiterleitet — was die Vorlage in §11.4 tut. Sie liefert
+   ausschließlich `ok` als Text: keine Bestandszahlen, keine Version, kein
+   Hinweis auf den Secret-Pfad. Der Informationsgewinn für einen Scanner
+   beschränkt sich darauf, dass hinter dem Hostnamen überhaupt etwas läuft —
+   das verrät ein 404 mit TLS-Handshake ohnehin.
+
+   Wer sie dennoch schließen will, ergänzt vor der Catch-all-Regel im
+   `cloudflared`-Ingress:
+
+   ```yaml
+   - hostname: coffee-mcp.example.com
+     path: ^/healthz$
+     service: http_status:404
+   ```
+
+   Der Docker-Healthcheck bleibt davon unberührt, er spricht `127.0.0.1:8000`
+   im Container an und geht nie durch den Tunnel.
 2. **Kein Cloudflare Access davor** — Access würde Claudes Verbindungsaufbau
    blockieren. Stattdessen in Cloudflare: Rate-Limiting-Regel (z. B. 100 req/min)
    und Bot-Fight-Mode für den Hostname aus/anpassen, WAF-Standardregeln an.

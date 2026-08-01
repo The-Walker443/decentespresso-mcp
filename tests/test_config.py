@@ -123,6 +123,22 @@ def test_all_problems_are_reported_at_once(valid_env: dict[str, str]) -> None:
     assert len(excinfo.value.problems) >= 3
 
 
+def test_short_password_triggers_a_startup_warning(valid_env: dict[str, str]) -> None:
+    # Der Log-Filter laesst zu kurze Werte durch - das muss auffallen, darf den
+    # Start aber nicht verhindern.
+    valid_env["VISUALIZER_PASSWORD"] = "kurz123"      # 7 Zeichen
+    config = Config.from_env(valid_env)
+
+    warnings = config.startup_warnings()
+    assert len(warnings) == 1
+    assert "VISUALIZER_PASSWORD" in warnings[0]
+    assert "NICHT aus Logs entfernt" in warnings[0]
+
+
+def test_long_enough_password_warns_about_nothing(config: Config) -> None:
+    assert config.startup_warnings() == []
+
+
 def test_repr_hides_password_and_secret(config: Config) -> None:
     text = repr(config)
     assert TEST_PASSWORD not in text
