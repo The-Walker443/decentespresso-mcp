@@ -7,6 +7,7 @@ Fehler und wirft sie gebuendelt.
 
 from __future__ import annotations
 
+import base64
 import os
 import re
 from collections.abc import Mapping
@@ -65,6 +66,16 @@ class Config:
         """SPEC ss4: hoefliches Pollen mit identifizierbarem UA inkl. Kontaktadresse."""
         return f"visualizer-mcp/{__version__} (privat, {self.visualizer_email})"
 
+    @property
+    def basic_auth_token(self) -> str:
+        """Der base64-Teil des ``Authorization: Basic``-Headers.
+
+        Eine Redaction, die nur das Klartextpasswort kennt, laesst genau die
+        Form durch, in der das Passwort tatsaechlich ueber die Leitung geht.
+        """
+        raw = f"{self.visualizer_email}:{self.visualizer_password}".encode()
+        return base64.b64encode(raw).decode()
+
     def secret_values(self) -> tuple[str, ...]:
         """Werte, die der Log-Filter (``logging_setup``) nie durchlassen darf.
 
@@ -72,7 +83,7 @@ class Config:
         User-Agent und waere sonst in genau der Zeile unkenntlich, die man beim
         Debuggen eines 401 braucht. Kritisch ist das Passwort, nicht die Kennung.
         """
-        return (self.visualizer_password, self.mcp_path_secret)
+        return (self.visualizer_password, self.mcp_path_secret, self.basic_auth_token)
 
     def __repr__(self) -> str:
         return (

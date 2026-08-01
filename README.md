@@ -205,7 +205,7 @@ set -a; . ./.env; set +a
 python -m visualizer_mcp
 ```
 
-## Deployment
+## Deployment A: docker compose auf dem Host
 
 ```bash
 cp .env.example .env
@@ -231,6 +231,57 @@ ingress:
 
 `/healthz` sollte nicht ueber den Tunnel erreichbar sein (SPEC ss10.1) — der
 Docker-Healthcheck spricht den Container direkt an.
+
+## Deployment B: Portainer + GitHub Container Registry
+
+Siehe SPEC ss16. Der Unterschied zu A: das Image wird nicht auf dem Host gebaut,
+sondern von GitHub Actions, und Portainer zieht es aus `ghcr.io`.
+
+### Einmalig einrichten
+
+1. **Repo auf GitHub pushen.** Der Workflow
+   [.github/workflows/build-image.yaml](.github/workflows/build-image.yaml)
+   laeuft bei jedem Push auf `main`: erst `ruff` und `pytest`, dann Build und
+   Push nach `ghcr.io/<owner>/<repo>` mit den Tags `latest` und `sha-<commit>`.
+   Ein eigenes Secret ist nicht noetig — der Runner bringt `GITHUB_TOKEN` mit.
+
+2. **Ist das Repo privat**, ist auch das Paket privat. Entweder das Paket
+   oeffentlich schalten (GitHub → Packages → Package settings → Change
+   visibility; das Image enthaelt keine Credentials, die kommen erst zur
+   Laufzeit) oder in Portainer unter *Registries → Add registry → Custom* die
+   Registry `ghcr.io` mit GitHub-Login und einem PAT mit `read:packages`
+   hinterlegen.
+
+3. **Stack in Portainer anlegen:** *Stacks → Add stack → Repository* (auf
+   [compose.portainer.yaml](compose.portainer.yaml) zeigen) oder *Web editor*
+   mit dem Inhalt dieser Datei.
+
+4. **Stack-Variablen setzen** (Portainer, Abschnitt *Environment variables*):
+
+   | Variable | Beispiel |
+   |---|---|
+   | `IMAGE_REPOSITORY` | `ghcr.io/<owner>/visualizer-mcp` |
+   | `IMAGE_TAG` | `latest` |
+   | `VISUALIZER_EMAIL` | dein Visualizer-Login |
+   | `VISUALIZER_PASSWORD` | dein Visualizer-Passwort |
+   | `MCP_PATH_SECRET` | `openssl rand -hex 24` |
+   | `PUBLIC_BASE_URL` | `https://<hostname>` |
+   | `CLOUDFLARED_NETWORK` | Name des vorhandenen Tunnel-Netzes |
+   | `SYNC_INTERVAL_MIN` | `15` (optional) |
+
+5. **Deploy the stack.** Beim ersten Start legt Docker das benannte Volume
+   `visualizer_mcp_data` an — mit der Eigentuemerschaft aus dem Image, das
+   haendische `chown 10001` entfaellt hier also.
+
+### Aktualisieren
+
+Nach einem Push auf `main` wartet man den Workflow ab und drueckt in Portainer
+*Stacks → visualizer-mcp → Update the stack* mit angehaktem **Re-pull image**.
+Ohne den Haken bleibt der alte Layer liegen, weil sich der Tag `latest` nicht
+geaendert hat.
+
+Zurueckrollen: `IMAGE_TAG` auf `sha-<commit>` einer aelteren Version setzen und
+den Stack aktualisieren.
 
 ### Connector-URL
 
@@ -328,6 +379,117 @@ per `exit_if 0` deaktivierten Schwellwerte. Anlass war ein Echtfall — zwei
 Versionen des Default-Profils unterschieden sich nur durch zwei leere
 Zusatzschluessel und ein doppeltes Leerzeichen in den Notizen. Bei nicht
 parsebaren Profilen ist der Wert `NULL`.
+
+## Abnahme auf dem Host
+
+Vier der sechs Kriterien aus SPEC ss13 laufen automatisch
+([tests/test_acceptance.py](tests/test_acceptance.py), je Test mit seiner
+Nummer). Zwei brauchen die echte Maschine bzw. Docker. Diese Reihenfolge
+abarbeiten:
+
+### 0. Vorbedingung — Image existiert
+
+```bash
+docker compose build                       # Deployment A
+# oder: Workflow auf GitHub gruen, Paket unter ghcr.io sichtbar (Deployment B)
+```
+
+**Erfolg:** Build laeuft ohne Fehler durch. Erwartete Stolpersteine: fehlendes
+`tk` (sollte *nicht* auftreten — `tkinter.Tcl()` laeuft ohne X, unter Windows
+verifiziert, im slim-Image aber erst hier bewiesen) und ein `pip install`, das
+Netzzugriff braucht.
+
+### 1. Erststart
+
+```bash
+docker compose up -d && docker compose logs -f
+```
+
+**Erfolg:** in den Logs erscheinen nacheinander
+`migrations applied files=001_init.sql,002_...,003_...`,
+`sync worker started`, dann `sync done mode=backfill new=<n> ... errors=0`.
+Das deckt **Kriterium 1** ab. Kein `docker logs`-Eintrag darf das Passwort, den
+`MCP_PATH_SECRET` oder einen `Authorization`-Header enthalten (**Kriterium 6**,
+Stichprobe):
+
+```bash
+docker compose logs | grep -iE 'authorization|<die-ersten-8-zeichen-des-secrets>'
+```
+
+**Erfolg:** keine Treffer, oder nur Zeilen mit `***REDACTED***`.
+
+### 2. Healthcheck
+
+```bash
+docker inspect --format '{{.State.Health.Status}}' visualizer-mcp
+```
+
+**Erfolg:** `healthy` (kann bis zu 75 s dauern — `start_period` 15 s plus ein
+Intervall).
+
+### 3. Kriterium 5 — Neustart ohne Datenverlust
+
+```bash
+docker compose exec visualizer-mcp python -c \
+  "import sqlite3;print(sqlite3.connect('/data/shots.db').execute('select count(*) from shots').fetchone())"
+docker compose restart
+# 30 s warten, dann denselben Befehl erneut
+```
+
+**Erfolg:** gleiche Anzahl vorher und nachher, Healthcheck wieder `healthy`,
+keine `migrations applied`-Zeile beim zweiten Start (die Migrationen sind
+bereits verbucht).
+
+### 4. Connector einbinden
+
+```bash
+docker compose exec visualizer-mcp visualizer-mcp --print-connector-url
+```
+
+Die ausgegebene URL in claude.ai unter Einstellungen → Connectors → *Add custom
+connector* eintragen, OAuth-Felder leer lassen.
+
+**Erfolg:** Der Connector verbindet sich, und im Chat erscheinen unter „+" neun
+Tools. Testfrage: *„Wie ist der Stand meines Espresso-Archivs?"* → `status()`
+antwortet mit der Shot-Zahl. Verbindet er sich nicht, zuerst pruefen:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' https://<hostname>/<secret>/mcp
+```
+
+**Erfolg:** `400` oder `405`, **nicht** `404`. Ein `404` heisst falscher Pfad
+oder falsches Secret; ein `502` heisst, cloudflared erreicht den Container nicht
+(gleiches Docker-Netz? Servicename im Ingress korrekt?).
+
+### 5. Kriterium 2 — neuer Bezug erscheint rechtzeitig
+
+Einen Espresso ziehen und per DYE zu Visualizer hochladen. Uhrzeit des Uploads
+notieren. Dann in claude.ai fragen: *„Zeig mir meinen letzten Shot."*
+
+**Erfolg:** `get_shot("latest")` liefert den neuen Bezug. Das darf **sofort**
+klappen — der Frische-Check synchronisiert, wenn der letzte Abgleich mehr als
+zwei Minuten her ist, und `freshness.synced` steht dann auf `true`. Ohne
+Nachfrage taucht der Bezug spaetestens nach `SYNC_INTERVAL_MIN` + 1 min in
+`list_shots` auf; das ist die Schranke aus Kriterium 2.
+
+Kommt nichts an:
+
+```bash
+docker compose exec visualizer-mcp visualizer-mcp --sync-once
+```
+
+Die JSON-Ausgabe zeigt `new_shots`, `errors` und `warnings` im Klartext.
+
+### 6. Kriterium 4 — Profilaenderung an der Maschine
+
+Ein Profil auf der DE1 aendern (z. B. Temperatur um 1 Grad), einen Bezug ziehen,
+hochladen. Dann in claude.ai: *„Welche Profilversionen gibt es?"*
+
+**Erfolg:** `list_profiles()` zeigt fuer dieses Profil eine Version mehr als
+vorher, und der aeltere Bezug haengt weiterhin an seinem alten `version_hash`.
+Aendert sich nur der `version_hash`, nicht aber der `semantic_hash`, war die
+Aenderung kosmetisch — dann hat die Maschine die Datei umformatiert, ohne dass
+sich am Bezug etwas aendert.
 
 ## Backup
 

@@ -165,9 +165,19 @@ def build_mcp(
 
         Bei mehr Treffern als `limit` kommt `next_cursor` zurueck; diesen Wert
         unveraendert als `cursor` erneut schicken.
+
+        Auf der ersten Seite (ohne `cursor`) prueft der Server vorher auf
+        Frische und gleicht ab, wenn der letzte Sync mehr als zwei Minuten her
+        ist; das Ergebnis steht in `freshness`. Beim Blaettern unterbleibt das
+        bewusst - ein Abgleich mitten in der Paginierung koennte die
+        Treffermenge unter dem Cursor verschieben.
         """
         capped = max(1, min(int(limit), MAX_LIMIT))
         offset = _decode_cursor(cursor)
+
+        freshness = None
+        if cursor is None and coordinator is not None:
+            freshness = await _refresh(coordinator)
         rows, total = await asyncio.to_thread(
             db.query_shots,
             bean=bean, roaster=roaster, profile=profile,
@@ -179,11 +189,14 @@ def build_mcp(
             metrics = await asyncio.to_thread(metrics_for_shot, db, row["id"])
             shots.append(_compact_shot(row, metrics))
         following = offset + len(rows)
-        return {
+        payload: dict[str, Any] = {
             "shots": shots,
             "total_matching": total,
             "next_cursor": _encode_cursor(following) if following < total else None,
         }
+        if freshness is not None:
+            payload["freshness"] = freshness
+        return payload
 
     @mcp.tool(annotations=READ_ONLY)
     async def get_shot(
@@ -472,7 +485,11 @@ def build_mcp(
 
 
 async def _refresh(coordinator: SyncCoordinator) -> dict[str, Any]:
-    """Frische-Check fuer ``get_shot("latest")``. Fehler brechen nichts ab."""
+    """Frische-Check fuer ``get_shot("latest")`` und die erste ``list_shots``-Seite.
+
+    Ein Fehler bricht nichts ab: der Bestand ist da, nur vielleicht nicht
+    taufrisch - das ist eine bessere Antwort als gar keine.
+    """
     try:
         result = await coordinator.ensure_fresh(QUICK_SYNC_MAX_AGE_S)
     except VisualizerError as exc:

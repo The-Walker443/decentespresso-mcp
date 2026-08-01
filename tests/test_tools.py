@@ -537,3 +537,49 @@ async def test_id_other_than_latest_never_syncs(config: Config, db: Database) ->
 
     await call(build_mcp(config, db, coordinator), "get_shot", {"id": REFERENCE})
     assert coordinator.runs == 0
+
+
+async def test_list_shots_first_page_syncs_when_stale(config: Config, db: Database) -> None:
+    db.set_state("last_sync_at", "2020-01-01T00:00:00Z")
+    coordinator = RecordingCoordinator(db)
+
+    result = await call(build_mcp(config, db, coordinator), "list_shots", {"limit": 2})
+
+    assert coordinator.runs == 1
+    assert result["freshness"]["synced"] is True
+
+
+async def test_list_shots_first_page_skips_sync_when_fresh(
+    config: Config, db: Database
+) -> None:
+    from visualizer_mcp.db import utc_now_iso
+
+    db.set_state("last_sync_at", utc_now_iso())
+    coordinator = RecordingCoordinator(db)
+
+    result = await call(build_mcp(config, db, coordinator), "list_shots")
+
+    assert coordinator.runs == 0
+    assert result["freshness"]["synced"] is False
+
+
+async def test_list_shots_does_not_sync_while_paginating(
+    config: Config, db: Database
+) -> None:
+    # Ein Abgleich mitten in der Paginierung koennte die Treffermenge unter dem
+    # Cursor verschieben.
+    db.set_state("last_sync_at", "2020-01-01T00:00:00Z")
+    coordinator = RecordingCoordinator(db)
+    mcp = build_mcp(config, db, coordinator)
+
+    first = await call(mcp, "list_shots", {"limit": 2})
+    assert coordinator.runs == 1
+    assert first["next_cursor"] is not None
+
+    second = await call(mcp, "list_shots", {"limit": 2, "cursor": first["next_cursor"]})
+    assert coordinator.runs == 1, "Folgeseiten loesen keinen Abgleich aus"
+    assert "freshness" not in second
+
+
+async def test_list_shots_without_coordinator_has_no_freshness(mcp) -> None:
+    assert "freshness" not in await call(mcp, "list_shots")

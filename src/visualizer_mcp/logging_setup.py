@@ -10,6 +10,7 @@ die Stellen, an denen ein Secret sonst durchrutscht.
 from __future__ import annotations
 
 import logging
+import re
 import sys
 from collections.abc import Iterable, Mapping
 from typing import Any
@@ -29,12 +30,37 @@ _RESERVED = frozenset(logging.LogRecord("", 0, "", 0, "", None, None).__dict__) 
 }
 
 
+#: Faengt Authorization-Header unabhaengig davon ab, welches Geheimnis darin
+#: steckt - auch eines, das die Konfiguration gar nicht kennt (Fremdbibliothek,
+#: Weiterleitung, kuenftiges OAuth-Token).
+#: Die Redaction laeuft auf dem bereits formatierten Text, in dem
+#: Anfuehrungszeichen escapt sind (\"authorization\": \"Basic ...\") - der
+#: Ausdruck muss den Backslash also mitlesen.
+_AUTH_HEADER = re.compile(
+    r"(authorization(?:\\?[\"'])?\s*[:=]\s*(?:\\?[\"'])?)"
+    r"(?:(basic|bearer|digest)\s+)?"
+    r"([^\s\"',}\]\\]{4,})",
+    re.IGNORECASE,
+)
+
+
+def _mask_auth(match: re.Match[str]) -> str:
+    scheme = f"{match.group(2)} " if match.group(2) else ""
+    return f"{match.group(1)}{scheme}{REDACTED}"
+
+
 def redact(text: str, secrets: Iterable[str]) -> str:
-    """Ersetzt jedes Secret im Text durch ``***REDACTED***``."""
+    """Ersetzt bekannte Geheimnisse und jeden Authorization-Header.
+
+    Zwei Stufen, weil die erste allein nicht reicht: das Passwort geht als
+    base64 ueber die Leitung, nicht im Klartext. Die Konfiguration liefert
+    deshalb auch den kodierten Token mit (``Config.basic_auth_token``), und der
+    Header-Ausdruck faengt zusaetzlich ab, was hier niemand kennt.
+    """
     for secret in secrets:
         if secret and len(secret) >= _MIN_REDACT_LEN:
             text = text.replace(secret, REDACTED)
-    return text
+    return _AUTH_HEADER.sub(_mask_auth, text)
 
 
 def _fmt_value(value: Any) -> str:

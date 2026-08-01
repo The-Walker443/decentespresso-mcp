@@ -132,5 +132,9 @@ def test_repr_hides_password_and_secret(config: Config) -> None:
     assert "shots@example.org" in text
 
 
-def test_secret_values_cover_password_and_path_secret(config: Config) -> None:
-    assert set(config.secret_values()) == {TEST_PASSWORD, TEST_SECRET}
+def test_secret_values_cover_password_path_secret_and_wire_token(config: Config) -> None:
+    # Der base64-Token gehoert dazu: so geht das Passwort tatsaechlich raus.
+    assert set(config.secret_values()) == {
+        TEST_PASSWORD, TEST_SECRET, config.basic_auth_token
+    }
+    assert TEST_PASSWORD not in config.basic_auth_token

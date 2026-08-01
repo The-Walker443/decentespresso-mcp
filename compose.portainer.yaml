@@ -1,0 +1,72 @@
+# Stack-Definition fuer Portainer (SPEC ss16).
+#
+# Unterschiede zu compose.yaml (lokal, baut selbst):
+#   - zieht ein fertiges Image aus ghcr.io statt zu bauen
+#   - benanntes Volume statt Bind-Mount: Docker legt es mit der Eigentuemer-
+#     schaft aus dem Image an, das haendische chown 10001 auf dem Host entfaellt
+#   - keine .env-Datei: Portainer setzt die ${VAR} aus den Stack-Variablen
+#
+# Zu setzende Variablen (Portainer -> Stack -> Environment variables):
+#   IMAGE_REPOSITORY   z. B. ghcr.io/<owner>/visualizer-mcp
+#   IMAGE_TAG          latest  (oder ein sha-... fuer eine feste Version)
+#   VISUALIZER_EMAIL
+#   VISUALIZER_PASSWORD
+#   MCP_PATH_SECRET    openssl rand -hex 24
+#   PUBLIC_BASE_URL    https://<hostname>
+#   CLOUDFLARED_NETWORK  Name des vorhandenen Tunnel-Netzes
+
+services:
+  visualizer-mcp:
+    image: ${IMAGE_REPOSITORY}:${IMAGE_TAG:-latest}
+    container_name: visualizer-mcp
+    restart: unless-stopped
+
+    environment:
+      VISUALIZER_EMAIL: ${VISUALIZER_EMAIL}
+      VISUALIZER_PASSWORD: ${VISUALIZER_PASSWORD}
+      MCP_PATH_SECRET: ${MCP_PATH_SECRET}
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
+      SYNC_INTERVAL_MIN: ${SYNC_INTERVAL_MIN:-15}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      TZ: ${TZ:-Europe/Berlin}
+      DB_PATH: /data/shots.db
+
+    volumes:
+      - visualizer_mcp_data:/data
+
+    networks:
+      - tunnel
+
+    # Keine Host-Ports: erreichbar nur ueber das interne Docker-Netz (SPEC ss10.4).
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - "no-new-privileges:true"
+
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/healthz')"
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+    logging:
+      # Ohne Deckel waechst das Log unbegrenzt - der Container laeuft dauerhaft.
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  visualizer_mcp_data:
+    name: visualizer_mcp_data
+
+networks:
+  tunnel:
+    external: true
+    name: ${CLOUDFLARED_NETWORK}

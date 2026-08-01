@@ -519,7 +519,65 @@ https://apidocs.visualizer.coffee/ verifizieren, bevor Felder festgezurrt werden
 ## 15. Bewusst verschoben (Backlog)
 
 - OAuth statt Secret-Pfad (FastMCP-Auth-Provider).
+- MCP-Prompts aus §9.3 (`dial_in_check`, `bean_history`).
 - Wochen-/Bohnen-Reports als MCP-Resource.
 - TDS-/EY-Erfassung strukturiert (falls Refraktometer angeschafft wird).
 - Import weiterer Quellen (Beanconqueror) — Schema ist darauf vorbereitet (`raw_json`).
 - Schreibende Tools (Notizen/Bewertung zurück zu Visualizer, Scope `write`).
+
+---
+
+## 16. Deployment via Portainer + GHCR
+
+Ergänzt §11 für den Fall, dass der Stack nicht per `docker compose` auf dem Host,
+sondern über Portainer verwaltet wird. §11 bleibt gültig für lokale Läufe.
+
+### 16.1 Bildbau in GitHub Actions
+
+`.github/workflows/build-image.yaml`: bei jedem Push auf `main` (außer reinen
+Doku-Änderungen) und auf Knopfdruck.
+
+1. **Job `test`** — `ruff check` und `pytest`. Bewusst als Tor: ein Image mit
+   roten Tests soll nicht in der Registry landen.
+2. **Job `build`** — `docker/build-push-action` baut aus dem vorhandenen
+   `Dockerfile` und pusht nach `ghcr.io/<owner>/<repo>`.
+
+Tags: `latest` und `sha-<commit>`. Der SHA-Tag erlaubt ein Zurückrollen auf eine
+bestimmte Version, ohne den Stack umzubauen. Authentifizierung läuft über das
+vom Runner bereitgestellte `GITHUB_TOKEN` mit `packages: write` — kein eigenes
+Secret nötig. Der Buildcache liegt in `type=gha`.
+
+### 16.2 Stack-Datei
+
+`compose.portainer.yaml`, drei Unterschiede zu `compose.yaml`:
+
+| Punkt | `compose.yaml` (lokal) | `compose.portainer.yaml` |
+|---|---|---|
+| Image | `build: .` | `image: ${IMAGE_REPOSITORY}:${IMAGE_TAG}` |
+| Daten | Bind-Mount `./data`, braucht `chown 10001` | benanntes Volume `visualizer_mcp_data` |
+| Config | `env_file: .env` | `${VAR}` aus den Portainer-Stack-Variablen |
+
+Das benannte Volume ist der wichtigere der drei: Docker legt es mit der
+Eigentümerschaft an, die `/data` im Image hat (UID 10001), womit der
+Stolperstein „Container läuft als non-root, Bind-Mount gehört root" entfällt.
+
+Alles andere aus §10.4 bleibt: `read_only: true`, `tmpfs: /tmp`,
+`no-new-privileges`, keine Host-Ports. Zusätzlich ein Deckel auf die
+Logrotation — der Container läuft dauerhaft.
+
+### 16.3 Private Repositories
+
+Ist das GitHub-Repo privat, ist auch das Paket in GHCR privat, und Portainer
+kann es nicht ohne Anmeldung ziehen. Zwei Wege:
+
+- **Paket öffentlich schalten** (GitHub → Packages → Package settings → Change
+  visibility). Das Image enthält keine Credentials — die kommen erst zur
+  Laufzeit aus den Stack-Variablen. Für dieses Projekt ausreichend.
+- **Registry in Portainer hinterlegen** (Registries → Add registry → Custom,
+  URL `ghcr.io`, Benutzername = GitHub-Login, Passwort = PAT mit
+  `read:packages`). Nötig, wenn das Paket privat bleiben soll.
+
+### 16.4 Abnahme auf dem Host
+
+Kriterium 2 und 5 aus §13 lassen sich nur dort prüfen. Die Schrittfolge samt
+Erfolgskriterien steht im README unter „Abnahme auf dem Host".
