@@ -20,7 +20,14 @@ from starlette.responses import PlainTextResponse, Response
 from . import __version__
 from .config import Config
 from .db import Database
-from .sync import STATE_BACKFILL_DONE, STATE_LAST_RESULT, STATE_LAST_SYNC, periodic_sync
+from .metrics import METRICS_VERSION
+from .sync import (
+    STATE_BACKFILL_DONE,
+    STATE_LAST_RESULT,
+    STATE_LAST_SYNC,
+    open_database,
+    periodic_sync,
+)
 from .visualizer_client import VisualizerClient
 
 log = logging.getLogger(__name__)
@@ -38,9 +45,9 @@ Zugriff auf das lokale Archiv von Espresso-Bezuegen einer Decent DE1 \
 Einheiten durchgaengig: Druck in bar, Fluss in ml/s, Gewicht/Dosis in g, \
 Temperatur in Grad Celsius, Zeit in Sekunden.
 
-Stand dieses Servers: Milestone M2. Shots, Zeitreihen und versionierte \
-Profile werden synchronisiert; abrufbar ist bisher nur `status`. Die \
-Analyse-Tools folgen.\
+Stand dieses Servers: Milestone M3. Shots, Zeitreihen, versionierte Profile \
+und abgeleitete Metriken sind archiviert; abrufbar ist bisher nur `status`. \
+Die Analyse-Tools folgen.\
 """
 
 
@@ -95,11 +102,13 @@ def _status_payload(config: Config, db: Database) -> dict[str, object]:
     return {
         "server": SERVER_NAME,
         "version": __version__,
-        "milestone": "M2",
+        "milestone": "M3",
         "shots": db.count_shots(),
         "series_points": db.count_series_points(),
         "profile_versions": db.count_profiles(),
         "shots_without_profile": missing_profiles,
+        "shots_with_metrics": db.count_metrics(METRICS_VERSION),
+        "metrics_version": METRICS_VERSION,
         "oldest_shot": oldest,
         "newest_shot": newest,
         "last_sync": last_sync,
@@ -141,8 +150,7 @@ def build_app(
     ``enable_sync`` steuert die Hintergrundschleife; ohne Angabe laeuft sie, wenn
     ``SYNC_INTERVAL_MIN > 0`` ist. Tests setzen sie explizit auf False.
     """
-    database = db or Database(config.db_path)
-    database.migrate()
+    database = db or open_database(config.db_path)
     sync_on = config.sync_interval_min > 0 if enable_sync is None else enable_sync
 
     mcp = build_mcp(config, database)

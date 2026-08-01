@@ -14,7 +14,8 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from .db import Database, utc_now_iso
-from .tcl_profile import parse_profile, version_hash
+from .metrics import warm_metrics_cache
+from .tcl_profile import parse_profile, semantic_hash, version_hash
 from .visualizer_client import (
     ShotNotFound,
     VisualizerClient,
@@ -46,6 +47,7 @@ class SyncResult:
     series_points: int = 0
     new_profile_versions: int = 0
     profiles_linked: int = 0
+    metrics_computed: int = 0
     duration_ms: int = 0
     mode: str = "incremental"
     #: Blockierend: vorübergehende Probleme, bei denen ein spaeterer Versuch
@@ -57,6 +59,46 @@ class SyncResult:
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+def open_database(db_path: str) -> Database:
+    """Datenbank oeffnen, migrieren und Nachzuegler-Felder befuellen.
+
+    Einziger Einstiegspunkt fuer Server wie CLI, damit beide denselben Zustand
+    herstellen.
+    """
+    db = Database(db_path)
+    db.migrate()
+    backfill_semantic_hashes(db)
+    warm_metrics_cache(db)
+    return db
+
+
+def backfill_semantic_hashes(db: Database) -> int:
+    """Berechnet ``semantic_hash`` fuer Versionen aus der Zeit vor Migration 002.
+
+    Laeuft aus ``parsed_json``, nicht aus dem Roh-TCL - es geht um genau die
+    semantische Sicht, die der Parser schon erzeugt hat. Idempotent.
+    """
+    pending = db.profiles_missing_semantic_hash()
+    if not pending:
+        return 0
+    filled = 0
+    for row in pending:
+        try:
+            parsed = json.loads(row["parsed_json"])
+        except json.JSONDecodeError:
+            continue
+        value = semantic_hash(parsed)
+        if value is None:
+            # parse_ok=false: es gibt keine semantische Sicht. NULL ist korrekt,
+            # der Datensatz wird bei jedem Start erneut geprueft (billig).
+            continue
+        db.set_profile_semantic_hash(row["id"], value)
+        filled += 1
+    if filled:
+        log.info("semantic hashes backfilled", extra={"fields": {"profiles": filled}})
+    return filled
 
 
 async def run_sync(
@@ -129,6 +171,7 @@ async def run_sync(
             result.updated += 1
 
     await _sync_profiles(client, db, result)
+    result.metrics_computed = await asyncio.to_thread(warm_metrics_cache, db)
 
     newest = max((int(r.get("updated_at") or 0) for r in rows), default=None)
     result.duration_ms = int((time.monotonic() - started) * 1000)
@@ -140,6 +183,7 @@ async def run_sync(
             "mode": mode, "new": result.new_shots, "updated": result.updated,
             "unchanged": result.unchanged, "points": result.series_points,
             "profiles": result.new_profile_versions, "linked": result.profiles_linked,
+            "metrics": result.metrics_computed,
             "errors": len(result.errors), "dur_ms": result.duration_ms,
         }},
     )
@@ -191,6 +235,7 @@ async def _sync_profiles(
                 db.upsert_profile,
                 name=parsed.get("title") or "(ohne Titel)",
                 version_hash=digest,
+                semantic_hash=semantic_hash(parsed),
                 raw_tcl=raw_tcl,
                 parsed_json=json.dumps(parsed, ensure_ascii=False),
                 profile_notes=parsed.get("notes"),

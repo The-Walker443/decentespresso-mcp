@@ -11,6 +11,7 @@ Die Versionierung haengt am sha256 des **normalisierten** Roh-TCL (SPEC ss5);
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import threading
 from tkinter import Tcl, TclError
@@ -57,8 +58,55 @@ def normalize_tcl(raw: str) -> str:
 
 
 def version_hash(raw: str) -> str:
-    """sha256 des normalisierten TCL, hex."""
+    """sha256 des normalisierten TCL, hex. Das ist die *Identität* einer Version."""
     return hashlib.sha256(normalize_tcl(raw).encode("utf-8")).hexdigest()
+
+
+def semantic_hash(parsed: dict[str, Any]) -> str | None:
+    """sha256 über die brührelevanten Felder von ``parsed_json``.
+
+    Zweck ist ausschliesslich **Gruppierung**: zwei Profilversionen mit gleichem
+    ``semantic_hash`` brühen identisch und unterscheiden sich nur kosmetisch
+    (Notiztext, Serialisierungsartefakte, leere Zusatzschlüssel). Die Identität
+    einer Version bleibt der ``version_hash``.
+
+    Bewusst **nicht** enthalten:
+
+    - ``title``, ``author``, ``notes`` — reine Beschriftung.
+    - Der Name eines Schrittes. Ihn umzubenennen ändert am Bezug nichts, genau
+      wie beim Profiltitel. Wäre er drin, würde eine Umbenennung dieselbe
+      Scheinversion erzeugen, die der Hash gerade vermeiden soll.
+    - Per ``exit_if 0`` deaktivierte Abbruchbedingungen — ``parse_profile``
+      liefert dafür bereits ``exit: null``, die toten Schwellwerte tauchen also
+      gar nicht erst auf.
+    - ``settings_profile_type``: redundant, ``type`` wird daraus abgeleitet.
+
+    Gibt ``None`` zurück, wenn das Profil nicht parsebar war — ohne Parse gibt es
+    keine semantische Sicht, und ein Hash über Rohtext wäre nur der
+    ``version_hash`` unter anderem Namen.
+    """
+    if not parsed.get("parse_ok"):
+        return None
+
+    canonical = {
+        "type": parsed.get("type"),
+        "beverage_type": parsed.get("beverage_type"),
+        "target_weight_g": parsed.get("target_weight_g"),
+        "target_temp_c": parsed.get("target_temp_c"),
+        "steps": [
+            {
+                "mode": step.get("mode"),
+                "target": step.get("target"),
+                "temp_c": step.get("temp_c"),
+                "duration_s": step.get("duration_s"),
+                "transition": step.get("transition"),
+                "exit": step.get("exit"),
+            }
+            for step in parsed.get("steps") or []
+        ],
+    }
+    blob = json.dumps(canonical, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
 
 
 def parse_profile(raw: str) -> dict[str, Any]:

@@ -6,7 +6,7 @@ per Custom Connector zur Analyse bereitstellt.
 
 Vollstaendige Spezifikation: [SPEC_visualizer-mcp.md](SPEC_visualizer-mcp.md).
 
-## Stand: Milestone M2 (Profilparser und -versionierung)
+## Stand: Milestone M3 (Metriken)
 
 Vorhanden:
 
@@ -22,10 +22,56 @@ Vorhanden:
 - TCL-Profilparser auf Basis von `tkinter.Tcl()`, Versionierung ueber den
   sha256 des normalisierten Roh-TCL, Verknuepfung Shot -> Profilversion
   (`tcl_profile.py`)
+- Abgeleitete Metriken nach SPEC ss8 (Fassung 1.1) mit Cache in `shot_metrics`
+  (`metrics.py`)
 - `status`-Tool mit echten Bestandszahlen
 
-Noch nicht vorhanden: Metriken (M3), die Analyse-Tools aus SPEC ss9.2 (M4).
-Siehe SPEC ss14.
+Noch nicht vorhanden: die Analyse-Tools aus SPEC ss9.2 (M4). Siehe SPEC ss14.
+
+### Metriken: `state_change` und `pi_end`
+
+`espresso_state_change` ist **keine** Phasennummer, wie SPEC ss8 urspruenglich
+annahm, sondern eine Rechteckwelle: sie springt bei jedem Phasenwechsel zwischen
+zwei Sentinelwerten (`-10000000` und `+10000000`). Nicht der Wert traegt
+Information, sondern der **Wechsel**. An den Echtdaten geprueft: die Zahl der
+Wechsel ist `Schritte - 1`, und die Zeitpunkte decken sich exakt mit den
+Schrittdauern des Profils. Der erste Wechsel liegt bei t < 0.1 s und markiert
+den Shot-Start, nicht einen Phasenwechsel.
+
+Daraus folgt fuer `pi_end`: die Marken sagen *dass* gewechselt wurde, nicht
+*wozu*. Welche Grenze die Praeinfusion beendet, geht aus ihnen allein nicht
+hervor. Der Druckanstieg dient deshalb als **Anker**, nicht als Ergebnis:
+
+> `pi_end` = die letzte Phasengrenze vor dem Moment, in dem der Druck erstmals
+> `0.6 x max_pressure_global` erreicht.
+
+Der zurueckgegebene Wert ist damit immer ein von der Maschine gemeldeter
+Phasenwechsel. Ohne Marken faellt es auf den Ankerzeitpunkt selbst zurueck (die
+Heuristik der urspruenglichen SPEC); welcher Weg griff, steht in
+`pi_end_source` (`state_change` | `heuristic`). Im gesamten Archiv griff bisher
+ausschliesslich `state_change`.
+
+### Metriken: Plausibilitaet der Waage
+
+Drei Faelle machen abgeleitete Werte unbrauchbar, statt sie stillschweigend
+falsch zu melden (SPEC ss8: fehlende Grundlage -> `null` plus `warnings`):
+
+- **Waage nicht tariert** — zeigt sie in der ersten halben Sekunde schon mehr
+  als 0.3 g, kann das nicht der Bezug sein (die Maschine praeinfundiert
+  sekundenlang). `t_first_drops` wird `null`.
+- **Mittlerer Bezugsfluss <= 0** — ein Variationskoeffizient um einen
+  Mittelwert <= 0 waere negativ und damit sinnlos. `flow_stability` wird `null`.
+- **Gewicht wird negativ** — Waage angestossen. Die Werte bleiben stehen, aber
+  eine Warnung weist darauf hin.
+
+### Metrik-Cache
+
+`shot_metrics` haelt das Ergebnis je Shot als JSON, zusammen mit der
+`metrics_version`, unter der es entstand. Aendert sich eine Definition, wird die
+Konstante `METRICS_VERSION` in `metrics.py` hochgezaehlt — der naechste Start
+rechnet dann alles neu, ohne Migration und ohne Re-Sync. Ein erneuter Upsert
+eines Shots verwirft dessen Cache ebenfalls, weil Zeitreihe, Dosis und
+Bezugsgewicht sich geaendert haben koennen.
 
 ### Profile: was der Parser leistet und was nicht
 
@@ -203,6 +249,24 @@ ersten Backfill eingezogen, damit spaeter kein Re-Sync noetig wird:
 Ausserdem: `drink_tds`, `drink_ey` und `enjoyment` werden auf `NULL` gesetzt, wenn
 Visualizer `0` liefert — das heisst dort „nicht erfasst", und eine TDS von 0 %
 wuerde jede Auswertung verzerren.
+
+`002` ergaenzt `profiles.semantic_hash`, `003` legt `shot_metrics` an. Beide
+werden beim Start automatisch angewendet und rueckwirkend befuellt.
+
+### `version_hash` vs. `semantic_hash`
+
+`version_hash` (sha256 des normalisierten Roh-TCL) ist die **Identitaet** einer
+Profilversion — daran haengt die Verknuepfung eines Shots, und sie bleibt
+unangetastet. `semantic_hash` ist reine **Gruppierung**: er laeuft ueber eine
+kanonisierte Form der bruehrelevanten Felder aus `parsed_json` (Schritte mit
+Modus, Zielwert, Temperatur, Dauer, Uebergang und *aktiver* Abbruchbedingung;
+dazu Typ, Getraenkeart, Zielgewicht und Zieltemperatur).
+
+Nicht enthalten: `title`, `author`, `notes`, der Name eines Schrittes und alle
+per `exit_if 0` deaktivierten Schwellwerte. Anlass war ein Echtfall — zwei
+Versionen des Default-Profils unterschieden sich nur durch zwei leere
+Zusatzschluessel und ein doppeltes Leerzeichen in den Notizen. Bei nicht
+parsebaren Profilen ist der Wert `NULL`.
 
 ## Backup
 

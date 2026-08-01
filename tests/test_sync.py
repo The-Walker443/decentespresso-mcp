@@ -13,8 +13,10 @@ from visualizer_mcp.sync import (
     STATE_BACKFILL_DONE,
     STATE_CURSOR,
     STATE_NO_PROFILE,
+    backfill_semantic_hashes,
     run_sync,
 )
+from visualizer_mcp.tcl_profile import parse_profile, semantic_hash, version_hash
 from visualizer_mcp.visualizer_client import ShotNotFound
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
@@ -308,6 +310,55 @@ async def test_unparsable_profile_is_still_stored_and_linked(
     assert row["raw_tcl"] == broken
     assert json.loads(row["parsed_json"])["parse_ok"] is False
     assert row["name"] == "Kaputtes Profil"
+
+
+async def test_semantic_hash_groups_cosmetically_identical_versions(
+    db: Database, details: list[dict]
+) -> None:
+    cosmetic = (FIXTURES / "profile_default_a_cosmetic.tcl").read_text(encoding="utf-8")
+    base = (FIXTURES / "profile_default_a.tcl").read_text(encoding="utf-8")
+
+    client = FakeClient(details, profiles={
+        details[0]["id"]: base,
+        details[1]["id"]: cosmetic,
+    })
+    result = await run_sync(client, db, full=True)
+
+    assert result.new_profile_versions == 2, "zwei Dateien, zwei Identitaeten"
+    rows = db.profile_overview()
+    assert len({r["version_hash"] for r in rows}) == 2
+    assert len({r["semantic_hash"] for r in rows}) == 1, "gebrüht wird identisch"
+
+
+def test_backfill_semantic_hashes_fills_older_rows(db: Database) -> None:
+    raw = (FIXTURES / "profile_default_a.tcl").read_text(encoding="utf-8")
+    parsed = parse_profile(raw)
+    # Zustand vor Migration 002 nachstellen: Version ohne semantic_hash.
+    profile_id, _ = db.upsert_profile(
+        name=parsed["title"], version_hash=version_hash(raw), semantic_hash=None,
+        raw_tcl=raw, parsed_json=json.dumps(parsed), profile_notes=None,
+        seen_at="2026-08-01T10:00:00Z",
+    )
+    assert len(db.profiles_missing_semantic_hash()) == 1
+
+    assert backfill_semantic_hashes(db) == 1
+    assert backfill_semantic_hashes(db) == 0, "idempotent"
+
+    stored = db._conn.execute(
+        "SELECT semantic_hash FROM profiles WHERE id = ?", (profile_id,)
+    ).fetchone()["semantic_hash"]
+    assert stored == semantic_hash(parsed)
+
+
+def test_backfill_leaves_unparsable_profiles_null(db: Database) -> None:
+    broken = parse_profile("profile_title {Kaputt\n")
+    db.upsert_profile(
+        name="Kaputt", version_hash="deadbeef", semantic_hash=None,
+        raw_tcl="profile_title {Kaputt\n", parsed_json=json.dumps(broken),
+        profile_notes=None, seen_at="2026-08-01T10:00:00Z",
+    )
+    assert backfill_semantic_hashes(db) == 0
+    assert len(db.profiles_missing_semantic_hash()) == 1
 
 
 async def test_profiles_are_backfilled_for_shots_synced_before_m2(

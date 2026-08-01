@@ -12,10 +12,9 @@ import uvicorn
 
 from . import __version__
 from .config import Config, ConfigError
-from .db import Database
 from .logging_setup import setup_logging
 from .server import build_app
-from .sync import run_sync
+from .sync import open_database, run_sync
 from .visualizer_client import VisualizerClient, VisualizerError
 
 
@@ -101,8 +100,7 @@ def main(argv: list[str] | None = None) -> int:
 
 async def _run_sync_cli(config: Config, *, full: bool) -> int:
     log = logging.getLogger("visualizer_mcp")
-    db = Database(config.db_path)
-    db.migrate()
+    db = open_database(config.db_path)
     client = VisualizerClient(
         config.visualizer_email,
         config.visualizer_password,

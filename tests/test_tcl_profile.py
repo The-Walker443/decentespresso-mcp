@@ -12,6 +12,7 @@ from visualizer_mcp.tcl_profile import (
     PROFILE_TYPE_BY_SETTINGS,
     normalize_tcl,
     parse_profile,
+    semantic_hash,
     version_hash,
 )
 
@@ -122,6 +123,85 @@ def test_normalize_strips_trailing_whitespace() -> None:
     assert normalize_tcl("a 1   \r\nb 2\t\n\n\n") == "a 1\nb 2\n"
     assert normalize_tcl("") == ""
     assert normalize_tcl("   \n  \n") == ""
+
+
+# ------------------------------------------------------------- semantic_hash
+#
+# Die drei Fixtures sind echte Versionen des Decent-Default-Profils aus dem
+# Archiv. a und a_cosmetic unterscheiden sich nur durch zwei leere
+# Zusatzschluessel und ein doppeltes Leerzeichen in den Notizen; b aendert
+# Druck (8.6 -> 8.9) und Temperatur (90 -> 88).
+
+
+def sem(name: str) -> str | None:
+    return semantic_hash(parse_profile(tcl(name)))
+
+
+def test_cosmetic_change_keeps_the_semantic_hash() -> None:
+    base = "profile_default_a.tcl"
+    cosmetic = "profile_default_a_cosmetic.tcl"
+
+    assert version_hash(tcl(base)) != version_hash(tcl(cosmetic)), (
+        "die Versionen sind unterschiedliche Dateien - version_hash muss das zeigen"
+    )
+    assert sem(base) == sem(cosmetic)
+
+
+def test_brewing_change_changes_the_semantic_hash() -> None:
+    assert sem("profile_default_a.tcl") != sem("profile_default_b.tcl")
+
+
+def test_semantic_hash_ignores_title_author_and_notes() -> None:
+    raw = tcl("profile_reference.tcl")
+    edited = (
+        # Geklammert, sonst waeren es zwei Tcl-Listenelemente.
+        raw.replace("author Damian", "author {Jemand Anders}")
+        .replace("profile_title {D-Flow / default}", "profile_title {Anderer Name}")
+        .replace("A simple to use profiling system", "Voellig andere Notiz")
+    )
+    assert version_hash(raw) != version_hash(edited)
+    assert semantic_hash(parse_profile(raw)) == semantic_hash(parse_profile(edited))
+
+
+def test_semantic_hash_ignores_step_names() -> None:
+    # Einen Schritt umzubenennen aendert am Bezug nichts - sonst erzeugte die
+    # Umbenennung genau die Scheinversion, die der Hash vermeiden soll.
+    raw = tcl("profile_reference.tcl")
+    renamed = raw.replace("name Pouring", "name Ausschenken")
+    assert semantic_hash(parse_profile(raw)) == semantic_hash(parse_profile(renamed))
+
+
+def test_semantic_hash_reacts_to_step_target_and_temperature() -> None:
+    raw = tcl("profile_reference.tcl")
+    base = semantic_hash(parse_profile(raw))
+    assert semantic_hash(parse_profile(raw.replace("flow 1.7", "flow 2.4"))) != base
+    assert semantic_hash(parse_profile(raw.replace("temperature 88", "temperature 92"))) != base
+    assert semantic_hash(parse_profile(raw.replace("seconds 25.00", "seconds 30"))) != base
+
+
+def test_semantic_hash_reacts_to_an_active_exit_condition() -> None:
+    raw = tcl("profile_reference.tcl")
+    base = semantic_hash(parse_profile(raw))
+    # exit_pressure_over 2.1 gehoert zum Schritt mit exit_if 1 -> zaehlt.
+    assert semantic_hash(parse_profile(raw.replace("exit_pressure_over 2.1",
+                                                   "exit_pressure_over 3.3"))) != base
+
+
+def test_semantic_hash_ignores_disabled_exit_fields() -> None:
+    # exit_pressure_over 3.0 steht im Schritt "Infusing" mit exit_if 0 - der
+    # Wert ist tot und darf keine neue Version vortaeuschen.
+    raw = tcl("profile_reference.tcl")
+    dead = raw.replace("exit_pressure_over 3.0", "exit_pressure_over 9.9")
+    assert version_hash(raw) != version_hash(dead)
+    assert semantic_hash(parse_profile(raw)) == semantic_hash(parse_profile(dead))
+
+
+def test_semantic_hash_is_none_for_unparsable_profiles() -> None:
+    assert semantic_hash(parse_profile("profile_title {Kaputt\n")) is None
+
+
+def test_semantic_hash_differs_between_unrelated_profiles() -> None:
+    assert sem("profile_reference.tcl") != sem("profile_recent.tcl")
 
 
 # ------------------------------------------------------------------ Robustheit

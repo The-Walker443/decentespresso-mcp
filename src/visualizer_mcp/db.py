@@ -142,6 +142,9 @@ class Database:
             # Zeitreihe komplett ersetzen: sie ist unveraenderlich, aber ein
             # abgebrochener Vorlauf koennte Teilstaende hinterlassen haben.
             self._conn.execute("DELETE FROM shot_series WHERE shot_id = ?", (shot["id"],))
+            # Metriken haengen an der Zeitreihe und an dose/yield - alle drei
+            # koennen sich hier gerade geaendert haben.
+            self._conn.execute("DELETE FROM shot_metrics WHERE shot_id = ?", (shot["id"],))
             if series:
                 self._conn.executemany(
                     f"INSERT INTO shot_series ({', '.join(SERIES_COLUMNS)}) "
@@ -174,6 +177,68 @@ class Database:
             ).fetchone()
             return row["lo"], row["hi"]
 
+    def series_for_shot(self, shot_id: str) -> list[sqlite3.Row]:
+        with self._lock:
+            return list(self._conn.execute(
+                f"SELECT {', '.join(c for c in SERIES_COLUMNS if c != 'shot_id')} "
+                "FROM shot_series WHERE shot_id = ? ORDER BY elapsed",
+                (shot_id,),
+            ))
+
+    def shot_basics(self, shot_id: str) -> sqlite3.Row | None:
+        with self._lock:
+            return self._conn.execute(
+                "SELECT id, dose_g, yield_g FROM shots WHERE id = ?", (shot_id,)
+            ).fetchone()
+
+    # ------------------------------------------------------------------ Metriken
+
+    def get_cached_metrics(self, shot_id: str, version: int) -> dict[str, Any] | None:
+        """Cache-Treffer nur bei passender ``metrics_version``."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT metrics_json FROM shot_metrics "
+                "WHERE shot_id = ? AND metrics_version = ?",
+                (shot_id, version),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            return json.loads(row["metrics_json"])
+        except json.JSONDecodeError:
+            return None
+
+    def store_metrics(self, shot_id: str, version: int, metrics: dict[str, Any]) -> None:
+        with self._lock:
+            self._conn.execute(
+                "INSERT INTO shot_metrics (shot_id, metrics_version, metrics_json, computed_at) "
+                "VALUES (?, ?, ?, ?) ON CONFLICT(shot_id) DO UPDATE SET "
+                "metrics_version = excluded.metrics_version, "
+                "metrics_json = excluded.metrics_json, computed_at = excluded.computed_at",
+                (shot_id, version, json.dumps(metrics, ensure_ascii=False), utc_now_iso()),
+            )
+            self._conn.commit()
+
+    def shot_ids_without_metrics(self, version: int) -> list[str]:
+        """Shots ohne gueltigen Cache - inklusive derer mit veralteter Version."""
+        with self._lock:
+            return [
+                row["id"]
+                for row in self._conn.execute(
+                    "SELECT s.id FROM shots s "
+                    "LEFT JOIN shot_metrics m ON m.shot_id = s.id "
+                    "WHERE m.shot_id IS NULL OR m.metrics_version != ? "
+                    "ORDER BY s.started_at",
+                    (version,),
+                )
+            ]
+
+    def count_metrics(self, version: int) -> int:
+        with self._lock:
+            return self._conn.execute(
+                "SELECT COUNT(*) AS n FROM shot_metrics WHERE metrics_version = ?", (version,)
+            ).fetchone()["n"]
+
     # ------------------------------------------------------------------ Profile
 
     def shot_ids_without_profile(self) -> list[str]:
@@ -195,6 +260,7 @@ class Database:
         parsed_json: str,
         profile_notes: str | None,
         seen_at: str,
+        semantic_hash: str | None = None,
     ) -> tuple[int, bool]:
         """Legt die Profilversion an oder aktualisiert nur ``last_seen``.
 
@@ -215,12 +281,28 @@ class Database:
 
             cursor = self._conn.execute(
                 "INSERT INTO profiles "
-                "(name, version_hash, raw_tcl, parsed_json, profile_notes, first_seen, last_seen) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (name, version_hash, raw_tcl, parsed_json, profile_notes, seen_at, seen_at),
+                "(name, version_hash, semantic_hash, raw_tcl, parsed_json, profile_notes, "
+                " first_seen, last_seen) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (name, version_hash, semantic_hash, raw_tcl, parsed_json, profile_notes,
+                 seen_at, seen_at),
             )
             self._conn.commit()
             return int(cursor.lastrowid), True
+
+    def profiles_missing_semantic_hash(self) -> list[sqlite3.Row]:
+        """Versionen, die vor Migration 002 angelegt wurden (``id``, ``parsed_json``)."""
+        with self._lock:
+            return list(self._conn.execute(
+                "SELECT id, parsed_json FROM profiles WHERE semantic_hash IS NULL"
+            ))
+
+    def set_profile_semantic_hash(self, profile_id: int, value: str | None) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE profiles SET semantic_hash = ? WHERE id = ?", (value, profile_id)
+            )
+            self._conn.commit()
 
     def link_shot_profile(self, shot_id: str, profile_id: int) -> None:
         with self._lock:
@@ -239,8 +321,8 @@ class Database:
             return [
                 dict(row)
                 for row in self._conn.execute(
-                    "SELECT p.id, p.name, p.version_hash, p.first_seen, p.last_seen, "
-                    "       COUNT(s.id) AS shot_count "
+                    "SELECT p.id, p.name, p.version_hash, p.semantic_hash, "
+                    "       p.first_seen, p.last_seen, COUNT(s.id) AS shot_count "
                     "FROM profiles p LEFT JOIN shots s ON s.profile_id = p.id "
                     "GROUP BY p.id ORDER BY p.name, p.first_seen"
                 )
