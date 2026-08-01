@@ -1,0 +1,16 @@
+.git/
+.gitignore
+.env
+data/
+tests/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+SPEC_visualizer-mcp.md
+README.md

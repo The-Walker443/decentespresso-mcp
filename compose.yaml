@@ -1,0 +1,32 @@
+services:
+  visualizer-mcp:
+    build: .
+    container_name: visualizer-mcp
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      TZ: Europe/Berlin
+    volumes:
+      - ./data:/data          # muss der UID 10001 gehoeren (siehe README)
+    networks:
+      - cloudflared_net       # an das vorhandene Netz des Tunnels anpassen
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - "no-new-privileges:true"
+    # Keine Host-Ports: erreichbar nur ueber das interne Docker-Netz (SPEC ss10.4).
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8000/healthz')"
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+networks:
+  cloudflared_net:
+    external: true
