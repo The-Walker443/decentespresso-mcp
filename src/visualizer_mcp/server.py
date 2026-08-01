@@ -38,8 +38,9 @@ Zugriff auf das lokale Archiv von Espresso-Bezuegen einer Decent DE1 \
 Einheiten durchgaengig: Druck in bar, Fluss in ml/s, Gewicht/Dosis in g, \
 Temperatur in Grad Celsius, Zeit in Sekunden.
 
-Stand dieses Servers: Milestone M1. Shots und Zeitreihen werden synchronisiert; \
-abrufbar ist bisher nur `status`. Profilversionen und die Analyse-Tools folgen.\
+Stand dieses Servers: Milestone M2. Shots, Zeitreihen und versionierte \
+Profile werden synchronisiert; abrufbar ist bisher nur `status`. Die \
+Analyse-Tools folgen.\
 """
 
 
@@ -87,12 +88,18 @@ def _status_payload(config: Config, db: Database) -> dict[str, object]:
         warnings.append("Automatischer Sync ist abgeschaltet (SYNC_INTERVAL_MIN=0).")
 
     errors = db.get_json_state("last_errors", []) or []
+    missing_profiles = len(db.shot_ids_without_profile())
+    if missing_profiles:
+        warnings.append(f"{missing_profiles} Shots ohne Profilversion.")
+
     return {
         "server": SERVER_NAME,
         "version": __version__,
-        "milestone": "M1",
+        "milestone": "M2",
         "shots": db.count_shots(),
         "series_points": db.count_series_points(),
+        "profile_versions": db.count_profiles(),
+        "shots_without_profile": missing_profiles,
         "oldest_shot": oldest,
         "newest_shot": newest,
         "last_sync": last_sync,

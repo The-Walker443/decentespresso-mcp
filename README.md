@@ -6,7 +6,7 @@ per Custom Connector zur Analyse bereitstellt.
 
 Vollstaendige Spezifikation: [SPEC_visualizer-mcp.md](SPEC_visualizer-mcp.md).
 
-## Stand: Milestone M1 (Client, DB, Backfill)
+## Stand: Milestone M2 (Profilparser und -versionierung)
 
 Vorhanden:
 
@@ -19,10 +19,37 @@ Vorhanden:
 - SQLite mit Migrationsrunner, Upserts, Sync-Zustand (`db.py`)
 - Sync-Worker: Backfill ueber alle Seiten, inkrementell via `updated_after`,
   Hintergrundschleife alle `SYNC_INTERVAL_MIN` (`sync.py`)
+- TCL-Profilparser auf Basis von `tkinter.Tcl()`, Versionierung ueber den
+  sha256 des normalisierten Roh-TCL, Verknuepfung Shot -> Profilversion
+  (`tcl_profile.py`)
 - `status`-Tool mit echten Bestandszahlen
 
-Noch nicht vorhanden: TCL-Parser und Profilversionierung (M2), Metriken (M3), die
-Analyse-Tools aus SPEC ss9.2 (M4). Siehe SPEC ss14.
+Noch nicht vorhanden: Metriken (M3), die Analyse-Tools aus SPEC ss9.2 (M4).
+Siehe SPEC ss14.
+
+### Profile: was der Parser leistet und was nicht
+
+Der eigene Parser ist die Referenz — an dem TCL, das er liest, haengt auch der
+Versionshash. Visualizers `format=json` dient in den Tests als Gegenprobe
+(`tests/test_tcl_profile.py`); weicht eine Seite ab, schlaegt der Test fehl.
+Zwei Unterschiede sind bekannt und dort dokumentiert:
+
+1. **Legacy-Profile (`settings_2a`/`2b`) haben im TCL keine Schritte.**
+   `advanced_shot` ist leer. Visualizer *synthetisiert* fuer solche Profile
+   sechs Schritte aus den `flow_profile_*`- und `preinfusion_*`-Settings. Das
+   ist eine Rekonstruktion, keine Information aus der Datei — wir bilden sie
+   nicht nach. Die Sollwerte stehen als Kopffelder in `parsed_json`.
+2. **Weissraum in den Notizen.** Visualizers JSON enthaelt an einer Stelle die
+   Zeichenfolge `\n` plus acht Leerzeichen, wo im TCL ein einzelnes Leerzeichen
+   steht. Ursache ist Visualizers Serializer.
+
+`settings_2a` -> `pressure` und `settings_2c` -> `advanced` sind gegen echte
+Daten verifiziert; `settings_2b` -> `flow` folgt der DE1-Konvention, liegt aber
+noch nicht als Beleg vor.
+
+Ein nicht parsebares Profil bricht nichts ab: `raw_tcl` wird trotzdem
+gespeichert, `parsed_json` bekommt `parse_ok: false` samt Fehlertext, und Titel
+und Notizen kommen aus einem toleranten Zeilenscan.
 
 ## Visualizer-API — verifizierter Stand
 
@@ -121,8 +148,17 @@ docker compose exec visualizer-mcp visualizer-mcp --sync-once   # nur Neues/Geae
 ```
 
 Beide geben eine JSON-Zusammenfassung aus und beenden sich mit Exit-Code 1, wenn
-einzelne Shots fehlgeschlagen sind. Bei Fehlern wird der Cursor **nicht**
-weitergeschoben — sonst bliebe ein fehlgeschlagener Shot dauerhaft ungeholt.
+einzelne Shots fehlgeschlagen sind.
+
+Die Zusammenfassung trennt `errors` von `warnings`:
+
+- **`errors`** sind voruebergehende Probleme (Netz, Schreibfehler). Solange
+  welche auftreten, bleibt der Cursor stehen — sonst bliebe ein fehlgeschlagener
+  Shot dauerhaft ungeholt.
+- **`warnings`** sind deterministische Befunde (`parse_ok=false`, Shot ohne
+  hinterlegtes Profil). Ein Retry wuerde daran nichts aendern, deshalb laeuft
+  der Cursor weiter. Shots ohne Profil werden in
+  `sync_state['shots_without_profile']` gemerkt und nicht erneut abgefragt.
 
 ## Konfiguration
 

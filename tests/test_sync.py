@@ -9,7 +9,12 @@ from collections.abc import Iterator
 import pytest
 
 from visualizer_mcp.db import Database
-from visualizer_mcp.sync import STATE_BACKFILL_DONE, STATE_CURSOR, run_sync
+from visualizer_mcp.sync import (
+    STATE_BACKFILL_DONE,
+    STATE_CURSOR,
+    STATE_NO_PROFILE,
+    run_sync,
+)
 from visualizer_mcp.visualizer_client import ShotNotFound
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures"
@@ -19,14 +24,36 @@ def load(name: str) -> dict:
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
 
+ADVANCED_TCL = (FIXTURES / "profile_reference.tcl").read_text(encoding="utf-8")
+LEGACY_TCL = (FIXTURES / "profile_recent.tcl").read_text(encoding="utf-8")
+
+
 class FakeClient:
     """Duck-typed Ersatz fuer VisualizerClient - zaehlt Abrufe mit."""
 
-    def __init__(self, details: list[dict], *, failing: set[str] | None = None) -> None:
+    def __init__(
+        self,
+        details: list[dict],
+        *,
+        failing: set[str] | None = None,
+        profiles: dict[str, str] | None = None,
+        profile_missing: set[str] | None = None,
+    ) -> None:
         self.details = {d["id"]: d for d in details}
         self.failing = failing or set()
+        self.profiles = profiles if profiles is not None else {
+            d["id"]: ADVANCED_TCL for d in details
+        }
+        self.profile_missing = profile_missing or set()
         self.detail_calls: list[str] = []
+        self.profile_calls: list[str] = []
         self.list_calls = 0
+
+    async def get_profile_tcl(self, shot_id: str) -> str:
+        self.profile_calls.append(shot_id)
+        if shot_id in self.profile_missing:
+            raise ShotNotFound(f"Nicht gefunden: /shots/{shot_id}/profile")
+        return self.profiles.get(shot_id, ADVANCED_TCL)
 
     def _rows(self) -> list[dict]:
         return [
@@ -171,3 +198,133 @@ async def test_empty_account_is_handled(db: Database) -> None:
     assert result.new_shots == 0
     assert result.errors == []
     assert db.count_shots() == 0
+
+
+# ------------------------------------------------------------------ Profile
+
+
+async def test_identical_profiles_are_deduplicated(db: Database, details: list[dict]) -> None:
+    # Beide Shots liefen mit demselben Profil -> eine Version, zwei Verknuepfungen.
+    result = await run_sync(FakeClient(details), db, full=True)
+
+    assert result.new_profile_versions == 1
+    assert result.profiles_linked == 2
+    assert db.count_profiles() == 1
+    assert db.shot_ids_without_profile() == []
+
+    overview = db.profile_overview()
+    assert len(overview) == 1
+    assert overview[0]["name"] == "D-Flow / default"
+    assert overview[0]["shot_count"] == 2
+
+
+async def test_different_profiles_get_separate_versions(
+    db: Database, details: list[dict]
+) -> None:
+    client = FakeClient(details, profiles={
+        details[0]["id"]: ADVANCED_TCL,
+        details[1]["id"]: LEGACY_TCL,
+    })
+    result = await run_sync(client, db, full=True)
+
+    assert result.new_profile_versions == 2
+    assert db.count_profiles() == 2
+    assert {p["name"] for p in db.profile_overview()} == {"D-Flow / default", "Default"}
+
+
+async def test_changed_profile_creates_a_new_version_and_old_shot_keeps_the_old_one(
+    db: Database, details: list[dict]
+) -> None:
+    # SPEC ss5/Abnahme 4: alter Shot bleibt an der alten Profilversion haengen.
+    first = FakeClient([details[0]])
+    await run_sync(first, db, full=True)
+    old_profile_id = db._conn.execute(
+        "SELECT profile_id FROM shots WHERE id = ?", (details[0]["id"],)
+    ).fetchone()["profile_id"]
+
+    changed_tcl = ADVANCED_TCL.replace("espresso_pressure 6.0", "espresso_pressure 7.5")
+    both = FakeClient(details, profiles={
+        details[0]["id"]: ADVANCED_TCL,
+        details[1]["id"]: changed_tcl,
+    })
+    result = await run_sync(both, db, full=True)
+
+    assert result.new_profile_versions == 1
+    assert db.count_profiles() == 2
+
+    rows = {
+        r["id"]: r["profile_id"]
+        for r in db._conn.execute("SELECT id, profile_id FROM shots")
+    }
+    assert rows[details[0]["id"]] == old_profile_id, "alter Shot darf nicht umgehaengt werden"
+    assert rows[details[1]["id"]] != old_profile_id
+
+
+async def test_profiles_are_fetched_only_once_per_shot(
+    db: Database, details: list[dict]
+) -> None:
+    client = FakeClient(details)
+    await run_sync(client, db, full=True)
+    assert sorted(client.profile_calls) == sorted(d["id"] for d in details)
+
+    client.profile_calls.clear()
+    await run_sync(client, db, full=True)
+    assert client.profile_calls == [], "verknuepfte Shots duerfen nicht erneut abgefragt werden"
+
+
+async def test_shot_without_profile_is_remembered_not_retried(
+    db: Database, details: list[dict]
+) -> None:
+    missing = details[0]["id"]
+    client = FakeClient(details, profile_missing={missing})
+
+    result = await run_sync(client, db, full=True)
+    assert result.profiles_linked == 1
+    assert any(missing in w for w in result.warnings)
+    assert result.errors == [], "fehlendes Profil ist kein blockierender Fehler"
+    assert db.get_json_state(STATE_NO_PROFILE) == [missing]
+
+    client.profile_calls.clear()
+    await run_sync(client, db, full=True)
+    assert client.profile_calls == []
+
+
+async def test_unparsable_profile_is_still_stored_and_linked(
+    db: Database, details: list[dict]
+) -> None:
+    broken = "advanced_shot {{kaputt\nprofile_title {Kaputtes Profil}\n"
+    client = FakeClient(details, profiles={d["id"]: broken for d in details})
+
+    result = await run_sync(client, db, full=True)
+
+    assert result.profiles_linked == 2
+    assert db.count_profiles() == 1
+    assert any("parse_ok=false" in w for w in result.warnings)
+    assert result.errors == [], "kaputtes TCL darf den Cursor nicht blockieren"
+    # Der Cursor laeuft weiter, obwohl das Profil nicht parsebar war.
+    assert db.get_state(STATE_CURSOR) is not None
+
+    row = db._conn.execute("SELECT raw_tcl, parsed_json, name FROM profiles").fetchone()
+    assert row["raw_tcl"] == broken
+    assert json.loads(row["parsed_json"])["parse_ok"] is False
+    assert row["name"] == "Kaputtes Profil"
+
+
+async def test_profiles_are_backfilled_for_shots_synced_before_m2(
+    db: Database, details: list[dict]
+) -> None:
+    # Zustand nach M1: Shots da, profile_id NULL.
+    from visualizer_mcp.visualizer_client import series_rows_from_detail, shot_row_from_detail
+
+    for detail in details:
+        db.upsert_shot(shot_row_from_detail(detail, "2026-08-01T10:00:00Z"),
+                       series_rows_from_detail(detail))
+    db.set_state("backfill_completed_at", "2026-08-01T10:00:00Z")
+    assert len(db.shot_ids_without_profile()) == 2
+
+    client = FakeClient(details)
+    result = await run_sync(client, db, full=True)
+
+    assert client.detail_calls == [], "Details muessen dafuer nicht erneut geladen werden"
+    assert result.profiles_linked == 2
+    assert db.shot_ids_without_profile() == []

@@ -174,6 +174,78 @@ class Database:
             ).fetchone()
             return row["lo"], row["hi"]
 
+    # ------------------------------------------------------------------ Profile
+
+    def shot_ids_without_profile(self) -> list[str]:
+        """Shots, denen noch eine Profilversion fehlt (SPEC ss6.4)."""
+        with self._lock:
+            return [
+                row["id"]
+                for row in self._conn.execute(
+                    "SELECT id FROM shots WHERE profile_id IS NULL ORDER BY started_at"
+                )
+            ]
+
+    def upsert_profile(
+        self,
+        *,
+        name: str,
+        version_hash: str,
+        raw_tcl: str,
+        parsed_json: str,
+        profile_notes: str | None,
+        seen_at: str,
+    ) -> tuple[int, bool]:
+        """Legt die Profilversion an oder aktualisiert nur ``last_seen``.
+
+        Rueckgabe ``(profile_id, is_new)``. Dedupe laeuft ueber ``version_hash``
+        (SPEC ss5): dieselbe Version bekommt nie einen zweiten Datensatz, und
+        alte Shots bleiben an genau der Version haengen, mit der sie liefen.
+        """
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT id FROM profiles WHERE version_hash = ?", (version_hash,)
+            ).fetchone()
+            if row is not None:
+                self._conn.execute(
+                    "UPDATE profiles SET last_seen = ? WHERE id = ?", (seen_at, row["id"])
+                )
+                self._conn.commit()
+                return row["id"], False
+
+            cursor = self._conn.execute(
+                "INSERT INTO profiles "
+                "(name, version_hash, raw_tcl, parsed_json, profile_notes, first_seen, last_seen) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (name, version_hash, raw_tcl, parsed_json, profile_notes, seen_at, seen_at),
+            )
+            self._conn.commit()
+            return int(cursor.lastrowid), True
+
+    def link_shot_profile(self, shot_id: str, profile_id: int) -> None:
+        with self._lock:
+            self._conn.execute(
+                "UPDATE shots SET profile_id = ? WHERE id = ?", (profile_id, shot_id)
+            )
+            self._conn.commit()
+
+    def count_profiles(self) -> int:
+        with self._lock:
+            return self._conn.execute("SELECT COUNT(*) AS n FROM profiles").fetchone()["n"]
+
+    def profile_overview(self) -> list[dict[str, Any]]:
+        """Je Profilversion: Name, Hash, Zeitraum, Anzahl verknuepfter Shots."""
+        with self._lock:
+            return [
+                dict(row)
+                for row in self._conn.execute(
+                    "SELECT p.id, p.name, p.version_hash, p.first_seen, p.last_seen, "
+                    "       COUNT(s.id) AS shot_count "
+                    "FROM profiles p LEFT JOIN shots s ON s.profile_id = p.id "
+                    "GROUP BY p.id ORDER BY p.name, p.first_seen"
+                )
+            ]
+
     # ---------------------------------------------------------------- sync_state
 
     def get_state(self, key: str, default: str | None = None) -> str | None:

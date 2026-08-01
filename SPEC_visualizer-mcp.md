@@ -1,6 +1,14 @@
 # Spezifikation: `visualizer-mcp` — MCP-Server für Espresso-Shot-Analyse
 
-**Version:** 1.0 · **Stand:** 2026-07-31 · **Zielgruppe:** Claude Code (Implementierung) + Betreiber (Matthias)
+**Version:** 1.1 · **Stand:** 2026-08-01 · **Zielgruppe:** Claude Code (Implementierung) + Betreiber (Matthias)
+
+> **Änderungen 1.1 (2026-08-01)** — nach Abnahme von M1:
+> - §6.2: Inkrementeller Sync läuft über `updated_after` statt über die
+>   Seitenheuristik (die API stellt den Parameter bereit; er findet auch
+>   nachträglich geänderte Shots).
+> - §8: `pi_end` primär aus den Phasenmarken; `peak_pressure` aufgeteilt in
+>   `peak_pressure_infusion` und `max_pressure_global`.
+> - §13: Erwartungswerte des Referenz-Shots präzisiert.
 
 ---
 
@@ -163,8 +171,13 @@ Designentscheidungen:
 
 1. **Initial-Backfill:** `GET /api/shots` paginiert bis zum Ende durchlaufen; für
    jeden unbekannten Shot Detaildaten + Profil-TCL laden und speichern.
-2. **Inkrementell (alle `SYNC_INTERVAL_MIN`, Default 15):** Seite 1 laden; neue IDs
-   (nicht in DB) verarbeiten; abbrechen, sobald eine Seite nur bekannte IDs enthält.
+2. **Inkrementell (alle `SYNC_INTERVAL_MIN`, Default 15):**
+   `GET /api/shots?sort=updated_at&updated_after=<cursor>` (Unix-Sekunden). Cursor
+   ist der höchste bekannte `updated_at` minus 120 s Überlappung. Jede gelistete
+   ID, die unbekannt ist **oder** deren `updated_at` sich geändert hat, wird
+   nachgeladen. Bei Fehlern im Lauf bleibt der Cursor stehen.
+   Das ersetzt die frühere Heuristik „Seite 1 bis nur noch bekannte IDs": die
+   hätte nachträglich geänderte Shots (Notizen, Bewertung, TDS) nie gefunden.
 3. **Dedupe:** Primärschlüssel = Visualizer-UUID. Erneuter Abruf eines bekannten
    Shots aktualisiert nur mutable Felder (Notizen, Bewertung, TDS) via Upsert.
 4. **Profil-Verarbeitung pro Shot:** TCL laden → normalisieren (Whitespace/Zeilen-
@@ -235,9 +248,10 @@ Shots vergleichbar sind:
 | Metrik | Definition |
 |---|---|
 | `t_first_drops` | kleinstes `elapsed` mit `weight > 0.3 g` |
-| `peak_pressure`, `t_peak` | globales Druckmaximum + Zeitpunkt |
-| `pi_end` | falls Phasen-/State-Daten im Download-JSON vorhanden: deren Marke; sonst Heuristik: kleinstes `elapsed` mit `pressure ≥ 0.6 × peak_pressure` |
-| `pressure_dip_after_peak` | `peak_pressure − min(pressure)` im Fenster `[t_peak, t_peak+4 s]` (Kanal-/Puck-Nachgeben-Indikator) |
+| `pi_end` | **primär** aus `shot_series.state_change`: Zeitpunkt der Phasenmarke, die das Ende der Präinfusion markiert. **Fallback** nur wenn der Shot keine Phasenmarken hat: kleinstes `elapsed` mit `pressure ≥ 0.6 × max_pressure_global`. Welcher Weg griff, steht in `pi_end_source` (`state_change` \| `heuristic`) |
+| `peak_pressure_infusion`, `t_peak` | Druckmaximum im Fenster `[0, pi_end + 2 s]` + Zeitpunkt. Das ist der Druck, der den Puck aufbaut — bei ansteigenden Profilen (D-Flow) liegt das globale Maximum am Shot-Ende und sagt darüber nichts aus |
+| `max_pressure_global` | globales Druckmaximum über den ganzen Shot, eigenes Feld |
+| `pressure_dip_after_peak` | `peak_pressure_infusion − min(pressure)` im Fenster `[t_peak, t_peak+4 s]` (Kanal-/Puck-Nachgeben-Indikator) |
 | `avg_flow_pour` | Mittel `flow_out` über `[pi_end, ende]` |
 | `flow_stability` | Variationskoeffizient von `flow_out` im selben Fenster |
 | `end_pressure` | Mittel `pressure` der letzten 2 s |
@@ -258,7 +272,9 @@ Antwortbudget: Standard ≤ ~15 kB; Kurven immer downsampeln (§9.1).
 ### 9.1 Downsampling-Regel
 
 Parameter `max_points` (Default 120, Max 400). Gleichmäßige zeitbasierte Ausdünnung;
-zusätzlich garantiert enthalten: erster Punkt, letzter Punkt, Punkt des Druck-Peaks.
+zusätzlich garantiert enthalten: erster Punkt, letzter Punkt, Punkt von
+`max_pressure_global` und Punkt von `peak_pressure_infusion` (hier geht es um
+Kurventreue, deshalb beide Maxima).
 Rückgabe als kompakte Arrays (`t[]`, `p[]`, `fo[]`, `fi[]`, `w[]`, `tb[]`), nicht
 als Objektliste — spart ~60 % Tokens.
 
@@ -267,7 +283,7 @@ als Objektliste — spart ~60 % Tokens.
 | Tool | Parameter | Rückgabe (Kern) |
 |---|---|---|
 | `list_beans()` | – | Bohnen mit `brand, type, shot_count, first/last_shot, letzte grinder_settings` |
-| `list_shots(bean?, roaster?, profile?, since?, until?, limit=10, cursor?)` | Filter case-insensitive, Teilstring-Match | kompakte Zeilen: `id, started_at, bean, profile, grind, dose, yield, ratio, duration, peak_pressure, notes_kurz`; `next_cursor` |
+| `list_shots(bean?, roaster?, profile?, since?, until?, limit=10, cursor?)` | Filter case-insensitive, Teilstring-Match | kompakte Zeilen: `id, started_at, bean, profile, grind, dose, yield, ratio, duration, peak_pressure_infusion, notes_kurz`; `next_cursor` |
 | `get_shot(id \| "latest", include_curve=true, max_points=120)` | `latest` optional mit `bean`-Filter | Metadaten + Metriken (§8) + Kurve (§9.1) + Profil-Kurzfassung (`title, version_hash[:8], steps kompakt`) |
 | `get_shot_metrics(id)` | – | nur §8-Metriken + Warnungen |
 | `compare_shots(ids[2..4], include_curves=false)` | müssen existieren | Tabelle der Metriken nebeneinander + Delta-Spalte zum ersten Shot; optional Kurven (dann `max_points=60` je Shot) |
@@ -444,8 +460,12 @@ mit Zusammenfassung loggen (`new=2 updated=1 profiles=0 dur=1.2s`).
 
 **Unit (pytest, offline mit Fixtures):**
 - TCL-Parser: D-Flow-Beispiel → erwartete Steps/Notes; kaputtes TCL → `parse_ok=false` ohne Exception.
-- Metriken: Referenz-Shot (Fixture = realer Shot `6eb25d36…`) → erwartete Werte
-  (peak ≈ 4.1 bar, t_first_drops ≈ 4.8 s, duration ≈ 22.9 s, end_pressure ≈ 5.4 bar).
+- Metriken: Referenz-Shot (Fixture = realer Shot `6eb25d36…`) → erwartete Werte:
+  `peak_pressure_infusion` ≈ 4.1 bar, `end_pressure` ≈ 5.4 bar,
+  `t_first_drops` ≈ 4.8 s, `duration` ≈ 22.9 s.
+  Bei diesem D-Flow-Shot ist `max_pressure_global` ≈ 5.4 bar und fällt mit dem
+  Schlusspunkt zusammen — genau deshalb sind Infusions- und Globalmaximum
+  getrennte Felder.
 - Downsampling: Peak-Punkt bleibt stets enthalten; `len ≤ max_points`.
 - Sync-Dedupe: zweifacher Lauf derselben Daten → keine Duplikate.
 
