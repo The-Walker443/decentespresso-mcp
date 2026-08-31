@@ -734,7 +734,8 @@ prüft, dass die Glossartexte nicht in einzelne Docstrings zurückwandern.
 Parameterwerte, keine URL, keinen Pfad. Argumente sind der wahrscheinlichste
 Weg, auf dem irgendwann etwas Vertrauliches in eine Logzeile gerät.
 
-Gemessen am selben Archiv, vorher/nachher in Byte:
+Gemessen am **Entwicklungsabzug vom 2026-08-01** (14 Shots) — beide Spalten am
+selben Stand, damit der Vergleich trägt. Byte:
 
 | Aufruf | vor M6 | nach M6 | |
 |---|---:|---:|---|
@@ -755,6 +756,21 @@ weiterhin an (Maximum 400).
 Von den verbleibenden 6 876 B der Tool-Definitionen sind rund 3 600 B
 JSON-Schema der Parameter. Tiefer kommt man nur über weniger Parameter, nicht
 über kürzere Texte.
+
+**Gegenmessung bei Produktionsgröße** (Abzug vom 2026-08-31, 69 Shots, 3 Bohnen,
+11 Profilversionen). Nur zwei Werte hängen am Bestand, beide unkritisch:
+
+| Aufruf | Dev-Abzug (14 Shots) | Produktionsgröße (69) |
+|---|---:|---:|
+| `list_beans()` | 522 | 921 |
+| `list_shots(limit=10)` | 3 277 | 3 684 |
+| `status()` | 654 | 683 |
+| Tool-Definitionen | 6 876 | 6 876 |
+
+`get_shot` und `compare_shots` skalieren gar nicht mit der Bestandsgröße — sie
+liefern feste Shots. `list_shots` ist durch `limit` gedeckelt und wächst nur um
+`total_matching`; `list_beans` wächst mit der Zahl **verschiedener Bohnen**,
+nicht der Bezüge. Die Schranken aus §17.4 tragen damit auch im Betrieb.
 
 ---
 

@@ -82,7 +82,8 @@ sprechenden Spaltennamen rund 70 %.
 ### Antwortbudget
 
 SPEC ss9 setzt ~15 kB je Antwort, SPEC ss17 zieht die Schrauben an. Gemessen am
-echten Archiv, vor und nach M6:
+**Entwicklungsabzug vom 2026-08-01** (14 Shots) — beide Spalten am selben Stand,
+sonst traegt der Vergleich nicht:
 
 | Aufruf | vor M6 | nach M6 |
 |---|---:|---:|
@@ -95,6 +96,12 @@ echten Archiv, vor und nach M6:
 
 Tests halten diese Schranken fest — sie sollen anschlagen, wenn etwas
 zurueckwaechst.
+
+Bei Produktionsgroesse gegengemessen (Abzug vom 2026-08-31, 69 Shots, 3 Bohnen):
+`list_beans()` 0,9 kB, `list_shots(limit=10)` 3,7 kB, `status()` 0,7 kB, der
+Rest unveraendert. Mit dem Bestand waechst nur `list_beans` (Zahl
+**verschiedener Bohnen**, nicht der Bezuege) und `total_matching` in
+`list_shots` — die Schranken tragen also auch im Betrieb.
 
 ### Schreiben (SPEC ss18)
 
@@ -304,6 +311,15 @@ python -m venv .venv
 Die Fixtures unter `tests/fixtures/` sind echte, anonymisierte API-Antworten
 (Kontokennungen ersetzt) — darunter der Referenz-Shot aus SPEC ss13, ein Shot
 mit defekter Waage und drei Versionen desselben Profils.
+
+**`data/shots.db` ist eine Entwicklungskopie, kein Bestand.** Sie enthaelt, was
+ein Sync zum Zeitpunkt X von der API holen konnte, und driftet danach beliebig
+weit von der Produktionsinstanz weg. Zwei Gruende: sie wird nur bei Bedarf
+synchronisiert, und Visualizer Free haelt nur ein 1-Monats-Fenster vor — was
+dort herausgefallen ist, existiert **nur** noch in der Produktionsinstanz und
+laesst sich lokal nicht mehr nachziehen. Genau das ist der Archivzweck aus
+SPEC ss1. Zahlen aus dieser Datei sind daher nie eine Aussage ueber den echten
+Bestand; dafuer `status()` gegen die Produktionsinstanz fragen.
 
 Lokal starten (ohne Docker):
 
