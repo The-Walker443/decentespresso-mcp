@@ -29,6 +29,12 @@ RUN pip install --no-cache-dir .
 
 COPY migrations ./migrations
 
+# Welcher Commit steckt in diesem Image? Die Paketversion sagt, welcher
+# Meilenstein gebaut wurde - BUILD_REF sagt, welcher Stand. Zusammen ist beim
+# Deployment eindeutig, ob das neue Image laeuft oder noch das alte.
+ARG BUILD_REF=""
+ENV BUILD_REF=$BUILD_REF
+
 # Non-root (SPEC ss10.4). /data wird vom Host gemountet und muss dieser UID
 # gehoeren: chown -R 10001:10001 ./data
 RUN useradd --uid 10001 --user-group --no-create-home --shell /usr/sbin/nologin app \

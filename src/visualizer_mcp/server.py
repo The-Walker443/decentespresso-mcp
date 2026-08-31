@@ -13,6 +13,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import os
 import re
 import time
 from collections.abc import AsyncGenerator
@@ -25,7 +26,7 @@ from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse, Response
 
-from . import __version__
+from . import __version__, milestone
 from .config import Config
 from .db import Database
 from .metrics import METRICS_VERSION, curve_shape, downsample_curve, metrics_for_shot
@@ -827,7 +828,8 @@ def _status_payload(config: Config, db: Database) -> dict[str, Any]:
     return {
         "server": SERVER_NAME,
         "version": __version__,
-        "milestone": "M6",
+        "milestone": milestone(),
+        "build_ref": os.environ.get("BUILD_REF") or None,
         "shots": db.count_shots(),
         "series_points": db.count_series_points(),
         "profile_versions": db.count_profiles(),

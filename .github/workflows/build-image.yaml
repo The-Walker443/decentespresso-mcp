@@ -74,6 +74,8 @@ jobs:
           context: .
           load: true
           tags: visualizer-mcp:smoke
+          build-args: |
+            BUILD_REF=${{ github.sha }}
           # Baucache zwischen Laeufen: der pip-Schritt dominiert die Laufzeit.
           cache-from: type=gha
           cache-to: type=gha,mode=max
@@ -120,6 +122,14 @@ jobs:
           assert "\n" in parsed["notes"], "mehrzeilige Klammer nicht erkannt"
           assert semantic_hash(parsed)
 
+          import os
+
+          from visualizer_mcp import __version__, milestone
+
+          assert __version__ != "0+unbekannt", "Paketmetadaten fehlen im Image"
+          assert os.environ.get("BUILD_REF"), "BUILD_REF wurde nicht durchgereicht"
+          print(f"Version {__version__} ({milestone()}), Build {os.environ['BUILD_REF'][:8]}")
+
           import visualizer_mcp.server  # noqa: F401  - App-Import muss tragen
           print("Profilparser im Image: ok")
           PY
@@ -130,6 +140,8 @@ jobs:
           context: .
           push: true
           tags: ${{ steps.meta.outputs.tags }}
+          build-args: |
+            BUILD_REF=${{ github.sha }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
 

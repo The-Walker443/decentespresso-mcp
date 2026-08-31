@@ -140,6 +140,29 @@ Beim Roestdatum wird ISO (`YYYY-MM-DD`) erwartet, die DE1-App schreibt
 Je Schreibvorgang eine Logzeile mit Shot-ID, Feldnamen und Dauer — **ohne
 Werte**, weil in Notizen Privates stehen kann.
 
+### Welche Fassung laeuft?
+
+`status()` beantwortet das mit drei Feldern:
+
+| Feld | Herkunft |
+|---|---|
+| `version` | Paketmetadaten aus `pyproject.toml` (`importlib.metadata`) |
+| `milestone` | abgeleitet aus der Nebenversion: `0.7.x` -> `M7` |
+| `build_ref` | Commit-SHA, beim Image-Bau als `BUILD_REF` eingebacken |
+
+Anlass war ein Fehlgriff beim M7-Deployment: `status()` meldete Version `0.1.0`
+und `M6`, obwohl M7-Code lief — beide Zahlen waren von Hand gepflegt und
+veraltet. Ob das alte Image lief oder nur das Feld hinterherhinkte, liess sich
+nicht unterscheiden.
+
+Jetzt gilt: stimmt `build_ref` nicht mit dem erwarteten Commit ueberein, hat
+Portainer nicht neu gezogen (**Re-pull image** vergessen). Ist `build_ref`
+`null`, laeuft der Server nicht aus einem gebauten Image.
+
+**Beim Meilenstein die Version bumpen** — Nebenversion = Meilensteinnummer.
+Ein Test vergleicht sie mit dem hoechsten in SPEC ss14 gelisteten Meilenstein
+und schlaegt fehl, wenn der Bump fehlt.
+
 ### Messung je Aufruf
 
 `telemetry.py` loggt pro Tool-Aufruf `tool`, `dur_ms` und `bytes`. Bewusst
@@ -566,6 +589,9 @@ docker compose exec visualizer-mcp visualizer-mcp --print-connector-url
 
 Die ausgegebene URL in claude.ai unter Einstellungen → Connectors → *Add custom
 connector* eintragen, OAuth-Felder leer lassen.
+
+Nach dem Verbinden lohnt ein Blick auf `status()`: `version` und `build_ref`
+sagen, welche Fassung wirklich laeuft — nicht welche gebaut wurde.
 
 **Erfolg:** Der Connector verbindet sich, und im Chat erscheinen unter „+" neun
 Tools. Testfrage: *„Wie ist der Stand meines Espresso-Archivs?"* → `status()`

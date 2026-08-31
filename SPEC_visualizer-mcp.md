@@ -1,7 +1,11 @@
 # Spezifikation: `visualizer-mcp` — MCP-Server für Espresso-Shot-Analyse
 
-**Version:** 1.2 · **Stand:** 2026-08-31 · **Zielgruppe:** Claude Code (Implementierung) + Betreiber (Matthias)
+**Version:** 1.3 · **Stand:** 2026-08-31 · **Zielgruppe:** Claude Code (Implementierung) + Betreiber (Matthias)
 
+> **Änderungen 1.3 (2026-08-31):**
+> - §19 Versionierung: `version` kommt aus den Paketmetadaten, `milestone` wird
+>   daraus abgeleitet, `build_ref` nennt den gebauten Commit.
+>
 > **Änderungen 1.2 (2026-08-31):**
 > - §17 (M6) Antwortökonomie: `curve_shape`, `compare_shots` in einem Aufruf,
 >   gestraffte Docstrings, Messung je Aufruf.
@@ -578,7 +582,8 @@ mit Zusammenfassung loggen (`new=2 updated=1 profiles=0 dur=1.2s`).
 - **M7** Schreibende Tools (§18): `update_shot` mit Whitelist, Validierung und
   Write-through, hinter `WRITE_ENABLED`.
 
-Nach jedem Milestone: Tests grün, kurzer Commit. API-Schemas in M1 zuerst gegen
+Nach jedem Milestone: Tests grün, **Version in `pyproject.toml` bumpen**
+(Nebenversion = Meilensteinnummer, siehe §19), kurzer Commit. API-Schemas in M1 zuerst gegen
 https://apidocs.visualizer.coffee/ verifizieren, bevor Felder festgezurrt werden.
 
 ---
@@ -865,3 +870,49 @@ An Shot `51c96e2c` (Tchibo Test) durchlaufen: fünf ungültige Eingaben
 abgewiesen ohne API-Aufruf, dann `espresso_enjoyment: 35` und eine Notiz
 gesetzt. Read-back über `get_shot`, lokale DB und Metrik-Cache stimmen überein,
 und die Gegenprobe direkt gegen `visualizer.coffee` zeigt beide Werte.
+
+---
+
+## 19. Versionierung und Build-Identität
+
+**Anlass.** Beim M7-Deployment meldete `status()` Version `0.1.0` und
+Meilenstein `M6`, obwohl M7-Code lief. Beide Zahlen waren handgepflegt: die
+Version stand seit M0 unverändert im Quelltext, das Meilenstein-Feld war beim
+Bump vergessen worden. Damit war die naheliegende Frage — *läuft noch das alte
+Image, oder ist bloß das Feld veraltet?* — aus der Antwort nicht zu beantworten.
+
+### 19.1 Eine Quelle für die Version
+
+`__version__` kommt über `importlib.metadata` aus den Paketmetadaten, also aus
+`pyproject.toml`. Keine zweite Zahl im Code — die zweite ist die, die man
+vergisst. Ist das Paket nicht installiert (Start direkt aus dem Quellbaum),
+lautet die Version `0+unbekannt`; bewusst kein Rateversuch aus `pyproject.toml`,
+denn eine erfundene Zahl wäre schlimmer als eine sichtbare Lücke.
+
+**Die Version wird pro Meilenstein gebumpt**, Nebenversion = Meilensteinnummer:
+M7 → `0.7.0`. Ein Test vergleicht die Nebenversion mit dem höchsten in §14
+gelisteten Meilenstein und schlägt fehl, wenn der Bump vergessen wurde.
+
+### 19.2 Meilenstein abgeleitet, nicht gepflegt
+
+`milestone()` leitet `M<Nebenversion>` ab, solange die Hauptversion `0` ist.
+Ab `1.0.0` ist die Meilensteinzählung vorbei und das Feld wird `null` — eine
+abgeleitete Angabe wäre dort irreführend.
+
+### 19.3 Welcher Stand läuft?
+
+Die Version sagt, *welcher Meilenstein* gebaut wurde. Für *welcher Commit* gibt
+es `BUILD_REF`: ein Build-Argument im Dockerfile, das der Workflow mit
+`${{ github.sha }}` füllt und das als Umgebungsvariable im Image landet.
+`status()` gibt es unverändert zurück, außerhalb eines gebauten Images `null`.
+
+Damit ist beim Deployment eindeutig:
+
+| `version` | `build_ref` | Bedeutung |
+|---|---|---|
+| erwartet | erwarteter SHA | neues Image läuft |
+| veraltet | alter SHA | Portainer hat nicht neu gezogen |
+| erwartet | `null` | lokal gestartet, nicht aus dem Image |
+
+Der Smoke-Step im Workflow prüft beides im fertigen Image: dass die
+Paketmetadaten lesbar sind und dass `BUILD_REF` durchgereicht wurde.
