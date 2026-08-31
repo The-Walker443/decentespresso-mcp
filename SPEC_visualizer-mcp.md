@@ -1,7 +1,13 @@
 # Spezifikation: `visualizer-mcp` — MCP-Server für Espresso-Shot-Analyse
 
-**Version:** 1.1 · **Stand:** 2026-08-01 · **Zielgruppe:** Claude Code (Implementierung) + Betreiber (Matthias)
+**Version:** 1.2 · **Stand:** 2026-08-31 · **Zielgruppe:** Claude Code (Implementierung) + Betreiber (Matthias)
 
+> **Änderungen 1.2 (2026-08-31):**
+> - §17 (M6) Antwortökonomie: `curve_shape`, `compare_shots` in einem Aufruf,
+>   gestraffte Docstrings, Messung je Aufruf.
+> - §18 (M7) Schreibende Tools: `update_shot` hinter `WRITE_ENABLED`. Damit
+>   ist „rein lesend" aus §1 kein Nicht-Ziel mehr — Löschen bleibt eines.
+>
 > **Änderungen 1.1 (2026-08-01)** — nach Abnahme von M1:
 > - §6.2: Inkrementeller Sync läuft über `updated_after` statt über die
 >   Seitenheuristik (die API stellt den Parameter bereit; er findet auch
@@ -33,8 +39,13 @@ per Custom Connector Zugriff auf Espresso-Bezugsdaten gibt:
 - Claude-Nutzung: claude.ai Web + Mobile-App (Custom Connectors: hinzufügen nur via
   Web/Desktop; Nutzung danach auch mobil möglich).
 
-**Nicht-Ziele (v1):** Kein Schreiben zu Visualizer (rein lesend), keine eigene Web-UI,
-kein Multi-User, kein Self-Hosting von Visualizer selbst.
+**Nicht-Ziele (v1):** Keine eigene Web-UI, kein Multi-User, kein Self-Hosting von
+Visualizer selbst, **kein Löschen** von Bezügen.
+
+*(Ursprünglich stand hier auch „kein Schreiben zu Visualizer". Das ist mit §18
+eingelöst: ein einziges Tool, strikte Whitelist, standardmäßig abgeschaltet.
+Gelesen wird weiterhin überwiegend — geschrieben nur auf ausdrückliche
+Anweisung.)*
 
 ---
 
@@ -55,7 +66,8 @@ de1app / DYE ──upload──▶ visualizer.coffee (Free-Tier, Upload-Ziel & C
                                │  https://<hostname>/<secret>/mcp
                                ▼
                   Claude (claude.ai / Desktop / Mobile)
-                  Custom Connector, Tools read-only
+                  Custom Connector; lesende Tools plus - nur mit
+                  WRITE_ENABLED - update_shot (Write-through, §18)
 ```
 
 Grundsatz: **visualizer.coffee bleibt Upload-Ziel und Community-Fenster; der
@@ -376,8 +388,11 @@ Maßnahmen (v1, pragmatisch):
 4. **Container-Härtung:** non-root User, `read_only: true` Root-FS, nur `/data`
    beschreibbar, `no-new-privileges`, keine Ports am Host publishen (nur internes
    Docker-Netz zum cloudflared-Container).
-5. **Read-only by design:** kein Tool mutiert Visualizer; `sync_now` ist die
-   einzige „aktive" Operation und idempotent.
+5. **Schreiben ist die Ausnahme:** Von den Tools mutiert einzig `update_shot`
+   etwas bei Visualizer, und das nur, wenn `WRITE_ENABLED` gesetzt ist —
+   sonst wird es gar nicht erst registriert (§18.4). Es ist idempotent, hat
+   eine geschlossene Feldliste und kann nicht löschen. `sync_now` bleibt
+   ebenfalls idempotent und schreibt nichts nach außen.
 
 **Upgrade-Pfad (v2, optional):** FastMCP bringt Auth-Provider mit (OAuth 2.1 /
 Token-Verifier). Claude unterstützt authlose UND OAuth-basierte Remote-Server;
@@ -560,6 +575,8 @@ mit Zusammenfassung loggen (`new=2 updated=1 profiles=0 dur=1.2s`).
 - **M5** Härtung (read-only FS, Log-Filter), README/Betriebsteil, Abnahmetests.
 - **M6** Antwortökonomie (§17): `curve_shape`, `compare_shots` in einem Aufruf,
   gestraffte Docstrings, Messung je Aufruf.
+- **M7** Schreibende Tools (§18): `update_shot` mit Whitelist, Validierung und
+  Write-through, hinter `WRITE_ENABLED`.
 
 Nach jedem Milestone: Tests grün, kurzer Commit. API-Schemas in M1 zuerst gegen
 https://apidocs.visualizer.coffee/ verifizieren, bevor Felder festgezurrt werden.
@@ -573,7 +590,8 @@ https://apidocs.visualizer.coffee/ verifizieren, bevor Felder festgezurrt werden
 - Wochen-/Bohnen-Reports als MCP-Resource.
 - TDS-/EY-Erfassung strukturiert (falls Refraktometer angeschafft wird).
 - Import weiterer Quellen (Beanconqueror) — Schema ist darauf vorbereitet (`raw_json`).
-- Schreibende Tools (Notizen/Bewertung zurück zu Visualizer, Scope `write`).
+- ~~Schreibende Tools (Notizen/Bewertung zurück zu Visualizer)~~ — eingelöst
+  in §18 (M7). Löschen bleibt bewusst draußen.
 
 ---
 
@@ -732,3 +750,118 @@ weiterhin an (Maximum 400).
 Von den verbleibenden 6 876 B der Tool-Definitionen sind rund 3 600 B
 JSON-Schema der Parameter. Tiefer kommt man nur über weniger Parameter, nicht
 über kürzere Texte.
+
+---
+
+## 18. Schreibende Tools (M7)
+
+Löst den Backlog-Punkt „Schreibende Tools" aus §15 ein. **Nicht-Ziel bleibt
+Löschen** — die API kann es (`DELETE /shots/{id}`), v1 baut es nicht.
+
+### 18.1 Verifikation der API (2026-08-01, v1.17.1)
+
+Wie in §4 gefordert erst geprüft, dann gebaut. Der Endpunkt ist
+`PATCH /api/shots/{id}` mit `{"shot": {…}}`. Vier Befunde, drei davon
+undokumentiert:
+
+1. **`Accept: application/json` ist Pflicht.** Ohne den Header antwortet die
+   API mit `422 {"error":"Request must be JSON."}` — auch bei korrektem
+   `Content-Type`. Steht in keiner Doku.
+
+2. **Die dokumentierte Feldliste ist unvollständig.** `ShotUpdateRequest` listet
+   nur `profile_title`, `barista`, `bean_weight`, `bean_notes`,
+   `espresso_notes`, `private_notes`, die acht Sensorik-Noten, `coffee_bag_id`,
+   `tag_list` und `metadata`. Tatsächlich schreibbar sind (einzeln geprüft,
+   jeweils geschrieben, zurückgelesen und zurückgesetzt):
+
+   | Feld | dokumentiert | schreibbar |
+   |---|:--:|:--:|
+   | `bean_brand`, `bean_type`, `roast_date`, `roast_level` | – | ✅ |
+   | `grinder_setting`, `drink_weight` | – | ✅ |
+   | `espresso_enjoyment`, `drink_tds`, `drink_ey` | – | ✅ |
+   | `bean_weight`, `bean_notes`, `espresso_notes`, `barista` | ✅ | ✅ |
+   | `private_notes` | ✅ | ❌ (400, Premium) |
+   | `id`, `start_time` | – | ❌ (400) |
+
+3. **Nicht erlaubte Felder werden stillschweigend verworfen.** `400` kommt nur,
+   wenn nach dem Filtern *nichts* Erlaubtes übrig bleibt (`"param is missing or
+   the value is empty or invalid: shot"`). Ein Aufruf mit `private_notes`
+   **plus** einem erlaubten Feld liefert also `200` — ohne die Notiz zu
+   schreiben. Deshalb ist der Read-back-Vergleich in §18.3 keine Kür.
+
+4. **Die API validiert keine Wertebereiche.** `espresso_enjoyment: 999` und
+   `-5` wurden anstandslos gespeichert. Die Prüfung in §18.2 ist der einzige
+   Schutz, nicht eine zweite Absicherung.
+
+### 18.2 Ein Tool, strikte Whitelist
+
+`update_shot(id, fields)`. Erlaubt sind ausschließlich:
+
+| Gruppe | Felder |
+|---|---|
+| Bohne | `bean_brand`, `bean_type`, `roast_date`, `roast_level`, `bean_notes` |
+| Zubereitung | `grinder_setting`, `bean_weight`, `drink_weight` |
+| Bewertung | `espresso_enjoyment`, `espresso_notes`, `private_notes`, `drink_tds`, `drink_ey` |
+| Sonstiges | `barista` |
+
+Unbekannte Felder → Fehler mit der vollständigen Liste. Ausdrücklich gesperrt
+sind Kennung, Zeitstempel, Telemetrie und Profil; sie bekommen eine eigene
+Meldung, die den Grund nennt statt nur „unbekannt". `null` löscht ein Feld.
+
+Validierung **vor** dem ersten API-Aufruf, alle Verstöße gesammelt:
+
+| Feld | Regel |
+|---|---|
+| `espresso_enjoyment` | Ganzzahl 0–100 |
+| `bean_weight` | 5–30 g |
+| `drink_weight` | 10–100 g |
+| `drink_tds` / `drink_ey` | 0–30 % / 0–50 % |
+| `roast_date` | ISO `YYYY-MM-DD`, nicht in der Zukunft |
+| Freitextfelder | ≤ 5 000 Zeichen |
+
+Zwei Details aus der Praxis: Kommazahlen werden akzeptiert (`"18,5"` → `18.5`),
+und beim Röstdatum nennt die Fehlermeldung ausdrücklich, dass die DE1-App
+`TT.MM.JJJJ` schreibt, hier aber ISO erwartet wird. **Damit entstehen gemischte
+Formate im Bestand** — von der Maschine geschriebene Datumsangaben bleiben
+deutsch, von uns geschriebene sind ISO. Bewusst in Kauf genommen: ein
+maschinenlesbares Format ist mehr wert als Einheitlichkeit mit einem
+mehrdeutigen.
+
+### 18.3 Write-through — Visualizer bleibt die Wahrheit
+
+Es wird nie nur lokal geschrieben. Die Kette, unter demselben Lock wie der Sync:
+
+1. `GET /shots/{id}` — Vorher-Stand **frisch von der API**, nicht aus der
+   lokalen Kopie. Die könnte veraltet sein, und dann wäre das gemeldete
+   „vorher" eine Behauptung statt einer Messung.
+2. `PATCH /shots/{id}` mit den validierten Feldern.
+3. `GET /shots/{id}` erneut, Upsert in die lokale DB, Metriken des Shots neu
+   rechnen — über denselben Pfad wie im Sync-Lauf (`refresh_shot`). Eine
+   Dosisänderung ändert die Ratio; ohne diesen Schritt bliebe der Metrik-Cache
+   falsch.
+
+Die Antwort nennt je Feld `before` und `after`, **beides aus dem Read-back**.
+Weicht ein Feld nicht ab, landet es in `unchanged` samt Hinweis auf den
+Premium-Vorbehalt — das ist die einzige Stelle, an der der stille Verwurf aus
+§18.1.3 sichtbar wird.
+
+### 18.4 Schalter und Protokoll
+
+`WRITE_ENABLED` (Default `false`). Ist er aus, wird das Tool **nicht
+registriert** — es steht nicht in der Tool-Liste und lehnt nicht ab. Ein Tool,
+das existiert und ablehnt, lädt zum Nachfragen ein; eines, das es nicht gibt,
+nicht. Ohne Visualizer-Verbindung bleibt es ebenfalls weg.
+
+Der Docstring bindet das Modell: nur auf ausdrückliche Nutzeranweisung, genau
+die genannten Felder, Bestätigung anhand der zurückgelieferten Werte.
+
+Je Schreibvorgang eine Logzeile mit Shot-ID, **Feldnamen** und Dauer — keine
+Werte. In `espresso_notes` und `private_notes` kann Privates stehen, und ein
+Log ist der falsche Ort dafür.
+
+### 18.5 Abnahme
+
+An Shot `51c96e2c` (Tchibo Test) durchlaufen: fünf ungültige Eingaben
+abgewiesen ohne API-Aufruf, dann `espresso_enjoyment: 35` und eine Notiz
+gesetzt. Read-back über `get_shot`, lokale DB und Metrik-Cache stimmen überein,
+und die Gegenprobe direkt gegen `visualizer.coffee` zeigt beide Werte.

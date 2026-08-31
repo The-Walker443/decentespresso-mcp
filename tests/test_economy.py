@@ -42,6 +42,11 @@ MAX_TOOL_DEFINITIONS = 7_200
 #: Vor M6: 5021 B (Arrays waren Default). Jetzt: 2092 B.
 MAX_GET_SHOT_LEAN = 2_300
 
+#: Mit WRITE_ENABLED kommt update_shot dazu (1568 B; der Docstring traegt die
+#: Verhaltensregeln fuer das Modell und die Feldliste, SPEC ss18.4). Gemessen:
+#: 8446 B. Der Aufschlag faellt nur an, wenn Schreiben eingeschaltet ist.
+MAX_TOOL_DEFINITIONS_WITH_WRITE = 8_800
+
 #: compare_shots mit zwei Shots inklusive Profilen. Jetzt: 4234 B.
 #: Vor M6 brauchte derselbe Informationsstand drei Aufrufe: compare_shots
 #: (1680 B) plus zweimal get_profile (je 1013 B) = 3706 B in drei Runden.
@@ -267,3 +272,26 @@ async def test_log_never_carries_arguments(mcp, caplog) -> None:
     assert "bean" not in blob
     for record in caplog.records:
         assert set(getattr(record, "fields", {})) <= {"tool", "dur_ms", "bytes", "error"}
+
+
+async def test_write_tool_costs_what_it_is_worth(valid_env, db) -> None:
+    """Der Schreibmodus darf die Tool-Liste nicht sprengen (SPEC ss17.3/ss18.4)."""
+    from visualizer_mcp.sync import SyncCoordinator
+    from visualizer_mcp.visualizer_client import VisualizerClient
+
+    writable = Config.from_env({**valid_env, "WRITE_ENABLED": "true"})
+    coordinator = SyncCoordinator(
+        VisualizerClient("a@b.org", "lang-genug-hier"), db
+    )
+    try:
+        async with Client(build_mcp(writable, db, coordinator)) as client:
+            tools = await client.list_tools()
+    finally:
+        await coordinator.aclose()
+
+    assert "update_shot" in {t.name for t in tools}
+    total = size_of([t.model_dump(mode="json", exclude_none=True) for t in tools])
+    assert total <= MAX_TOOL_DEFINITIONS_WITH_WRITE, (
+        f"Tool-Definitionen mit Schreibmodus: {total} B, erlaubt "
+        f"{MAX_TOOL_DEFINITIONS_WITH_WRITE}"
+    )

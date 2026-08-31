@@ -6,7 +6,7 @@ per Custom Connector zur Analyse bereitstellt.
 
 Vollstaendige Spezifikation: [SPEC_visualizer-mcp.md](SPEC_visualizer-mcp.md).
 
-## Stand: Milestone M6 (Antwortökonomie)
+## Stand: Milestone M7 (Schreibende Tools)
 
 Vorhanden:
 
@@ -24,10 +24,13 @@ Vorhanden:
   (`tcl_profile.py`)
 - Abgeleitete Metriken nach SPEC ss8 (Fassung 1.1) mit Cache in `shot_metrics`
   (`metrics.py`)
-- Alle neun Tools aus SPEC ss9.2 (`server.py`)
+- Alle neun Tools aus SPEC ss9.2, dazu `curve_shape` und die Antwortoekonomie
+  aus SPEC ss17 (`server.py`, `telemetry.py`)
+- Schreibendes `update_shot` hinter `WRITE_ENABLED` (SPEC ss18, `writes.py`)
+- Haertung, Abnahmetests und Portainer-Deployment (SPEC ss16)
 
 Noch nicht vorhanden: die optionalen MCP-Prompts aus SPEC ss9.3
-(`dial_in_check`, `bean_history`) und die Haertung aus M5. Siehe SPEC ss14.
+(`dial_in_check`, `bean_history`). Siehe SPEC ss15.
 
 ## Tools
 
@@ -40,8 +43,9 @@ Noch nicht vorhanden: die optionalen MCP-Prompts aus SPEC ss9.3
 | `compare_shots(ids[2..4], include_profile, include_curves)` | Gegenueberstellung mit Differenz zum ersten, Profilen und Abweichungshinweis |
 | `list_profiles()` | Profile mit ihren Versionen |
 | `get_profile(shot_id? \| name? \| version_hash?)` | vollstaendige Sollwerte |
-| `sync_now()` | sofortiger Abgleich (einzige schreibende Operation, idempotent) |
+| `sync_now()` | sofortiger Abgleich mit Visualizer, idempotent |
 | `status()` | Bestand, letzter Sync, Warnungen |
+| `update_shot(id, fields)` | aendert Angaben zu einem Bezug — **nur mit `WRITE_ENABLED=true`** |
 
 Filter sind Teilstrings ohne Beachtung der Gross-/Kleinschreibung. `bean` trifft
 Marke *oder* Sorte, `roaster` nur die Marke. `since`/`until` nehmen ISO8601 oder
@@ -91,6 +95,50 @@ echten Archiv, vor und nach M6:
 
 Tests halten diese Schranken fest — sie sollen anschlagen, wenn etwas
 zurueckwaechst.
+
+### Schreiben (SPEC ss18)
+
+Standardmaessig **aus**. `WRITE_ENABLED=true` schaltet ein einziges zusaetzliches
+Tool frei: `update_shot(id, fields)`. Ist der Schalter aus, taucht es nicht in
+der Tool-Liste auf — es lehnt nicht ab, es existiert nicht.
+
+Erlaubt sind ausschliesslich diese Felder; alles andere wird mit der
+vollstaendigen Liste abgewiesen:
+
+| Gruppe | Felder |
+|---|---|
+| Bohne | `bean_brand`, `bean_type`, `roast_date`, `roast_level`, `bean_notes` |
+| Zubereitung | `grinder_setting`, `bean_weight`, `drink_weight` |
+| Bewertung | `espresso_enjoyment` (0–100), `espresso_notes`, `private_notes`, `drink_tds`, `drink_ey` |
+| Sonstiges | `barista` |
+
+Kennung, Zeitstempel, Telemetrie und Profil sind gesperrt. Geloescht wird nie —
+die API kann es, dieses Projekt baut es nicht.
+
+**Write-through:** Geschrieben wird immer zuerst bei Visualizer, danach wird der
+Bezug frisch geladen, lokal upserted und seine Metriken neu gerechnet (eine
+Dosisaenderung aendert die Ratio). Die Antwort nennt je Feld `before` und
+`after` aus diesem Read-back — nicht aus der Annahme, was gesendet wurde.
+
+Drei Eigenheiten der API, die das Design bestimmen (am 2026-08-01 gegen
+v1.17.1 verifiziert, alle drei undokumentiert):
+
+1. `PATCH` braucht `Accept: application/json`, sonst `422 "Request must be JSON."`
+2. Nicht erlaubte Felder werden **stillschweigend verworfen**; `400` kommt nur,
+   wenn nichts Erlaubtes uebrig bleibt. Ein Aufruf mit `private_notes` plus
+   einem erlaubten Feld meldet also Erfolg, ohne die Notiz zu schreiben — nur
+   der Read-back deckt das auf, und das Tool meldet es unter `unchanged`.
+3. Die API prueft **keine** Wertebereiche (`espresso_enjoyment: 999` wurde
+   gespeichert). Die Validierung in `writes.py` ist der einzige Schutz.
+
+`private_notes` verlangt ein Visualizer-Premium-Konto; auf Free-Tier wird es
+still verworfen und im Ergebnis als `unchanged` gemeldet.
+
+Beim Roestdatum wird ISO (`YYYY-MM-DD`) erwartet, die DE1-App schreibt
+`TT.MM.JJJJ` — im Bestand koennen dadurch beide Formate stehen.
+
+Je Schreibvorgang eine Logzeile mit Shot-ID, Feldnamen und Dauer — **ohne
+Werte**, weil in Notizen Privates stehen kann.
 
 ### Messung je Aufruf
 
@@ -363,6 +411,7 @@ Die Zusammenfassung trennt `errors` von `warnings`:
 | `VISUALIZER_PASSWORD` | — | Visualizer-Passwort |
 | `MCP_PATH_SECRET` | — | ≥32 Zeichen `[A-Za-z0-9_-]`, ersetzt die Authentifizierung |
 | `SYNC_INTERVAL_MIN` | `15` | Poll-Intervall in Minuten (0–1440); `0` schaltet die Hintergrundschleife ab |
+| `WRITE_ENABLED` | `false` | Schaltet `update_shot` frei (SPEC ss18). Aus heisst: Tool existiert nicht |
 | `DB_PATH` | `/data/shots.db` | SQLite-Datei, muss absolut sein |
 | `LOG_LEVEL` | `INFO` | `DEBUG`…`CRITICAL` |
 | `TZ` | `Europe/Berlin` | Anzeige-Zeitzone; gespeichert wird immer UTC |

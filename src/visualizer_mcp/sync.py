@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from .db import Database, utc_now_iso
-from .metrics import warm_metrics_cache
+from .metrics import metrics_for_shot, warm_metrics_cache
 from .tcl_profile import PARSER_VERSION, parse_profile, semantic_hash, version_hash
 from .visualizer_client import (
     ShotNotFound,
@@ -318,6 +318,29 @@ def _persist(db: Database, result: SyncResult, newest_updated_at: int | None) ->
         db.set_state(STATE_BACKFILL_DONE, utc_now_iso())
 
 
+async def refresh_shot(client: VisualizerClient, db: Database, shot_id: str) -> dict:
+    """Laedt einen einzelnen Shot neu und schreibt ihn lokal fort (SPEC ss18.3).
+
+    Derselbe Weg wie im Sync-Lauf - Detail holen, upserten, Metriken neu
+    rechnen. Der Upsert verwirft den Metrik-Cache des Shots ohnehin; der
+    Warmlauf danach fuellt ihn wieder, damit die naechste Frage nicht auf die
+    Neuberechnung wartet. Wichtig nach einer Dosisaenderung: die Ratio haengt
+    daran.
+    """
+    detail = await client.get_shot(shot_id)
+    if detail is None:  # pragma: no cover - nur bei ETag, das hier keiner setzt
+        raise ShotNotFound(f"Kein Detail fuer {shot_id}")
+
+    synced_at = utc_now_iso()
+    await asyncio.to_thread(
+        db.upsert_shot,
+        shot_row_from_detail(detail, synced_at),
+        series_rows_from_detail(detail),
+    )
+    await asyncio.to_thread(metrics_for_shot, db, shot_id, refresh=True)
+    return detail
+
+
 #: SPEC ss9.2: get_shot("latest") prueft vorher auf Frische. Zwei Minuten sind
 #: kurz genug, dass ein eben gezogener Shot auftaucht, und lang genug, dass eine
 #: Folge von Fragen nicht jedes Mal Visualizer anfasst.
@@ -345,6 +368,29 @@ class SyncCoordinator:
                     lambda: not self._db.get_state(STATE_BACKFILL_DONE)
                 )
             return await run_sync(self._client, self._db, full=full)
+
+    async def write_shot(
+        self, shot_id: str, fields: dict[str, Any]
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Write-through: erst Visualizer, dann lokal nachziehen (SPEC ss18.3).
+
+        Gibt ``(vorher, nachher)`` zurueck - beides vollstaendige Details, beide
+        frisch von der API. Der Vorher-Stand kommt aus einem eigenen Abruf und
+        nicht aus der lokalen Kopie: die koennte veraltet sein, und dann waere
+        das gemeldete "vorher" eine Behauptung statt einer Messung.
+
+        Unter demselben Lock wie der Sync - sonst koennte die
+        Hintergrundschleife zwischen Schreiben und Nachlesen denselben Shot
+        anfassen.
+        """
+        async with self._lock:
+            before = await self._client.get_shot(shot_id)
+            if before is None:  # pragma: no cover - nur mit ETag moeglich
+                raise ShotNotFound(f"Kein Detail fuer {shot_id}")
+
+            await self._client.update_shot(shot_id, fields)
+            after = await refresh_shot(self._client, self._db, shot_id)
+            return before, after
 
     async def ensure_fresh(self, max_age_s: int = QUICK_SYNC_MAX_AGE_S) -> SyncResult | None:
         """Synchronisiert nur, wenn der letzte Lauf zu lange her ist.

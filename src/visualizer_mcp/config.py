@@ -48,6 +48,9 @@ class Config:
     display_tz: str
     host: str
     port: int
+    #: SPEC ss18.4. Ist er aus, existiert das Schreibtool gar nicht - es lehnt
+    #: nicht ab, es steht nicht in der Tool-Liste.
+    write_enabled: bool
 
     @property
     def mcp_path(self) -> str:
@@ -115,7 +118,8 @@ class Config:
             f"log_level={self.log_level!r}, "
             f"public_base_url={self.public_base_url!r}, "
             f"display_tz={self.display_tz!r}, "
-            f"host={self.host!r}, port={self.port})"
+            f"host={self.host!r}, port={self.port}, "
+            f"write_enabled={self.write_enabled})"
         )
 
     @classmethod
@@ -159,6 +163,7 @@ class Config:
         tz = (src.get("TZ") or "Europe/Berlin").strip() or "Europe/Berlin"
         host = (src.get("HOST") or "0.0.0.0").strip() or "0.0.0.0"  # noqa: S104
         port = _int_in_range(src, "PORT", 8000, 1, 65535, problems)
+        write_enabled = _bool(src, "WRITE_ENABLED", default=False, problems=problems)
 
         if problems:
             raise ConfigError(problems)
@@ -174,7 +179,26 @@ class Config:
             display_tz=tz,
             host=host,
             port=port,
+            write_enabled=write_enabled,
         )
+
+
+def _bool(
+    src: Mapping[str, str], key: str, *, default: bool, problems: list[str]
+) -> bool:
+    """Nur eindeutige Schreibweisen - bei einem Schreibschalter wird nicht geraten."""
+    raw = (src.get(key) or "").strip().lower()
+    if not raw:
+        return default
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    problems.append(
+        f"{key}={src.get(key)!r} ist kein Wahrheitswert "
+        "(erlaubt: true/false, 1/0, yes/no, on/off)"
+    )
+    return default
 
 
 def _is_absolute_path(path: str) -> bool:

@@ -1,8 +1,8 @@
 """HTTP-Client fuer die Visualizer-API (SPEC ss4).
 
-Gegen https://apidocs.visualizer.coffee/ verifiziert am 2026-08-01
-(OpenAPI 3.1, Visualizer API v1.15.0). Was die Probe-Requests ergeben haben und
-wovon die SPEC abweicht, steht bei den jeweiligen Konstanten.
+Gegen https://apidocs.visualizer.coffee/ verifiziert: Lesepfade am 2026-08-01
+(API v1.15.0), Schreibpfad am 2026-08-01 gegen v1.17.1. Was die Probe-Requests
+ergeben haben und wovon die SPEC abweicht, steht bei den jeweiligen Konstanten.
 
 Sicherheit: Credentials gehen ausschliesslich an ``httpx.BasicAuth``. Dieses
 Modul loggt niemals Header, Query-Strings mit Auth oder Response-Bodies.
@@ -131,9 +131,10 @@ class RateLimiter:
 
 
 class VisualizerClient:
-    """Read-only-Zugriff auf die eigenen Shots.
+    """Zugriff auf die eigenen Shots.
 
-    Alle Methoden sind idempotent; keine schreibt zu Visualizer (SPEC ss10.5).
+    Alle Methoden sind idempotent. Schreibend ist einzig ``update_shot``
+    (SPEC ss18); es wird nur aufgerufen, wenn ``WRITE_ENABLED`` gesetzt ist.
     """
 
     def __init__(
@@ -180,12 +181,32 @@ class VisualizerClient:
             headers["If-None-Match"] = etag
         if accept:
             headers["Accept"] = accept
+        return await self._request(
+            "GET", path, params=params, headers=headers,
+            not_found_statuses=not_found_statuses,
+        )
+
+    async def _request(
+        self, method: str, path: str, *, params: dict[str, Any] | None = None,
+        json_body: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        not_found_statuses: tuple[int, ...] = (404,),
+    ) -> httpx.Response:
+        """Eine Anfrage samt Ratelimit, Retry und Fehlerabbildung.
+
+        Wiederholt wird nur bei 429 und 5xx. Das ist auch fuer PATCH
+        unbedenklich: ein Update setzt Felder auf feste Werte und ist damit
+        idempotent - ein zweiter Versuch schreibt dasselbe.
+        """
+        headers = dict(headers or {})
 
         last_error: Exception | None = None
         for attempt in range(self._max_retries):
             await self._limiter.acquire()
             try:
-                response = await self._client.get(path, params=params, headers=headers)
+                response = await self._client.request(
+                    method, path, params=params, json=json_body, headers=headers
+                )
             except httpx.HTTPError as exc:
                 # Nur den Typ loggen: die Exception kann die URL enthalten.
                 last_error = Unreachable(f"Netzwerkfehler: {type(exc).__name__}")
@@ -296,6 +317,37 @@ class VisualizerClient:
     #: Am Profil-Endpunkt heisst 422 laut API-Doku "Shot has no profile" - fuer
     #: uns dasselbe wie 404 und kein Grund, es erneut zu versuchen.
     _PROFILE_NOT_FOUND = (404, 422)
+
+    async def update_shot(self, shot_id: str, fields: dict[str, Any]) -> dict[str, Any]:
+        """``PATCH /shots/{id}`` - setzt die uebergebenen Felder (SPEC ss18).
+
+        Am 2026-08-01 gegen die echte API geprueft; drei Dinge stehen so in
+        keiner Doku:
+
+        1. ``Accept: application/json`` ist Pflicht. Ohne den Header antwortet
+           die API mit 422 ``"Request must be JSON."`` - auch bei korrektem
+           Content-Type.
+        2. Nicht erlaubte Felder werden **stillschweigend verworfen**. 400 kommt
+           nur, wenn nach dem Filtern nichts uebrig bleibt (``"param is missing
+           or the value is empty or invalid: shot"``). Ein Aufruf mit einem
+           erlaubten *und* einem gesperrten Feld liefert also 200, ohne das
+           gesperrte zu schreiben - deshalb vergleicht ``sync.update_shot``
+           hinterher zurueckgelesene Werte statt der Annahme.
+        3. Wertebereiche prueft die API nicht. ``espresso_enjoyment`` wurde mit
+           999 und -5 anstandslos gespeichert; die Pruefung in ``writes.py`` ist
+           der einzige Schutz.
+
+        Die Antwort ist der aktualisierte Shot; der Aufrufer liest trotzdem
+        frisch nach, weil das PATCH-Ergebnis nicht denselben Weg nimmt wie der
+        normale Detailabruf.
+        """
+        response = await self._request(
+            "PATCH",
+            f"/shots/{shot_id}",
+            json_body={"shot": fields},
+            headers={"Accept": "application/json"},
+        )
+        return response.json()
 
     async def get_profile_tcl(self, shot_id: str) -> str:
         """``GET /shots/{id}/profile`` - Rohprofil, Content-Type application/x-tcl."""

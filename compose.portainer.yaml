@@ -13,6 +13,7 @@
 #   VISUALIZER_PASSWORD
 #   MCP_PATH_SECRET    openssl rand -hex 24
 #   PUBLIC_BASE_URL    https://<hostname>
+#   WRITE_ENABLED      false (Default) oder true fuer schreibende Tools
 #   CLOUDFLARED_NETWORK  Name des vorhandenen Tunnel-Netzes
 
 services:
@@ -27,6 +28,7 @@ services:
       MCP_PATH_SECRET: ${MCP_PATH_SECRET}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
       SYNC_INTERVAL_MIN: ${SYNC_INTERVAL_MIN:-15}
+      WRITE_ENABLED: ${WRITE_ENABLED:-false}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       TZ: ${TZ:-Europe/Berlin}
       DB_PATH: /data/shots.db

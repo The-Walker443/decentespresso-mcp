@@ -14,6 +14,7 @@ import contextlib
 import json
 import logging
 import re
+import time
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -39,6 +40,7 @@ from .sync import (
 )
 from .telemetry import CallMetricsMiddleware
 from .visualizer_client import VisualizerClient, VisualizerError
+from .writes import ValidationError, validate_fields
 
 log = logging.getLogger(__name__)
 
@@ -456,6 +458,9 @@ def build_mcp(
         """
         return await asyncio.to_thread(_status_payload, config, db)
 
+    if config.write_enabled and coordinator is not None:
+        _register_update_shot(mcp, db, coordinator)
+
     @mcp.custom_route("/healthz", methods=["GET"], include_in_schema=False)
     async def healthz(request: Request) -> Response:
         # Bewusst ohne Secret-Pfad: der Docker-Healthcheck kennt es nicht. Gibt
@@ -463,6 +468,87 @@ def build_mcp(
         return PlainTextResponse("ok")
 
     return mcp
+
+
+def _register_update_shot(mcp: FastMCP, db: Database, coordinator: SyncCoordinator) -> None:
+    """Registriert das Schreibtool - nur bei ``WRITE_ENABLED`` (SPEC ss18.4).
+
+    Bewusst als eigene Funktion statt als Flag im Tool: ist der Schalter aus,
+    taucht ``update_shot`` in der Tool-Liste gar nicht auf. Ein Tool, das
+    existiert und ablehnt, laedt zum Nachfragen ein; eines, das es nicht gibt,
+    nicht.
+    """
+
+    @mcp.tool(
+        annotations={"readOnlyHint": False, "idempotentHint": True,
+                     "destructiveHint": False, "openWorldHint": True},
+    )
+    async def update_shot(id: str, fields: dict[str, Any]) -> dict[str, Any]:
+        """Aendert Angaben zu einem Bezug auf visualizer.coffee.
+
+        NUR auf ausdrueckliche Anweisung des Nutzers aufrufen, nie von sich aus
+        und nie "zur Sicherheit". Genau die Felder setzen, die der Nutzer
+        genannt hat - nichts ergaenzen, nichts korrigieren. Die Aenderung
+        danach woertlich bestaetigen, und zwar anhand der zurueckgelieferten
+        Werte, nicht anhand dessen, was gesendet wurde.
+
+        `fields` ist eine Zuordnung Feldname -> neuer Wert; `null` loescht ein
+        Feld. Erlaubt sind ausschliesslich: bean_brand, bean_type, roast_date
+        (ISO, YYYY-MM-DD), roast_level, bean_notes, grinder_setting,
+        bean_weight (g), drink_weight (g), espresso_enjoyment (0-100),
+        espresso_notes, private_notes, drink_tds, drink_ey, barista. Alles
+        andere wird abgewiesen; Zeitstempel, Telemetrie und Profil sind nicht
+        aenderbar.
+
+        Geschrieben wird immer zuerst bei Visualizer, danach wird der Bezug neu
+        geladen. Die Antwort nennt je Feld `before` und `after` aus diesem
+        Read-back. Steht ein Feld unter `unchanged`, hat Visualizer die
+        Aenderung nicht uebernommen - das passiert bei `private_notes` ohne
+        Premium-Konto. Das dem Nutzer sagen, statt Erfolg zu melden.
+        """
+        try:
+            payload = validate_fields(fields)
+        except ValidationError as exc:
+            raise ToolError("invalid_argument: " + "; ".join(exc.problems)) from exc
+
+        row = await asyncio.to_thread(db.get_shot_row, id)
+        if row is None:
+            raise ToolError(f"shot_not_found: Kein Bezug mit der Kennung {id!r}.")
+
+        started = time.perf_counter()
+        try:
+            before, after = await coordinator.write_shot(id, payload)
+        except VisualizerError as exc:
+            raise ToolError(f"{exc.code}: {exc}") from exc
+
+        changes = {
+            name: {"before": before.get(name), "after": after.get(name)}
+            for name in payload
+        }
+        ignored = [name for name, pair in changes.items()
+                   if pair["before"] == pair["after"]]
+
+        # Feldnamen ja, Werte nein - in Notizen kann Privates stehen.
+        log.info(
+            "shot updated",
+            extra={"fields": {
+                "shot": id,
+                "wrote": ",".join(sorted(payload)),
+                "unchanged": ",".join(sorted(ignored)) or "-",
+                "dur_ms": round((time.perf_counter() - started) * 1000, 1),
+            }},
+        )
+
+        result: dict[str, Any] = {"id": id, "changes": changes}
+        if ignored:
+            result["unchanged"] = ignored
+            result["note"] = (
+                "Visualizer hat diese Felder nicht uebernommen: "
+                + ", ".join(ignored)
+                + ". Bei private_notes und tag_list ist ein Premium-Konto noetig; "
+                "sonst war der neue Wert mit dem alten identisch."
+            )
+        return result
 
 
 # ------------------------------------------------------------------ Aufbereitung
