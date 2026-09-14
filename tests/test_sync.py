@@ -1,425 +1,432 @@
-"""Sync-Logik gegen einen Fake-Client: Dedupe, Updates, Fehlerisolation."""
+"""Abgleich mit Decaid (SPEC ss20.4).
+
+Der Ersatzclient zaehlt mit, *wie oft* etwas geholt wurde - daran haengen die
+Aussagen, die dem Abgleich seinen Sinn geben: die Liste reicht fuer die
+Entscheidung, Details kosten Geld, und ein ausgeschaltetes Tablet ist kein
+Fehler.
+"""
 
 from __future__ import annotations
 
 import json
 import pathlib
-from collections.abc import Iterator
 
 import pytest
+from helpers import decaid_detail, store_shot
 
 from visualizer_mcp.db import Database
+from visualizer_mcp.decaid_client import DecaidError, DecaidUnreachable, ShotPage
 from visualizer_mcp.sync import (
+    MAX_DETAILS_PER_RUN,
     STATE_BACKFILL_DONE,
-    STATE_CURSOR,
-    STATE_NO_PROFILE,
-    reparse_profiles,
+    STATE_LAST_REACHABLE,
+    SyncCoordinator,
     run_sync,
 )
-from visualizer_mcp.tcl_profile import (
-    PARSER_VERSION,
-    parse_profile,
-    semantic_hash,
-    version_hash,
-)
-from visualizer_mcp.visualizer_client import ShotNotFound
 
-FIXTURES = pathlib.Path(__file__).parent / "fixtures"
+FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "decaid"
 
 
-def load(name: str) -> dict:
+def load(name: str):
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
 
-ADVANCED_TCL = (FIXTURES / "profile_reference.tcl").read_text(encoding="utf-8")
-LEGACY_TCL = (FIXTURES / "profile_recent.tcl").read_text(encoding="utf-8")
+def listing(detail: dict) -> dict:
+    """Wie ein Bezug in der Liste erscheint: alles ausser der Messreihe."""
+    return {k: v for k, v in detail.items() if k != "measurements"}
 
 
-class FakeClient:
-    """Duck-typed Ersatz fuer VisualizerClient - zaehlt Abrufe mit."""
+class FakeDecaid:
+    """Duck-typed Ersatz fuer DecaidClient - zaehlt Abrufe mit."""
 
-    def __init__(
-        self,
-        details: list[dict],
-        *,
-        failing: set[str] | None = None,
-        profiles: dict[str, str] | None = None,
-        profile_missing: set[str] | None = None,
-    ) -> None:
+    def __init__(self, details: list[dict], *, unreachable: bool = False,
+                 fail_on: set[str] | None = None, page_size: int = 100) -> None:
         self.details = {d["id"]: d for d in details}
-        self.failing = failing or set()
-        self.profiles = profiles if profiles is not None else {
-            d["id"]: ADVANCED_TCL for d in details
-        }
-        self.profile_missing = profile_missing or set()
+        self.unreachable = unreachable
+        self.fail_on = fail_on or set()
+        self.page_size = page_size
         self.detail_calls: list[str] = []
-        self.profile_calls: list[str] = []
-        self.list_calls = 0
+        self.page_calls = 0
 
-    async def get_profile_tcl(self, shot_id: str) -> str:
-        self.profile_calls.append(shot_id)
-        if shot_id in self.profile_missing:
-            raise ShotNotFound(f"Nicht gefunden: /shots/{shot_id}/profile")
-        return self.profiles.get(shot_id, ADVANCED_TCL)
+    async def beans(self):
+        self._check()
+        return load("beans.json")
 
-    def _rows(self) -> list[dict]:
-        return [
-            {"id": d["id"], "clock": 0, "updated_at": d["updated_at"]}
-            for d in self.details.values()
-        ]
+    async def bean_batches(self, bean_id=None):
+        self._check()
+        return load("bean_batches.json")
 
-    async def iter_all_shot_rows(self, *, items: int = 100) -> list[dict]:
-        self.list_calls += 1
-        return self._rows()
+    async def list_shots(self, *, limit=100, offset=0, order="desc", bean_id=None):
+        self._check()
+        self.page_calls += 1
+        items = [listing(d) for d in self.details.values()]
+        window = items[offset: offset + min(limit, self.page_size)]
+        return ShotPage(items=window, total=len(items), limit=limit, offset=offset)
 
-    async def list_shots(self, *, page=1, items=100, updated_after=None, etag=None):
-        from visualizer_mcp.visualizer_client import Page
-
-        self.list_calls += 1
-        rows = [r for r in self._rows()
-                if updated_after is None or r["updated_at"] > updated_after]
-        return Page(rows=rows, count=len(rows), page=1, pages=1)
-
-    async def get_shot(self, shot_id: str, *, etag=None) -> dict:
+    async def get_shot(self, shot_id: str):
+        self._check()
         self.detail_calls.append(shot_id)
-        if shot_id in self.failing:
-            raise ShotNotFound(f"Nicht gefunden: /shots/{shot_id}")
+        if shot_id in self.fail_on:
+            raise DecaidError(f"kaputt: {shot_id}")
+        # Kopie: der echte Client liefert bei jedem Abruf frisches JSON, und
+        # write_shot vergleicht vorher gegen nachher.
+        return json.loads(json.dumps(self.details[shot_id]))
+
+    async def update_shot(self, shot_id, patch):
+        self.details[shot_id].setdefault("annotations", {}).update(
+            patch.get("annotations") or {}
+        )
         return self.details[shot_id]
+
+    async def aclose(self):
+        pass
+
+    def _check(self):
+        if self.unreachable:
+            raise DecaidUnreachable("Tablet aus")
 
 
 @pytest.fixture
-def db(tmp_path: pathlib.Path) -> Iterator[Database]:
-    database = Database(tmp_path / "sync.db")
+def db(tmp_path):
+    database = Database(tmp_path / "shots.db")
     database.migrate()
     yield database
     database.close()
 
 
-@pytest.fixture
-def details() -> list[dict]:
-    return [load("shot_reference.json"), load("shot_recent.json")]
+def three_shots() -> list[dict]:
+    return [
+        decaid_detail("de1app-1785525360", timestamp="2026-08-01T05:32:50",
+                      updated_at="2026-09-01T10:00:00Z"),
+        decaid_detail("aaaa1111-0000-4000-8000-000000000001",
+                      timestamp="2026-09-13T07:50:12",
+                      updated_at="2026-09-13T08:00:00Z"),
+        decaid_detail("aaaa1111-0000-4000-8000-000000000002",
+                      timestamp="2026-09-14T07:50:12",
+                      updated_at="2026-09-14T08:00:00Z"),
+    ]
 
 
-async def test_backfill_stores_everything(db: Database, details: list[dict]) -> None:
-    client = FakeClient(details)
+# ------------------------------------------------------------- Grundlauf
+
+
+async def test_backfill_stores_everything(db):
+    client = FakeDecaid(three_shots())
     result = await run_sync(client, db, full=True)
 
-    assert result.mode == "backfill"
-    assert result.new_shots == 2
+    assert result.new_shots == 3
     assert result.updated == 0
-    assert result.errors == []
-    assert db.count_shots() == 2
-    expected_points = sum(len(d["timeframe"]) for d in details)
-    assert db.count_series_points() == expected_points
-    assert result.series_points == expected_points
-    assert db.get_state(STATE_BACKFILL_DONE) is not None
+    assert db.count_shots() == 3
+    assert result.series_points == 3 * 184
+    assert not result.errors
 
 
-async def test_second_run_is_a_noop(db: Database, details: list[dict]) -> None:
-    # SPEC ss13: zweifacher Lauf derselben Daten -> keine Duplikate.
-    client = FakeClient(details)
+async def test_beans_and_batches_come_along(db):
+    client = FakeDecaid(three_shots())
+    result = await run_sync(client, db, full=True)
+
+    beans, batches = db.count_beans()
+    assert beans == result.beans > 0
+    assert batches == result.bean_batches > 0
+
+
+async def test_shots_get_their_bean_from_the_batch(db):
+    """Der Bezug nennt nur die Charge - die Bohne muss aufgeloest werden."""
+    client = FakeDecaid(three_shots())
     await run_sync(client, db, full=True)
-    before = db.count_series_points()
+
+    row = db.get_shot_row("de1app-1785525360")
+    assert row["bean_batch_id"], "Testdaten ohne Charge pruefen nichts"
+    batch = db.batch_row(row["bean_batch_id"])
+    assert batch is not None
+    assert row["bean_id"] == batch["bean_id"]
+
+
+async def test_second_run_fetches_no_details(db):
+    """Der Kern der Sparsamkeit: die Liste allein entscheidet."""
+    client = FakeDecaid(three_shots())
+    await run_sync(client, db, full=True)
+    assert len(client.detail_calls) == 3
 
     client.detail_calls.clear()
-    second = await run_sync(client, db, full=True)
+    result = await run_sync(client, db)
 
-    assert second.new_shots == 0
-    assert second.updated == 0
-    assert second.unchanged == 2
-    assert client.detail_calls == [], "bekannte Shots duerfen nicht erneut geladen werden"
-    assert db.count_shots() == 2
-    assert db.count_series_points() == before
+    assert client.detail_calls == []
+    assert result.unchanged == 3
+    assert result.new_shots == result.updated == 0
 
 
-async def test_changed_shot_is_refetched_and_updated(db: Database, details: list[dict]) -> None:
-    client = FakeClient(details)
+async def test_changed_shot_is_refetched(db):
+    client = FakeDecaid(three_shots())
     await run_sync(client, db, full=True)
+    client.detail_calls.clear()
 
-    changed = dict(details[0])
-    changed["espresso_notes"] = "nachtraeglich notiert"
-    changed["updated_at"] = details[0]["updated_at"] + 300
-    client.details[changed["id"]] = changed
-
-    result = await run_sync(client, db, full=True)
-    assert result.updated == 1
-    assert result.new_shots == 0
-    row = db._conn.execute(
-        "SELECT notes FROM shots WHERE id = ?", (changed["id"],)
-    ).fetchone()
-    assert row["notes"] == "nachtraeglich notiert"
-
-
-async def test_incremental_uses_cursor(db: Database, details: list[dict]) -> None:
-    client = FakeClient(details)
-    await run_sync(client, db, full=True)
-    cursor = db.get_state(STATE_CURSOR)
-    assert cursor is not None and int(cursor) > 0
-
-    newest = max(d["updated_at"] for d in details)
-    fresh = dict(details[0])
-    fresh["id"] = "11111111-1111-4111-8111-111111111111"
-    fresh["updated_at"] = newest + 1000
-    client.details[fresh["id"]] = fresh
+    changed = client.details["aaaa1111-0000-4000-8000-000000000001"]
+    changed["updatedAt"] = "2026-09-20T09:00:00Z"
+    changed["annotations"]["espressoNotes"] = "nachtraeglich notiert"
 
     result = await run_sync(client, db)
-    assert result.mode == "incremental"
-    assert result.new_shots == 1
-    assert db.count_shots() == 3
+
+    assert client.detail_calls == ["aaaa1111-0000-4000-8000-000000000001"]
+    assert result.updated == 1
+    assert result.unchanged == 2
+    assert db.get_shot_row(changed["id"])["notes"] == "nachtraeglich notiert"
 
 
-async def test_one_broken_shot_does_not_abort_the_run(db: Database, details: list[dict]) -> None:
-    broken = details[0]["id"]
-    client = FakeClient(details, failing={broken})
+async def test_late_edit_on_an_old_shot_is_found(db):
+    """Die Liste ist nach Bezugszeit sortiert, nicht nach Aenderungszeit.
 
-    result = await run_sync(client, db, full=True)
-
-    assert result.new_shots == 1, "der intakte Shot muss trotzdem ankommen"
-    assert len(result.errors) == 1
-    assert broken in result.errors[0]
-    assert db.count_shots() == 1
-
-    stored = db.get_json_state("last_errors")
-    assert len(stored) == 1 and broken in stored[0]["error"]
-
-
-async def test_cursor_is_not_advanced_when_errors_occurred(
-    db: Database, details: list[dict]
-) -> None:
-    # Sonst bliebe der fehlgeschlagene Shot fuer immer ungeholt.
-    client = FakeClient(details, failing={details[0]["id"]})
+    Ein frueh abbrechendes Blaettern wuerde eine heute ergaenzte Notiz an einem
+    Bezug vom August nie sehen - genau deshalb wird die Liste vollstaendig
+    gelesen.
+    """
+    client = FakeDecaid(three_shots())
     await run_sync(client, db, full=True)
+    client.detail_calls.clear()
 
-    assert db.get_state(STATE_CURSOR) is None
-    assert db.get_state(STATE_BACKFILL_DONE) is None
+    oldest = client.details["de1app-1785525360"]
+    oldest["updatedAt"] = "2026-09-20T09:00:00Z"
 
-    healed = FakeClient(details)
-    result = await run_sync(healed, db, full=True)
-    assert result.errors == []
-    assert db.count_shots() == 2
-    assert db.get_state(STATE_CURSOR) is not None
+    result = await run_sync(client, db)
+    assert client.detail_calls == ["de1app-1785525360"]
+    assert result.updated == 1
 
 
-async def test_empty_account_is_handled(db: Database) -> None:
-    result = await run_sync(FakeClient([]), db, full=True)
-    assert result.new_shots == 0
+# ------------------------------------------------------- Tablet aus
+
+
+async def test_unreachable_tablet_is_not_an_error(db):
+    client = FakeDecaid(three_shots(), unreachable=True)
+    result = await run_sync(client, db)
+
+    assert result.waiting_for_tablet is True
     assert result.errors == []
     assert db.count_shots() == 0
 
 
-# ------------------------------------------------------------------ Profile
+async def test_unreachable_tablet_leaves_the_archive_untouched(db):
+    client = FakeDecaid(three_shots())
+    await run_sync(client, db, full=True)
+
+    client.unreachable = True
+    result = await run_sync(client, db)
+
+    assert result.waiting_for_tablet is True
+    assert db.count_shots() == 3, "der Bestand bleibt stehen"
 
 
-async def test_identical_profiles_are_deduplicated(db: Database, details: list[dict]) -> None:
-    # Beide Shots liefen mit demselben Profil -> eine Version, zwei Verknuepfungen.
-    result = await run_sync(FakeClient(details), db, full=True)
+async def test_tablet_disappearing_mid_run_keeps_what_arrived(db):
+    class Flaky(FakeDecaid):
+        async def get_shot(self, shot_id):
+            if len(self.detail_calls) >= 1:
+                self.unreachable = True
+            return await super().get_shot(shot_id)
 
-    assert result.new_profile_versions == 1
-    assert result.profiles_linked == 2
+    client = Flaky(three_shots())
+    result = await run_sync(client, db, full=True)
+
+    assert result.waiting_for_tablet is True
+    assert db.count_shots() == 1, "der eine geholte Bezug bleibt"
+    assert not db.get_state(STATE_BACKFILL_DONE), "der Backfill gilt nicht als fertig"
+
+
+async def test_reachable_run_records_the_time(db):
+    client = FakeDecaid(three_shots())
+    await run_sync(client, db, full=True)
+    assert db.get_state(STATE_LAST_REACHABLE)
+
+
+# --------------------------------------------------- Einzelne Fehler
+
+
+async def test_one_broken_shot_does_not_stop_the_run(db):
+    client = FakeDecaid(three_shots(),
+                        fail_on={"aaaa1111-0000-4000-8000-000000000001"})
+    result = await run_sync(client, db, full=True)
+
+    assert db.count_shots() == 2
+    assert len(result.errors) == 1
+    assert "aaaa1111" in result.errors[0]
+
+
+async def test_errors_keep_the_backfill_open(db):
+    client = FakeDecaid(three_shots(), fail_on={"de1app-1785525360"})
+    await run_sync(client, db, full=True)
+    assert not db.get_state(STATE_BACKFILL_DONE)
+
+
+# ------------------------------------------------------------ Profile
+
+
+async def test_profile_comes_from_the_workflow(db):
+    """Kein zweiter Abruf, kein TCL - das Profil liegt dem Bezug bei."""
+    client = FakeDecaid(three_shots())
+    result = await run_sync(client, db, full=True)
+
+    assert result.new_profile_versions == 1, "dreimal dasselbe Profil, eine Version"
+    assert result.profiles_linked == 3
     assert db.count_profiles() == 1
-    assert db.shot_ids_without_profile() == []
 
-    overview = db.profile_overview()
-    assert len(overview) == 1
-    assert overview[0]["name"] == "D-Flow / default"
-    assert overview[0]["shot_count"] == 2
+    row = db.get_shot_row("de1app-1785525360")
+    assert row["profile_id"] is not None
+    profile = db.get_profile_row(row["profile_id"])
+    assert profile["source"] == "decaid"
+    assert json.loads(profile["parsed_json"])["steps"]
 
 
-async def test_different_profiles_get_separate_versions(
-    db: Database, details: list[dict]
-) -> None:
-    client = FakeClient(details, profiles={
-        details[0]["id"]: ADVANCED_TCL,
-        details[1]["id"]: LEGACY_TCL,
-    })
+async def test_a_changed_profile_becomes_a_new_version(db):
+    shots = three_shots()
+    shots[2]["workflow"]["profile"]["steps"][0]["temperature"] = 95.5
+    client = FakeDecaid(shots)
     result = await run_sync(client, db, full=True)
 
     assert result.new_profile_versions == 2
     assert db.count_profiles() == 2
-    assert {p["name"] for p in db.profile_overview()} == {"D-Flow / default", "Default"}
 
 
-async def test_changed_profile_creates_a_new_version_and_old_shot_keeps_the_old_one(
-    db: Database, details: list[dict]
-) -> None:
-    # SPEC ss5/Abnahme 4: alter Shot bleibt an der alten Profilversion haengen.
-    first = FakeClient([details[0]])
-    await run_sync(first, db, full=True)
-    old_profile_id = db._conn.execute(
-        "SELECT profile_id FROM shots WHERE id = ?", (details[0]["id"],)
-    ).fetchone()["profile_id"]
-
-    changed_tcl = ADVANCED_TCL.replace("espresso_pressure 6.0", "espresso_pressure 7.5")
-    both = FakeClient(details, profiles={
-        details[0]["id"]: ADVANCED_TCL,
-        details[1]["id"]: changed_tcl,
-    })
-    result = await run_sync(both, db, full=True)
-
-    assert result.new_profile_versions == 1
-    assert db.count_profiles() == 2
-
-    rows = {
-        r["id"]: r["profile_id"]
-        for r in db._conn.execute("SELECT id, profile_id FROM shots")
-    }
-    assert rows[details[0]["id"]] == old_profile_id, "alter Shot darf nicht umgehaengt werden"
-    assert rows[details[1]["id"]] != old_profile_id
-
-
-async def test_profiles_are_fetched_only_once_per_shot(
-    db: Database, details: list[dict]
-) -> None:
-    client = FakeClient(details)
-    await run_sync(client, db, full=True)
-    assert sorted(client.profile_calls) == sorted(d["id"] for d in details)
-
-    client.profile_calls.clear()
-    await run_sync(client, db, full=True)
-    assert client.profile_calls == [], "verknuepfte Shots duerfen nicht erneut abgefragt werden"
-
-
-async def test_shot_without_profile_is_remembered_not_retried(
-    db: Database, details: list[dict]
-) -> None:
-    missing = details[0]["id"]
-    client = FakeClient(details, profile_missing={missing})
-
-    result = await run_sync(client, db, full=True)
-    assert result.profiles_linked == 1
-    assert any(missing in w for w in result.warnings)
-    assert result.errors == [], "fehlendes Profil ist kein blockierender Fehler"
-    assert db.get_json_state(STATE_NO_PROFILE) == [missing]
-
-    client.profile_calls.clear()
-    await run_sync(client, db, full=True)
-    assert client.profile_calls == []
-
-
-async def test_unparsable_profile_is_still_stored_and_linked(
-    db: Database, details: list[dict]
-) -> None:
-    broken = "advanced_shot {{kaputt\nprofile_title {Kaputtes Profil}\n"
-    client = FakeClient(details, profiles={d["id"]: broken for d in details})
-
+async def test_a_shot_without_a_profile_only_warns(db):
+    shots = three_shots()
+    shots[0]["workflow"]["profile"] = {}
+    client = FakeDecaid(shots)
     result = await run_sync(client, db, full=True)
 
-    assert result.profiles_linked == 2
-    assert db.count_profiles() == 1
-    assert any("parse_ok=false" in w for w in result.warnings)
-    assert result.errors == [], "kaputtes TCL darf den Cursor nicht blockieren"
-    # Der Cursor laeuft weiter, obwohl das Profil nicht parsebar war.
-    assert db.get_state(STATE_CURSOR) is not None
-
-    row = db._conn.execute("SELECT raw_tcl, parsed_json, name FROM profiles").fetchone()
-    assert row["raw_tcl"] == broken
-    assert json.loads(row["parsed_json"])["parse_ok"] is False
-    assert row["name"] == "Kaputtes Profil"
+    assert db.count_shots() == 3, "der Bezug wird trotzdem archiviert"
+    assert result.errors == []
+    assert any("kein Profil" in w for w in result.warnings)
 
 
-async def test_semantic_hash_groups_cosmetically_identical_versions(
-    db: Database, details: list[dict]
-) -> None:
-    cosmetic = (FIXTURES / "profile_default_a_cosmetic.tcl").read_text(encoding="utf-8")
-    base = (FIXTURES / "profile_default_a.tcl").read_text(encoding="utf-8")
+# ------------------------------------------------- Obergrenze je Lauf
 
-    client = FakeClient(details, profiles={
-        details[0]["id"]: base,
-        details[1]["id"]: cosmetic,
-    })
+
+async def test_a_large_backfill_is_split_across_runs(db):
+    many = [
+        decaid_detail(f"de1app-{1785525360 + i}",
+                      timestamp="2026-08-01T05:32:50",
+                      updated_at="2026-09-01T10:00:00Z")
+        for i in range(MAX_DETAILS_PER_RUN + 5)
+    ]
+    client = FakeDecaid(many)
+    first = await run_sync(client, db, full=True)
+
+    assert first.pending == 5
+    assert db.count_shots() == MAX_DETAILS_PER_RUN
+    assert not db.get_state(STATE_BACKFILL_DONE), "solange etwas offen ist, nicht fertig"
+
+    second = await run_sync(client, db)
+    assert second.pending == 0
+    assert db.count_shots() == len(many)
+    assert db.get_state(STATE_BACKFILL_DONE)
+
+
+async def test_pagination_covers_every_page(db):
+    many = [
+        decaid_detail(f"de1app-{1785525360 + i}", timestamp="2026-08-01T05:32:50",
+                      updated_at="2026-09-01T10:00:00Z")
+        for i in range(7)
+    ]
+    client = FakeDecaid(many, page_size=3)
     result = await run_sync(client, db, full=True)
 
-    assert result.new_profile_versions == 2, "zwei Dateien, zwei Identitaeten"
-    rows = db.profile_overview()
-    assert len({r["version_hash"] for r in rows}) == 2
-    assert len({r["semantic_hash"] for r in rows}) == 1, "gebrüht wird identisch"
+    assert client.page_calls == 3, "7 Bezuege zu je 3 pro Seite"
+    assert result.new_shots == 7
 
 
-def _store_stale_profile(db: Database, raw: str) -> int:
-    """Legt eine Version so ab, wie ein aelterer Parser sie hinterlassen haette."""
-    stale = {"title": "Alt", "parse_ok": True, "steps": [], "parser_version": 1}
-    profile_id, _ = db.upsert_profile(
-        name="Alt", version_hash=version_hash(raw), semantic_hash=None,
-        raw_tcl=raw, parsed_json=json.dumps(stale), profile_notes=None,
-        seen_at="2026-08-01T10:00:00Z",
+# ------------------------------------------------------- Koordinator
+
+
+async def test_coordinator_starts_with_a_backfill(db):
+    client = FakeDecaid(three_shots())
+    result = await SyncCoordinator(client, db).run()
+    assert result.mode == "backfill"
+
+
+async def test_coordinator_switches_to_incremental(db):
+    client = FakeDecaid(three_shots())
+    coordinator = SyncCoordinator(client, db)
+    await coordinator.run()
+    assert (await coordinator.run()).mode == "incremental"
+
+
+async def test_ensure_fresh_skips_a_recent_run(db):
+    client = FakeDecaid(three_shots())
+    coordinator = SyncCoordinator(client, db)
+    await coordinator.run()
+    assert await coordinator.ensure_fresh(max_age_s=3600) is None
+
+
+async def test_ensure_fresh_syncs_when_stale(db):
+    client = FakeDecaid(three_shots())
+    coordinator = SyncCoordinator(client, db)
+    await coordinator.run()
+    assert await coordinator.ensure_fresh(max_age_s=0) is not None
+
+
+async def test_write_shot_reads_back(db):
+    client = FakeDecaid(three_shots())
+    coordinator = SyncCoordinator(client, db)
+    await coordinator.run()
+
+    before, after = await coordinator.write_shot(
+        "aaaa1111-0000-4000-8000-000000000002", {"espressoNotes": "schmeckt"}
     )
-    return profile_id
+    assert after["espressoNotes"] == "schmeckt"
+    assert before.get("espressoNotes") != "schmeckt"
+    # Der Read-back schreibt das Archiv mit fort.
+    assert db.get_shot_row("aaaa1111-0000-4000-8000-000000000002")["notes"] == "schmeckt"
 
 
-def test_reparse_updates_profiles_from_an_older_parser(db: Database) -> None:
-    raw = (FIXTURES / "profile_default_a.tcl").read_text(encoding="utf-8")
-    profile_id = _store_stale_profile(db, raw)
-
-    assert reparse_profiles(db) == 1
-    assert reparse_profiles(db) == 0, "idempotent"
-
-    row = db._conn.execute(
-        "SELECT name, parsed_json, semantic_hash, raw_tcl FROM profiles WHERE id = ?",
-        (profile_id,),
-    ).fetchone()
-    fresh = parse_profile(raw)
-
-    assert row["name"] == fresh["title"] == "Default"
-    assert json.loads(row["parsed_json"])["parser_version"] == PARSER_VERSION
-    assert json.loads(row["parsed_json"])["legacy_settings"]["target_pressure_bar"] == 8.6
-    assert row["semantic_hash"] == semantic_hash(fresh)
-    assert row["raw_tcl"] == raw, "das Roh-TCL bleibt unangetastet"
+# ---------------------------------------------- Normalisierung im Bestand
 
 
-def test_reparse_keeps_the_version_hash(db: Database) -> None:
-    # Die Identitaet einer Version haengt an der Datei, nicht an unserer Deutung.
-    raw = (FIXTURES / "profile_default_a.tcl").read_text(encoding="utf-8")
-    _store_stale_profile(db, raw)
-    before = db._conn.execute("SELECT version_hash FROM profiles").fetchone()[0]
+async def test_import_era_zeros_never_reach_the_archive(db):
+    """Die bindende Regel aus M8 (3/n), hier am fertigen Bestand."""
+    shots = [
+        decaid_detail("de1app-1785525360", timestamp="2026-08-01T05:32:50",
+                      updated_at="2026-09-01T10:00:00Z", enjoyment=0.0),
+        decaid_detail("de1app-1785525999", timestamp="2026-08-02T05:32:50",
+                      updated_at="2026-09-01T10:00:00Z", enjoyment=80.0),
+        decaid_detail("aaaa1111-0000-4000-8000-000000000001",
+                      timestamp="2026-09-13T07:50:12",
+                      updated_at="2026-09-13T08:00:00Z", enjoyment=None),
+    ]
+    await run_sync(FakeDecaid(shots), db, full=True)
 
-    reparse_profiles(db)
-
-    after = db._conn.execute("SELECT version_hash FROM profiles").fetchone()[0]
-    assert before == after == version_hash(raw)
-
-
-def test_reparse_leaves_unparsable_profiles_null(db: Database) -> None:
-    broken_tcl = "profile_title {Kaputt\n"
-    db.upsert_profile(
-        name="Kaputt", version_hash="deadbeef", semantic_hash=None,
-        raw_tcl=broken_tcl, parsed_json=json.dumps({"parser_version": 1}),
-        profile_notes=None, seen_at="2026-08-01T10:00:00Z",
-    )
-    assert reparse_profiles(db) == 1
-
-    row = db._conn.execute("SELECT semantic_hash, parsed_json FROM profiles").fetchone()
-    assert row["semantic_hash"] is None
-    assert json.loads(row["parsed_json"])["parse_ok"] is False
-    assert reparse_profiles(db) == 0, "auch der Fehlerfall wird nicht endlos wiederholt"
+    assert db.get_shot_row("de1app-1785525360")["enjoyment"] is None
+    assert db.get_shot_row("de1app-1785525999")["enjoyment"] == 80.0
+    assert db.get_shot_row("aaaa1111-0000-4000-8000-000000000001")["enjoyment"] is None
 
 
-def test_reparse_leaves_current_profiles_alone(db: Database) -> None:
-    raw = (FIXTURES / "profile_default_a.tcl").read_text(encoding="utf-8")
-    parsed = parse_profile(raw)
-    db.upsert_profile(
-        name=parsed["title"], version_hash=version_hash(raw),
-        semantic_hash=semantic_hash(parsed), raw_tcl=raw,
-        parsed_json=json.dumps(parsed), profile_notes=parsed.get("notes"),
-        seen_at="2026-08-01T10:00:00Z",
-    )
-    assert reparse_profiles(db) == 0
+async def test_both_time_sources_land_as_utc(db):
+    shots = [
+        decaid_detail("de1app-1785525360", timestamp="2026-08-01T05:32:50",
+                      updated_at="2026-09-01T10:00:00Z"),
+        decaid_detail("aaaa1111-0000-4000-8000-000000000001",
+                      timestamp="2026-08-01T05:32:50",
+                      updated_at="2026-09-13T08:00:00Z"),
+    ]
+    await run_sync(FakeDecaid(shots), db, full=True)
+
+    imported = db.get_shot_row("de1app-1785525360")
+    native = db.get_shot_row("aaaa1111-0000-4000-8000-000000000001")
+
+    assert imported["time_source"] == "utc"
+    assert imported["started_at"] == "2026-08-01T05:32:50Z"
+    assert native["time_source"] == "local_berlin"
+    assert native["started_at"] == "2026-08-01T03:32:50Z"
 
 
-async def test_profiles_are_backfilled_for_shots_synced_before_m2(
-    db: Database, details: list[dict]
-) -> None:
-    # Zustand nach M1: Shots da, profile_id NULL.
-    from visualizer_mcp.visualizer_client import series_rows_from_detail, shot_row_from_detail
+async def test_store_shot_helper_matches_the_sync_path(db, tmp_path):
+    """Die Testhilfe muss dasselbe ablegen wie ein echter Lauf."""
+    detail = decaid_detail("de1app-1785525360", timestamp="2026-08-01T05:32:50")
+    store_shot(db, detail)
+    direct = dict(db.get_shot_row("de1app-1785525360"))
 
-    for detail in details:
-        db.upsert_shot(shot_row_from_detail(detail, "2026-08-01T10:00:00Z"),
-                       series_rows_from_detail(detail))
-    db.set_state("backfill_completed_at", "2026-08-01T10:00:00Z")
-    assert len(db.shot_ids_without_profile()) == 2
+    other = Database(tmp_path / "andere.db")
+    other.migrate()
+    await run_sync(FakeDecaid([detail]), other, full=True)
+    synced = dict(other.get_shot_row("de1app-1785525360"))
+    other.close()
 
-    client = FakeClient(details)
-    result = await run_sync(client, db, full=True)
-
-    assert client.detail_calls == [], "Details muessen dafuer nicht erneut geladen werden"
-    assert result.profiles_linked == 2
-    assert db.shot_ids_without_profile() == []
+    ignore = {"synced_at", "profile_id", "bean_id"}
+    assert {k: v for k, v in direct.items() if k not in ignore} == \
+           {k: v for k, v in synced.items() if k not in ignore}

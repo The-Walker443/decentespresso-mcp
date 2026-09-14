@@ -12,10 +12,10 @@ import uvicorn
 
 from . import __version__
 from .config import Config, ConfigError
+from .decaid_client import DecaidClient, DecaidError, DecaidUnreachable
 from .logging_setup import setup_logging
 from .server import build_app
 from .sync import open_database, run_sync
-from .visualizer_client import VisualizerClient, VisualizerError
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -103,16 +103,16 @@ def main(argv: list[str] | None = None) -> int:
 async def _run_sync_cli(config: Config, *, full: bool) -> int:
     log = logging.getLogger("visualizer_mcp")
     db = open_database(config.db_path)
-    client = VisualizerClient(
-        config.visualizer_email,
-        config.visualizer_password,
-        user_agent=config.user_agent,
-    )
+    client = DecaidClient(config.decaid_url)
     try:
-        account = await client.get_me()
-        log.info("authenticated", extra={"fields": {"account": account.get("name")}})
+        info = await client.info()
+        log.info("decaid reached", extra={"fields": {"version": info.get("version")}})
         result = await run_sync(client, db, full=full)
-    except VisualizerError as exc:
+    except DecaidUnreachable:
+        # Tablet aus - kein Fehler, nur nichts zu tun.
+        log.info("decaid not reachable", extra={"fields": {"url": config.decaid_url}})
+        return 0
+    except DecaidError as exc:
         log.error("sync failed", extra={"fields": {"error": exc.code, "detail": str(exc)}})
         return 1
     finally:

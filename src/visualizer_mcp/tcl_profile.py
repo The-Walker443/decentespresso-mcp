@@ -12,6 +12,10 @@ gegeneinander geprueft, damit der Ersatz nicht unbemerkt abdriftet.
 Die Versionierung haengt am sha256 des **normalisierten** Roh-TCL (SPEC ss5);
 ``raw_tcl`` wird unveraendert gespeichert. ``semantic_hash`` gruppiert daneben
 Versionen, die identisch bruehen.
+
+ÜBERHOLT ab M8: Decaid liefert das Profil als JSON im Workflow mit, die
+Versionierung läuft über ``decaid_profile``. Dieses Modul bleibt lesbar für
+den Altbestand, wird aber nicht mehr aufgerufen (SPEC §20.4).
 """
 
 from __future__ import annotations

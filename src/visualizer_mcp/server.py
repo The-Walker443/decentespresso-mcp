@@ -29,10 +29,12 @@ from starlette.responses import PlainTextResponse, Response
 from . import __version__, milestone
 from .config import Config
 from .db import Database
+from .decaid_client import DecaidClient, DecaidError
 from .metrics import METRICS_VERSION, curve_shape, downsample_curve, metrics_for_shot
 from .sync import (
     QUICK_SYNC_MAX_AGE_S,
     STATE_BACKFILL_DONE,
+    STATE_LAST_REACHABLE,
     STATE_LAST_RESULT,
     STATE_LAST_SYNC,
     SyncCoordinator,
@@ -40,7 +42,6 @@ from .sync import (
     periodic_sync,
 )
 from .telemetry import CallMetricsMiddleware
-from .visualizer_client import VisualizerClient, VisualizerError
 from .writes import ValidationError, validate_fields
 
 log = logging.getLogger(__name__)
@@ -48,7 +49,8 @@ log = logging.getLogger(__name__)
 SERVER_NAME = "visualizer-espresso"
 
 #: SPEC ss12: status() warnt, wenn die Archivluecke gefaehrlich wird - Visualizer
-#: Free haelt nur ein 1-Monats-Fenster vor.
+#: So lange darf ein Abgleich ausbleiben, bevor status() das anmerkt. Das
+#: Tablet ist oft aus; erst eine laengere Stille heisst, dass etwas fehlt.
 STALE_SYNC_WARN_DAYS = 7
 
 DEFAULT_LIMIT = 10
@@ -156,8 +158,11 @@ def build_mcp(
         return {
             "beans": [
                 {
-                    "brand": r["bean_brand"],
-                    "type": r["bean_type"],
+                    "id": r["bean_id"],
+                    "name": r["bean_name"],
+                    "roaster": r["roaster"],
+                    "processing": r["processing"],
+                    "decaf": bool(r["decaf"]) if r["decaf"] is not None else None,
                     "shot_count": r["shot_count"],
                     "first_shot": r["first_shot"],
                     "last_shot": r["last_shot"],
@@ -432,20 +437,21 @@ def build_mcp(
         annotations={"readOnlyHint": False, "idempotentHint": True, "openWorldHint": True}
     )
     async def sync_now() -> dict[str, Any]:
-        """Holt neue und geaenderte Bezuege sofort von visualizer.coffee.
+        """Holt neue und geaenderte Bezuege sofort vom Tablet.
 
         Meist unnoetig: der Server synchronisiert selbst, und `get_shot`/
-        `list_shots` pruefen ohnehin auf Frische. Schreibt nichts zu Visualizer,
+        `list_shots` pruefen ohnehin auf Frische. Aendert in Decaid nichts,
         beliebig wiederholbar. `errors` sind voruebergehende Probleme,
-        `warnings` endgueltige Befunde.
+        `warnings` endgueltige Befunde. Ist `waiting_for_tablet` gesetzt, war
+        das Tablet aus - kein Fehler, nur nichts zu holen; das so sagen.
         """
         if coordinator is None:
             raise ToolError(
-                "sync_unavailable: Dieser Server laeuft ohne Visualizer-Verbindung."
+                "sync_unavailable: Dieser Server laeuft ohne Decaid-Verbindung."
             )
         try:
             result = await coordinator.run(full=False)
-        except VisualizerError as exc:
+        except DecaidError as exc:
             raise ToolError(f"{exc.code}: {exc}") from exc
         return result.as_dict()
 
@@ -485,7 +491,7 @@ def _register_update_shot(mcp: FastMCP, db: Database, coordinator: SyncCoordinat
                      "destructiveHint": False, "openWorldHint": True},
     )
     async def update_shot(id: str, fields: dict[str, Any]) -> dict[str, Any]:
-        """Aendert Angaben zu einem Bezug auf visualizer.coffee.
+        """Aendert Notiz oder Bewertung eines Bezugs in Decaid.
 
         NUR auf ausdrueckliche Anweisung des Nutzers aufrufen, nie von sich aus
         und nie "zur Sicherheit". Genau die Felder setzen, die der Nutzer
@@ -494,18 +500,14 @@ def _register_update_shot(mcp: FastMCP, db: Database, coordinator: SyncCoordinat
         Werte, nicht anhand dessen, was gesendet wurde.
 
         `fields` ist eine Zuordnung Feldname -> neuer Wert; `null` loescht ein
-        Feld. Erlaubt sind ausschliesslich: bean_brand, bean_type, roast_date
-        (ISO, YYYY-MM-DD), roast_level, bean_notes, grinder_setting,
-        bean_weight (g), drink_weight (g), espresso_enjoyment (0-100),
-        espresso_notes, private_notes, drink_tds, drink_ey, barista. Alles
-        andere wird abgewiesen; Zeitstempel, Telemetrie und Profil sind nicht
-        aenderbar.
+        Feld. Erlaubt sind ausschliesslich `espressoNotes` und `enjoyment`
+        (0-100). Alles andere wird abgewiesen; Zeitstempel, Telemetrie, Bohne
+        und Profil sind hier nicht aenderbar.
 
-        Geschrieben wird immer zuerst bei Visualizer, danach wird der Bezug neu
-        geladen. Die Antwort nennt je Feld `before` und `after` aus diesem
-        Read-back. Steht ein Feld unter `unchanged`, hat Visualizer die
-        Aenderung nicht uebernommen - das passiert bei `private_notes` ohne
-        Premium-Konto. Das dem Nutzer sagen, statt Erfolg zu melden.
+        Geschrieben wird zuerst in Decaid, danach wird der Bezug neu geladen.
+        Die Antwort nennt je Feld `before` und `after` aus diesem Read-back.
+        Steht ein Feld unter `unchanged`, hat Decaid die Aenderung nicht
+        uebernommen - das dem Nutzer sagen, statt Erfolg zu melden.
         """
         try:
             payload = validate_fields(fields)
@@ -519,7 +521,7 @@ def _register_update_shot(mcp: FastMCP, db: Database, coordinator: SyncCoordinat
         started = time.perf_counter()
         try:
             before, after = await coordinator.write_shot(id, payload)
-        except VisualizerError as exc:
+        except DecaidError as exc:
             raise ToolError(f"{exc.code}: {exc}") from exc
 
         changes = {
@@ -544,10 +546,10 @@ def _register_update_shot(mcp: FastMCP, db: Database, coordinator: SyncCoordinat
         if ignored:
             result["unchanged"] = ignored
             result["note"] = (
-                "Visualizer hat diese Felder nicht uebernommen: "
+                "Decaid hat diese Felder nicht uebernommen: "
                 + ", ".join(ignored)
-                + ". Bei private_notes und tag_list ist ein Premium-Konto noetig; "
-                "sonst war der neue Wert mit dem alten identisch."
+                + ". Entweder war der neue Wert mit dem alten identisch, oder "
+                "die API hat ihn verworfen."
             )
         return result
 
@@ -563,18 +565,22 @@ async def _refresh(coordinator: SyncCoordinator) -> dict[str, Any]:
     """
     try:
         result = await coordinator.ensure_fresh(QUICK_SYNC_MAX_AGE_S)
-    except VisualizerError as exc:
+    except DecaidError as exc:
         # Der Bestand ist da, nur vielleicht nicht ganz aktuell - das ist eine
         # bessere Antwort als gar keine.
         return {"synced": False, "note": f"Sync fehlgeschlagen ({exc.code}), "
                                          "Antwort stammt aus dem Archiv."}
     if result is None:
         return {"synced": False, "note": "Bestand war aktuell, kein Abgleich noetig."}
+    if result.waiting_for_tablet:
+        # Kein Fehler: das Tablet ist zwischen zwei Kaffees schlicht aus.
+        return {"synced": False, "waiting_for_tablet": True,
+                "note": "Tablet nicht erreichbar, Antwort stammt aus dem Archiv."}
     return {"synced": True, "new_shots": result.new_shots, "updated": result.updated}
 
 
 def _bean_label(row: Any) -> str | None:
-    parts = [row["bean_brand"], row["bean_type"]]
+    parts = [row["bean_roaster"], row["bean_name"]]
     label = " ".join(p for p in parts if p)
     return label or None
 
@@ -600,7 +606,7 @@ def _compact_shot(row: Any, metrics: dict[str, Any] | None) -> dict[str, Any]:
         "duration_s": row["duration_s"],
         "peak_pressure_infusion": metrics.get("peak_pressure_infusion"),
         "enjoyment": row["enjoyment"],
-        "notes": _short(row["notes"] or row["private_notes"]),
+        "notes": _short(row["notes"]),
         "warnings": len(metrics.get("warnings") or []),
     }
 
@@ -609,20 +615,22 @@ def _full_shot(row: Any) -> dict[str, Any]:
     return {
         "id": row["id"],
         "started_at": row["started_at"],
-        "bean_brand": row["bean_brand"],
-        "bean_type": row["bean_type"],
-        "bean_notes": _short(row["bean_notes"]),
+        "time_source": row["time_source"],
+        "bean_name": row["bean_name"],
+        "bean_roaster": row["bean_roaster"],
+        "bean_batch_id": row["bean_batch_id"],
+        "basket": row["basket_name"],
         "grinder_model": row["grinder_model"],
         "grinder_setting": row["grinder_setting"],
         "dose_g": row["dose_g"],
         "yield_g": row["yield_g"],
         "ratio": row["ratio"],
         "duration_s": row["duration_s"],
-        "drink_tds": row["drink_tds"],
-        "drink_ey": row["drink_ey"],
+        "target_dose_g": row["target_dose_g"],
+        "target_yield_g": row["target_yield_g"],
+        "stop_reason": row["stop_reason"],
         "enjoyment": row["enjoyment"],
         "notes": row["notes"],
-        "private_notes": row["private_notes"],
     }
 
 
@@ -814,8 +822,8 @@ def _status_payload(config: Config, db: Database) -> dict[str, Any]:
         warnings.append("Es gab noch keinen Sync-Lauf.")
     elif age_days > STALE_SYNC_WARN_DAYS:
         warnings.append(
-            f"Letzter Sync vor {age_days:.0f} Tagen - Visualizer Free haelt nur "
-            "ein 1-Monats-Fenster vor, aeltere Bezuege koennen verloren sein."
+            f"Letzter Abgleich vor {age_days:.0f} Tagen - das Tablet war so "
+            "lange nicht erreichbar. Neuere Bezuege fehlen im Archiv."
         )
     if config.sync_interval_min == 0:
         warnings.append("Automatischer Sync ist abgeschaltet (SYNC_INTERVAL_MIN=0).")
@@ -824,9 +832,25 @@ def _status_payload(config: Config, db: Database) -> dict[str, Any]:
     if missing_profiles:
         warnings.append(f"{missing_profiles} Shots ohne Profilversion.")
 
+    last_reachable = db.get_state(STATE_LAST_REACHABLE)
+    last_result = db.get_json_state(STATE_LAST_RESULT, {}) or {}
+    if last_result.get("waiting_for_tablet"):
+        # Kein Fehler, nur eine Tatsache - das Tablet laeuft nur, waehrend
+        # Kaffee gemacht wird.
+        warnings.append(
+            "Tablet zuletzt nicht erreichbar"
+            + (f" (zuletzt erreicht: {last_reachable})" if last_reachable else "")
+            + "."
+        )
+
     errors = db.get_json_state("last_errors", []) or []
     return {
         "server": SERVER_NAME,
+        "decaid": {
+            "url": config.decaid_url,
+            "last_reachable": last_reachable,
+            "waiting_for_tablet": bool(last_result.get("waiting_for_tablet")),
+        },
         "version": __version__,
         "milestone": milestone(),
         "build_ref": os.environ.get("BUILD_REF") or None,
@@ -877,7 +901,7 @@ def build_app(
 ):
     """Fertige ASGI-App: MCP unter ``/<secret>/mcp``, ``/healthz``, sonst 404.
 
-    ``enable_sync`` steuert Hintergrundschleife *und* Visualizer-Verbindung;
+    ``enable_sync`` steuert Hintergrundschleife *und* Decaid-Verbindung;
     ohne Angabe laeuft beides, wenn ``SYNC_INTERVAL_MIN > 0`` ist. Tests setzen
     es auf False und kommen damit ohne Netz aus.
     """
@@ -886,14 +910,7 @@ def build_app(
 
     coordinator = None
     if sync_on:
-        coordinator = SyncCoordinator(
-            VisualizerClient(
-                config.visualizer_email,
-                config.visualizer_password,
-                user_agent=config.user_agent,
-            ),
-            database,
-        )
+        coordinator = SyncCoordinator(DecaidClient(config.decaid_url), database)
 
     mcp = build_mcp(config, database, coordinator)
     app = mcp.http_app(path=config.mcp_path, transport="http")
@@ -914,7 +931,7 @@ def _attach_sync_lifespan(app, config: Config, coordinator: SyncCoordinator) -> 
         stop = asyncio.Event()
         task = asyncio.create_task(
             periodic_sync(coordinator, config.sync_interval_min, stop=stop),
-            name="visualizer-sync",
+            name="decaid-sync",
         )
         log.info("sync worker started",
                  extra={"fields": {"interval_min": config.sync_interval_min}})

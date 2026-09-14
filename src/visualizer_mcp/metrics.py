@@ -23,7 +23,10 @@ log = logging.getLogger(__name__)
 #: aendert - dann rechnet der naechste Zugriff neu.
 #: 1 -> 2: Waagen-Plausibilitaet (untarierte Waage macht t_first_drops
 #:         ungueltig, Mittelfluss <= 0 macht flow_stability ungueltig).
-METRICS_VERSION = 2
+#: 2 -> 3: Quelle von pi_end. Decaid meldet den Maschinenzustand im Klartext
+#:         (``substate``) statt als Rechteckwelle; damit ist das Ende der
+#:         Praeinfusion abgelesen statt erschlossen (SPEC ss20.5).
+METRICS_VERSION = 3
 
 FIRST_DROPS_WEIGHT_G = 0.3
 #: Fenster, in dem eine tarierte Waage noch 0 anzeigen muss.
@@ -33,9 +36,13 @@ INFUSION_WINDOW_TAIL_S = 2.0
 DIP_WINDOW_S = 4.0
 END_WINDOW_S = 2.0
 
-#: Der allererste Wechsel von espresso_state_change liegt bei t < 0.1 s und
-#: markiert den Shot-Start, keinen Phasenwechsel.
+#: Der allererste Wechsel liegt bei t < 0.1 s und markiert den Shot-Start,
+#: keinen Phasenwechsel.
 START_MARKER_MAX_S = 0.5
+
+#: Zustand waehrend der Praeinfusion und danach, wie Decaid sie meldet.
+SUBSTATE_PREINFUSION = "preinfusion"
+SUBSTATE_POURING = "pouring"
 
 
 def compute_metrics(
@@ -67,9 +74,9 @@ def compute_metrics(
 
     boundaries = phase_boundaries(rows)
     if not boundaries:
-        warnings.append("Keine Phasenmarken in state_change - pi_end per Heuristik.")
+        warnings.append("Keine Phasenmarken der Maschine - pi_end per Heuristik.")
 
-    pi_end, pi_end_source = _pi_end(times, pressure, boundaries, max_pressure_global)
+    pi_end, pi_end_source = _pi_end(rows, times, pressure, boundaries, max_pressure_global)
     if pi_end is None:
         warnings.append("pi_end nicht bestimmbar - Bezugsphase bleibt offen.")
 
@@ -311,10 +318,9 @@ def curve_shape(
 ) -> dict[str, Any]:
     """Abschnittsweise Beschreibung des Verlaufs statt roher Messpunkte.
 
-    Die Abschnittsgrenzen sind die Phasenmarken der Maschine
-    (``espresso_state_change``) - dieselbe Quelle wie ``pi_end``. Hat ein Shot
-    keine Marken, dienen ``pi_end`` und das Shot-Ende als Grenzen; ``source``
-    haelt fest, welcher Weg griff.
+    Die Abschnittsgrenzen sind die Phasenmarken der Maschine - dieselbe Quelle
+    wie ``pi_end``. Hat ein Bezug keine Marken, dienen ``pi_end`` und das Ende
+    als Grenzen; ``source`` haelt fest, welcher Weg griff.
 
     Je Abschnitt und Kanal: Anfangs- und Endwert, Richtung und ob der Verlauf
     linear ist. ``p`` ist der Druck in bar, ``fo`` der aus der Waage abgeleitete
@@ -329,7 +335,7 @@ def curve_shape(
 
     boundaries = phase_boundaries(ordered)
     if boundaries:
-        source = "state_change"
+        source = "machine"
     elif metrics.get("pi_end") is not None:
         boundaries = [float(metrics["pi_end"])]
         source = "markers"
@@ -406,49 +412,85 @@ def _is_linear(pairs: Sequence[tuple[float, float]], flat: float) -> bool:
     return deviation / span <= LINEARITY_TOLERANCE
 
 
-def phase_boundaries(rows: Sequence[Mapping[str, Any]]) -> list[float]:
-    """Phasengrenzen aus ``state_change``.
+def substate_change(rows: Sequence[Mapping[str, Any]], target: str) -> float | None:
+    """Erster Zeitpunkt, an dem die Maschine ``target`` meldet.
 
-    ``espresso_state_change`` ist keine Phasennummer, sondern eine Rechteckwelle:
-    sie springt bei jedem Phasenwechsel zwischen zwei Sentinelwerten hin und her
-    (im Rohformat -10000000 und +10000000; den negativen bildet der Client auf
-    ``None`` ab). Nicht der Wert traegt Information, sondern der **Wechsel**.
-    An Echtdaten geprueft: die Zahl der Wechsel ist ``Schritte - 1``, und die
-    Zeitpunkte decken sich mit den Schrittdauern des Profils.
+    ``state.substate`` ist Decaids Klartextzustand des Bezugs
+    (``preparingForShot`` -> ``preinfusion`` -> ``pouring``). Das ist eine
+    Ansage der Maschine, kein Schwellwert.
+    """
+    for row in rows:
+        if str(row.get("substate") or "") == target:
+            return float(row["elapsed"])
+    return None
 
-    Der erste Wechsel liegt bei t < 0.1 s und markiert den Shot-Start; er wird
-    verworfen.
+
+def frame_boundaries(rows: Sequence[Mapping[str, Any]]) -> list[float]:
+    """Wechsel der Profilschrittnummer, ohne den Rest des Vorgaengers.
+
+    Nachgemessen am 2026-09-14: ``profileFrame`` steht auf dem ersten Messpunkt
+    noch auf dem Wert des vorangegangenen Bezugs - der Wechsel bei t < 0.5 s ist
+    also kein Schrittwechsel, sondern das Aufraeumen. Er wird verworfen (SPEC
+    ss20.5).
     """
     boundaries: list[float] = []
     previous: Any = _UNSET
     for row in rows:
-        state = row.get("state_change")
-        if previous is not _UNSET and state != previous:
+        frame = row.get("profile_frame")
+        if previous is not _UNSET and frame != previous:
             boundaries.append(float(row["elapsed"]))
-        previous = state
+        previous = frame
     return [t for t in boundaries if t > START_MARKER_MAX_S]
 
 
+def phase_boundaries(rows: Sequence[Mapping[str, Any]]) -> list[float]:
+    """Phasengrenzen der Maschine, beste verfuegbare Quelle zuerst.
+
+    ``substate`` benennt die Phase, ``profile_frame`` nur den Schritt. Wo beides
+    da ist, gilt der Zustand: er sagt, *was* passiert, nicht bloss *dass*
+    gewechselt wurde.
+    """
+    ordered = sorted(rows, key=lambda r: r["elapsed"])
+    marks: list[float] = []
+    previous: Any = _UNSET
+    for row in ordered:
+        sub = row.get("substate")
+        if sub is None:
+            continue
+        if previous is not _UNSET and sub != previous:
+            marks.append(float(row["elapsed"]))
+        previous = sub
+    marks = [t for t in marks if t > START_MARKER_MAX_S]
+    return marks or frame_boundaries(ordered)
+
+
 def _pi_end(
+    rows: Sequence[Mapping[str, Any]],
     times: Sequence[float],
     pressure: Sequence[float | None],
     boundaries: Sequence[float],
     max_pressure_global: float | None,
 ) -> tuple[float | None, str | None]:
-    """Ende der Praeinfusion (SPEC ss8 1.1).
+    """Ende der Praeinfusion (SPEC ss8 1.1, ss20.5).
 
-    Primaer eine echte Phasengrenze aus ``state_change``. Welche das ist, laesst
-    sich aus den Marken allein nicht bestimmen - sie sagen *dass* gewechselt
-    wurde, nicht *wozu*. Deshalb dient der Druckanstieg als Anker: genommen wird
-    die letzte Phasengrenze vor dem Moment, in dem der Druck erstmals
-    ``0.6 x max_pressure_global`` erreicht. Der zurueckgegebene Wert ist damit
-    immer ein von der Maschine gemeldeter Phasenwechsel, kein Schwellwert.
+    Drei Quellen, in dieser Reihenfolge; ``pi_end_source`` nennt die tatsaechlich
+    genutzte:
 
-    Ohne Marken (oder wenn keine vor dem Anker liegt) faellt es auf den
-    Ankerzeitpunkt selbst zurueck - die Heuristik der urspruenglichen SPEC.
+    ``substate``       Die Maschine meldet den Uebergang nach ``pouring``
+                       im Klartext. Abgelesen, nicht erschlossen.
+    ``profile_frame``  Ohne Zustandsangabe die letzte Schrittgrenze vor dem
+                       Druckanker. Werte vor dem Shot-Start zaehlen nicht.
+    ``heuristic``      Ohne beides der Zeitpunkt, an dem der Druck erstmals
+                       ``0.6 x max_pressure_global`` erreicht. Eine Naeherung -
+                       nicht auf die Zehntelsekunde vergleichbar.
     """
+    ordered = sorted(rows, key=lambda r: r["elapsed"])
+    pouring = substate_change(ordered, SUBSTATE_POURING)
+    if pouring is not None and pouring > START_MARKER_MAX_S:
+        return pouring, "substate"
+
     if max_pressure_global is None or max_pressure_global <= 0:
-        return (boundaries[0], "state_change") if boundaries else (None, None)
+        return (boundaries[0], "profile_frame") if boundaries else (None, None)
 
     threshold = PI_END_PRESSURE_FRACTION * max_pressure_global
     anchor = next(
@@ -456,11 +498,11 @@ def _pi_end(
         None,
     )
     if anchor is None:
-        return (boundaries[0], "state_change") if boundaries else (None, None)
+        return (boundaries[0], "profile_frame") if boundaries else (None, None)
 
     earlier = [t for t in boundaries if t <= anchor]
     if earlier:
-        return max(earlier), "state_change"
+        return max(earlier), "profile_frame"
     return anchor, "heuristic"
 
 

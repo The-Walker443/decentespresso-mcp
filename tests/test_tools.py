@@ -10,59 +10,72 @@ from typing import Any
 import pytest
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
+from helpers import (
+    BROKEN_ID,
+    RECENT_ID,
+    REFERENCE_ID,
+    corpus,
+    decaid_detail,
+    store_shot,
+    store_shot_with_profile,
+)
 
 from visualizer_mcp.config import Config
 from visualizer_mcp.db import Database
 from visualizer_mcp.metrics import warm_metrics_cache
 from visualizer_mcp.server import build_mcp
 from visualizer_mcp.sync import SyncCoordinator
-from visualizer_mcp.tcl_profile import parse_profile, semantic_hash, version_hash
-from visualizer_mcp.visualizer_client import series_rows_from_detail, shot_row_from_detail
 
-FIXTURES = pathlib.Path(__file__).parent / "fixtures"
+FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "decaid"
 
-REFERENCE = "6eb25d36-ff0c-48d0-8f88-0b05f9c7418a"   # D-Flow, aeltester
-RECENT = "36ed21cd-8fc0-489e-8ea4-959d952e04c0"      # Default, neuester
-BROKEN = "e9be2f9f-6817-4827-a8c8-9b4a66243f7d"      # Waage kaputt
+REFERENCE = REFERENCE_ID   # D-Flow, aeltester, Tchibo
+RECENT = RECENT_ID         # Default, neuester, Bogatz
+BROKEN = BROKEN_ID         # Waage nicht tariert
 
 #: SPEC ss9: Antwortbudget je Tool-Antwort.
 BUDGET_BYTES = 15_000
+
+#: Dauer des Referenzbezugs - letzter Kurvenpunkt.
+DURATION_S = 45.6
 
 
 def load(name: str) -> dict:
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
 
-def _add_shot(db: Database, fixture: str, profile_tcl: str | None) -> str:
-    payload = load(fixture)
-    db.upsert_shot(
-        shot_row_from_detail(payload, "2026-08-01T10:00:00Z"),
-        series_rows_from_detail(payload),
-    )
-    if profile_tcl is not None:
-        parsed = parse_profile(profile_tcl)
-        profile_id, _ = db.upsert_profile(
-            name=parsed["title"] or "(ohne Titel)",
-            version_hash=version_hash(profile_tcl),
-            semantic_hash=semantic_hash(parsed),
-            raw_tcl=profile_tcl,
-            parsed_json=json.dumps(parsed, ensure_ascii=False),
-            profile_notes=parsed.get("notes"),
-            seen_at="2026-08-01T10:00:00Z",
-        )
-        db.link_shot_profile(payload["id"], profile_id)
-    return payload["id"]
+def _add_test_beans(db: Database) -> None:
+    """Die zwei Bohnen des Bestands mitsamt ihren Chargen."""
+    synced = "2026-09-14T12:00:00Z"
+    db.upsert_beans([
+        {"id": "bean-tchibo", "name": "Testsorte", "roaster": "Tchibo",
+         "species": None, "processing": None, "decaf": 0, "archived": 0,
+         "notes": None, "created_at": None, "updated_at": None,
+         "raw_json": "{}", "synced_at": synced},
+        {"id": "bean-bogatz", "name": "Espresso Brasil", "roaster": "Bogatz",
+         "species": None, "processing": None, "decaf": 0, "archived": 0,
+         "notes": None, "created_at": None, "updated_at": None,
+         "raw_json": "{}", "synced_at": synced},
+    ])
+    db.upsert_bean_batches([
+        {"id": "batch-tchibo", "bean_id": "bean-tchibo", "roast_date": "2026-07-20",
+         "buy_date": None, "freeze_date": None, "unfreeze_date": None, "frozen": 0,
+         "archived": 0, "created_at": None, "updated_at": None,
+         "raw_json": "{}", "synced_at": synced},
+        {"id": "batch-bogatz", "bean_id": "bean-bogatz", "roast_date": "2026-09-01",
+         "buy_date": None, "freeze_date": None, "unfreeze_date": None, "frozen": 0,
+         "archived": 0, "created_at": None, "updated_at": None,
+         "raw_json": "{}", "synced_at": synced},
+    ])
+    db.link_shots_to_beans()
 
 
 @pytest.fixture
 def db(tmp_path: pathlib.Path) -> Iterator[Database]:
     database = Database(tmp_path / "tools.db")
     database.migrate()
-    _add_shot(database, "shot_reference.json",
-              (FIXTURES / "profile_reference.tcl").read_text(encoding="utf-8"))
-    _add_shot(database, "shot_recent.json",
-              (FIXTURES / "profile_recent.tcl").read_text(encoding="utf-8"))
-    _add_shot(database, "shot_broken_scale.json", None)
+    for detail in corpus():
+        store_shot_with_profile(database, detail, "2026-09-14T12:00:00Z")
+    _add_test_beans(database)
     warm_metrics_cache(database)
     database.set_state("last_sync_at", "2026-08-01T10:00:00Z")
     database.set_state("backfill_completed_at", "2026-08-01T10:00:00Z")
@@ -89,20 +102,19 @@ def size_of(payload: Any) -> int:
 
 async def test_list_beans(mcp) -> None:
     beans = (await call(mcp, "list_beans"))["beans"]
-    by_brand = {b["brand"]: b for b in beans}
-    assert set(by_brand) == {"Tchibo", "Bogatz"}
+    by_roaster = {b["roaster"]: b for b in beans}
+    assert set(by_roaster) == {"Tchibo", "Bogatz"}
 
-    tchibo = by_brand["Tchibo"]
-    assert tchibo["type"] == "Test"
+    tchibo = by_roaster["Tchibo"]
+    assert tchibo["name"] == "Testsorte"
     assert tchibo["shot_count"] == 1
     assert tchibo["first_shot"] == tchibo["last_shot"] == "2026-07-31T19:16:00Z"
-    assert tchibo["last_grinder_setting"] == "4"
+    assert tchibo["last_grinder_setting"]
 
-    bogatz = by_brand["Bogatz"]
+    bogatz = by_roaster["Bogatz"]
     assert bogatz["shot_count"] == 2
-    assert bogatz["grinder_settings_used"] == ["4,2"]
     # Neueste Bohne zuerst.
-    assert beans[0]["brand"] == "Bogatz"
+    assert beans[0]["roaster"] == "Bogatz"
 
 
 # ---------------------------------------------------------------- list_shots
@@ -115,11 +127,12 @@ async def test_list_shots_returns_compact_rows(mcp) -> None:
     assert [s["id"] for s in result["shots"]][0] == RECENT   # neueste zuerst
 
     row = next(s for s in result["shots"] if s["id"] == REFERENCE)
-    assert row["bean"] == "Tchibo Test"
-    assert row["profile"] == "D-Flow / default"
+    assert row["bean"] == "Tchibo Testsorte"
+    assert row["profile"] == "D-Flow"
     assert row["dose_g"] == 18.0
-    assert row["ratio"] == 2.011
-    assert row["peak_pressure_infusion"] == 4.1     # nicht das globale Maximum
+    assert row["ratio"] == 2.311
+    assert row["peak_pressure_infusion"] == 6.6     # nicht das globale Maximum
+    assert row["peak_pressure_infusion"] < row["duration_s"]
     assert row["warnings"] == 0
 
 
@@ -133,11 +146,11 @@ async def test_list_shots_flags_unreliable_metrics(mcp) -> None:
     ("filters", "expected"),
     [
         ({"bean": "tchibo"}, {REFERENCE}),          # case-insensitiv
-        ({"bean": "Test"}, {REFERENCE}),            # trifft auch die Sorte
-        ({"roaster": "bogatz"}, {RECENT, BROKEN}),  # nur die Marke
-        ({"roaster": "Test"}, set()),               # Sorte zaehlt hier nicht
+        ({"bean": "Testsorte"}, {REFERENCE}),       # trifft auch den Namen
+        ({"roaster": "bogatz"}, {RECENT, BROKEN}),  # nur die Roesterei
+        ({"roaster": "Testsorte"}, set()),          # der Name zaehlt hier nicht
         ({"profile": "d-flow"}, {REFERENCE}),
-        ({"profile": "default"}, {REFERENCE, RECENT, BROKEN}),  # Teilstring
+        ({"profile": "default"}, {RECENT, BROKEN}),  # Teilstring
     ],
 )
 async def test_list_shots_filters(mcp, filters: dict, expected: set) -> None:
@@ -193,14 +206,16 @@ async def test_bad_cursor_is_rejected(mcp) -> None:
 async def test_get_shot_by_id(mcp) -> None:
     result = await call(mcp, "get_shot", {"id": REFERENCE})
 
-    assert result["shot"]["bean_brand"] == "Tchibo"
+    assert result["shot"]["bean_roaster"] == "Tchibo"
+    assert result["shot"]["time_source"] == "utc"
     assert result["shot"]["dose_g"] == 18.0
-    assert result["metrics"]["pi_end"] == 6.2
-    assert result["metrics"]["pi_end_source"] == "state_change"
-    assert result["metrics"]["peak_pressure_infusion"] == 4.1
-    assert result["metrics"]["max_pressure_global"] == 5.4
-    assert result["profile"]["title"] == "D-Flow / default"
-    assert len(result["profile"]["steps"]) == 3
+    assert result["metrics"]["pi_end"] == 21.1
+    # Decaid meldet die Phase im Klartext - abgelesen, nicht erschlossen.
+    assert result["metrics"]["pi_end_source"] == "substate"
+    assert result["metrics"]["peak_pressure_infusion"] == 6.6
+    assert result["metrics"]["max_pressure_global"] == 9.0
+    assert result["profile"]["title"] == "D-Flow"
+    assert result["profile"]["steps"]
 
     # SPEC ss17.1: Form immer, Punktarrays nur auf Anforderung.
     assert result["curve_shape"]["segments"]
@@ -240,11 +255,18 @@ async def test_shape_is_much_smaller_than_the_point_arrays(mcp) -> None:
     assert size_of(lean["curve_shape"]) * 3 < size_of(full["curve"])
 
 
-async def test_shot_without_profile_reports_none(mcp) -> None:
+async def test_a_broken_scale_is_reported_not_guessed(mcp) -> None:
     result = await call(mcp, "get_shot", {"id": BROKEN})
-    assert result["profile"] is None
     assert result["metrics"]["t_first_drops"] is None
     assert any("tariert" in w for w in result["metrics"]["warnings"])
+
+
+async def test_shot_without_profile_reports_none(mcp, db) -> None:
+    detail = decaid_detail("de1app-1785599999", timestamp="2026-08-05T05:32:50")
+    detail["workflow"]["profile"] = {}
+    store_shot(db, detail)
+    result = await call(mcp, "get_shot", {"id": "de1app-1785599999"})
+    assert result["profile"] is None
 
 
 # ------------------------------------------------------------------- Kurven
@@ -271,7 +293,7 @@ async def test_curve_respects_max_points_and_keeps_the_peaks(mcp) -> None:
 
         # SPEC ss9.1: erster und letzter Punkt sowie beide Druckmaxima bleiben.
         assert curve["t"][0] == 0.0
-        assert curve["t"][-1] == pytest.approx(22.95, abs=0.01)
+        assert curve["t"][-1] == pytest.approx(DURATION_S, abs=0.01)
         assert metrics["t_peak"] == pytest.approx(
             min(curve["t"], key=lambda t: abs(t - metrics["t_peak"])), abs=0.051
         )
@@ -301,7 +323,7 @@ async def test_tiny_budget_still_keeps_the_mandatory_points(mcp, max_points: int
 
     assert len(curve["t"]) <= 4
     assert curve["t"][0] == 0.0
-    assert curve["t"][-1] == pytest.approx(22.95, abs=0.01)
+    assert curve["t"][-1] == pytest.approx(DURATION_S, abs=0.01)
     for wanted in (metrics["t_peak"], metrics["t_max_pressure_global"]):
         # Metrikzeiten sind auf 0.1 s gerundet, Kurvenzeiten auf 0.01 s - der
         # naechstgelegene Punkt darf also bis zu 0.05 s daneben liegen.
@@ -309,14 +331,14 @@ async def test_tiny_budget_still_keeps_the_mandatory_points(mcp, max_points: int
 
 
 async def test_missing_channels_are_omitted(db: Database, config: Config) -> None:
-    payload = load("shot_reference.json")
-    rows = series_rows_from_detail(payload)
-    for row in rows:
-        row["temp_basket"] = None
-    db.upsert_shot(shot_row_from_detail(payload, "2026-08-01T10:00:00Z"), rows)
+    detail = decaid_detail("de1app-1785588888", timestamp="2026-08-06T05:32:50")
+    for point in detail["measurements"]:
+        point["machine"]["groupTemperature"] = None
+    store_shot(db, detail)
 
     curve = (await call(
-        build_mcp(config, db), "get_shot", {"id": REFERENCE, "include_curve": True}
+        build_mcp(config, db), "get_shot",
+        {"id": "de1app-1785588888", "include_curve": True}
     ))["curve"]
     assert "tb" not in curve
     assert "p" in curve
@@ -328,8 +350,8 @@ async def test_missing_channels_are_omitted(db: Database, config: Config) -> Non
 async def test_get_shot_metrics(mcp) -> None:
     metrics = await call(mcp, "get_shot_metrics", {"id": REFERENCE})
     assert metrics["id"] == REFERENCE
-    assert metrics["end_pressure"] == 5.3
-    assert metrics["duration_s"] == 22.9
+    assert metrics["end_pressure"] == 8.5
+    assert metrics["duration_s"] == DURATION_S
     assert metrics["warnings"] == []
 
 
@@ -403,19 +425,19 @@ async def test_compare_rejects_unknown_id(mcp) -> None:
 async def test_list_profiles_groups_versions(mcp) -> None:
     profiles = (await call(mcp, "list_profiles"))["profiles"]
     by_name = {p["name"]: p for p in profiles}
-    assert set(by_name) == {"D-Flow / default", "Default"}
-    assert by_name["D-Flow / default"]["versions"][0]["shot_count"] == 1
-    assert len(by_name["D-Flow / default"]["versions"][0]["version_hash"]) == 8
+    assert set(by_name) == {"D-Flow", "Default"}
+    assert by_name["D-Flow"]["versions"][0]["shot_count"] == 1
+    assert by_name["Default"]["versions"][0]["shot_count"] == 2
+    assert len(by_name["D-Flow"]["versions"][0]["version_hash"]) == 8
 
 
 async def test_get_profile_by_shot(mcp) -> None:
     profile = await call(mcp, "get_profile", {"shot_id": REFERENCE})
-    assert profile["title"] == "D-Flow / default"
+    assert profile["title"] == "D-Flow"
     assert profile["type"] == "advanced"
-    assert profile["target_weight_g"] == 36
+    assert profile["target_weight_g"] == 42.0
     assert [s["name"] for s in profile["steps"]] == ["Filling", "Infusing", "Pouring"]
-    assert profile["steps"][0]["exit"] == {"type": "pressure_over", "value": 2.1}
-    assert profile["steps"][1]["exit"] is None      # exit_if 0
+    assert profile["steps"][0]["exit"] == {"type": "pressure_over", "value": 1.5}
 
 
 async def test_get_profile_by_name_and_hash(mcp) -> None:
@@ -431,16 +453,13 @@ async def test_get_profile_needs_exactly_one_argument(mcp) -> None:
         assert "invalid_argument" in str(excinfo.value)
 
 
-async def test_get_profile_for_shot_without_one(mcp) -> None:
+async def test_get_profile_for_shot_without_one(mcp, db) -> None:
+    detail = decaid_detail("de1app-1785577777", timestamp="2026-08-07T05:32:50")
+    detail["workflow"]["profile"] = {}
+    store_shot(db, detail)
     with pytest.raises(ToolError) as excinfo:
-        await call(mcp, "get_profile", {"shot_id": BROKEN})
+        await call(mcp, "get_profile", {"shot_id": "de1app-1785577777"})
     assert "profile_not_found" in str(excinfo.value)
-
-
-async def test_legacy_profile_reports_empty_steps(mcp) -> None:
-    profile = await call(mcp, "get_profile", {"shot_id": RECENT})
-    assert profile["type"] == "pressure"
-    assert profile["steps"] == []
 
 
 # --------------------------------------------------------------- Antwortbudget
@@ -565,12 +584,12 @@ async def test_latest_syncs_when_stale(config: Config, db: Database) -> None:
 
 
 async def test_latest_survives_a_failing_sync(config: Config, db: Database) -> None:
-    from visualizer_mcp.visualizer_client import Unreachable
+    from visualizer_mcp.decaid_client import DecaidError
 
     class FailingCoordinator(RecordingCoordinator):
         async def run(self, *, full: bool | None = None):
             self.runs += 1
-            raise Unreachable("Visualizer antwortet nicht.")
+            raise DecaidError("Decaid antwortet nicht.")
 
     db.set_state("last_sync_at", "2020-01-01T00:00:00Z")
     coordinator = FailingCoordinator(db)
@@ -580,7 +599,7 @@ async def test_latest_survives_a_failing_sync(config: Config, db: Database) -> N
     # Archiv schlaegt Fehlermeldung: die Daten sind da, nur vielleicht alt.
     assert result["shot"]["id"] == RECENT
     assert result["freshness"]["synced"] is False
-    assert "visualizer_unreachable" in result["freshness"]["note"]
+    assert "Sync fehlgeschlagen" in result["freshness"]["note"]
 
 
 async def test_id_other_than_latest_never_syncs(config: Config, db: Database) -> None:

@@ -43,29 +43,58 @@ def default_migrations_dir() -> Path:
         + ", ".join(str(c) for c in candidates)
     )
 
-#: Spalten von shot_series in Einfuegereihenfolge.
+#: Spalten von shot_series in Einfuegereihenfolge. Deckungsgleich mit dem, was
+#: decaid_mapping.series_rows_from_decaid liefert.
 SERIES_COLUMNS = (
-    "shot_id", "elapsed", "pressure", "flow_in", "flow_out",
-    "weight", "temp_mix", "temp_basket", "state_change",
+    "shot_id", "elapsed",
+    "pressure", "flow_in", "flow_out", "weight", "temp_mix", "temp_basket", "volume",
+    "target_pressure", "target_flow", "target_temp_mix", "target_temp_basket",
+    "state", "substate", "profile_frame",
 )
 
+#: Deckungsgleich mit decaid_mapping.shot_row_from_decaid.
 _SHOT_COLUMNS = (
-    "id", "started_at", "bean_brand", "bean_type", "bean_notes", "profile_name",
-    "grinder_model", "grinder_setting", "dose_g", "yield_g", "duration_s", "ratio",
-    "drink_tds", "drink_ey", "enjoyment", "notes", "private_notes", "raw_json",
-    "updated_at", "synced_at",
+    "id", "started_at", "time_source", "created_at", "updated_at",
+    "duration_s", "stop_reason", "workflow_id", "profile_name",
+    "bean_batch_id", "bean_id", "bean_name", "bean_roaster", "basket_name",
+    "grinder_model", "grinder_setting",
+    "target_dose_g", "target_yield_g", "dose_g", "yield_g", "ratio",
+    "enjoyment", "notes", "raw_json", "synced_at",
 )
 
-# profile_id bleibt beim Upsert unangetastet - die Verknuepfung setzt M2.
-_SHOT_UPDATE_SET = ", ".join(
-    f"{c}=excluded.{c}" for c in _SHOT_COLUMNS if c != "id"
+_BEAN_COLUMNS = (
+    "id", "name", "roaster", "species", "processing", "decaf", "archived",
+    "notes", "created_at", "updated_at", "raw_json", "synced_at",
 )
 
-_UPSERT_SHOT = (
-    f"INSERT INTO shots ({', '.join(_SHOT_COLUMNS)}) "
-    f"VALUES ({', '.join(':' + c for c in _SHOT_COLUMNS)}) "
-    f"ON CONFLICT(id) DO UPDATE SET {_SHOT_UPDATE_SET}"
+_BATCH_COLUMNS = (
+    "id", "bean_id", "roast_date", "buy_date", "freeze_date", "unfreeze_date",
+    "frozen", "archived", "created_at", "updated_at", "raw_json", "synced_at",
 )
+
+
+def _upsert_sql(table: str, columns: tuple[str, ...]) -> str:
+    sets = ", ".join(f"{c}=excluded.{c}" for c in columns if c != "id")
+    return (
+        f"INSERT INTO {table} ({', '.join(columns)}) "
+        f"VALUES ({', '.join(':' + c for c in columns)}) "
+        f"ON CONFLICT(id) DO UPDATE SET {sets}"
+    )
+
+# profile_id bleibt beim Upsert unangetastet - die Verknuepfung setzt die
+# Profilversionierung.
+_UPSERT_SHOT = _upsert_sql("shots", _SHOT_COLUMNS)
+_UPSERT_BEAN = _upsert_sql("beans", _BEAN_COLUMNS)
+_UPSERT_BATCH = _upsert_sql("bean_batches", _BATCH_COLUMNS)
+
+
+#: Migrationen der Visualizer-Aera. Liegt eine davon in einer Datei vor, ist es
+#: nicht das Archiv, das dieser Server ab M8 fuehrt.
+_VISUALIZER_ERA_MIGRATIONS = frozenset({
+    "001_init.sql",
+    "002_profile_semantic_hash.sql",
+    "003_shot_metrics.sql",
+})
 
 
 def utc_now_iso() -> str:
@@ -108,6 +137,7 @@ class Database:
                 row["name"]
                 for row in self._conn.execute("SELECT name FROM schema_migrations")
             }
+            self._refuse_visualizer_era(done)
             applied: list[str] = []
             for sql_file in sorted(self._migrations_dir.glob("*.sql")):
                 if sql_file.name in done:
@@ -123,10 +153,32 @@ class Database:
                 log.info("migrations applied", extra={"fields": {"files": ",".join(applied)}})
             return applied
 
+    def _refuse_visualizer_era(self, applied: set[str]) -> None:
+        """Bricht ab, wenn die Datei noch aus der Visualizer-Aera stammt.
+
+        Die neuen Migrationen bestehen aus ``CREATE TABLE IF NOT EXISTS`` - auf
+        eine alte Datei angewendet wuerden sie stillschweigend nichts tun und
+        das alte Schema stehen lassen, waehrend der Server so taete, als waere
+        er auf dem neuen Stand. Der Historien-Reset verlangt eine neue Datei.
+        """
+        stale = sorted(applied & _VISUALIZER_ERA_MIGRATIONS)
+        if stale:
+            raise RuntimeError(
+                f"{self.path} stammt aus der Visualizer-Aera (angewendet: "
+                f"{', '.join(stale)}). Ab M8 ist Decaid die Quelle und das "
+                "Schema ein anderes; eine neue Datei anlegen und die alte als "
+                "shots-visualizer-era.db behalten."
+            )
+
     # --------------------------------------------------------------------- Shots
 
-    def known_shot_versions(self) -> dict[str, int]:
-        """``{shot_id: updated_at}`` - Grundlage fuer Dedupe und Update-Erkennung."""
+    def known_shot_versions(self) -> dict[str, str | None]:
+        """``{shot_id: updated_at}`` - Grundlage fuer Dedupe und Update-Erkennung.
+
+        ``updated_at`` ist ISO8601 in UTC und damit lexikographisch
+        vergleichbar; Decaid bietet keinen serverseitigen Zeitfilter, der
+        Abgleich laeuft deshalb hier.
+        """
         with self._lock:
             return {
                 row["id"]: row["updated_at"]
@@ -154,6 +206,54 @@ class Database:
             self._conn.commit()
             return is_new
 
+    # ------------------------------------------------- Bohnen und Chargen
+
+    def upsert_beans(self, beans: Sequence[dict[str, Any]]) -> int:
+        with self._lock:
+            self._conn.executemany(_UPSERT_BEAN, beans)
+            self._conn.commit()
+        return len(beans)
+
+    def upsert_bean_batches(self, batches: Sequence[dict[str, Any]]) -> int:
+        with self._lock:
+            self._conn.executemany(_UPSERT_BATCH, batches)
+            self._conn.commit()
+        return len(batches)
+
+    def link_shots_to_beans(self) -> int:
+        """Traegt ``bean_id`` aus der Charge nach.
+
+        Der Bezug nennt nur die Charge; welche Bohne dahintersteht, weiss allein
+        bean_batches. Erst nachdem Bohnen und Chargen da sind, laesst sich das
+        aufloesen - deshalb ein eigener Schritt am Ende des Abgleichs.
+        """
+        with self._lock:
+            cur = self._conn.execute("""
+                UPDATE shots SET bean_id = (
+                    SELECT b.bean_id FROM bean_batches b WHERE b.id = shots.bean_batch_id
+                )
+                WHERE bean_batch_id IS NOT NULL
+                  AND bean_id IS NOT (
+                    SELECT b.bean_id FROM bean_batches b WHERE b.id = shots.bean_batch_id
+                  )
+            """)
+            self._conn.commit()
+            return cur.rowcount
+
+    def count_beans(self) -> tuple[int, int]:
+        with self._lock:
+            beans = self._conn.execute("SELECT COUNT(*) AS n FROM beans").fetchone()["n"]
+            batches = self._conn.execute(
+                "SELECT COUNT(*) AS n FROM bean_batches"
+            ).fetchone()["n"]
+        return beans, batches
+
+    def batch_row(self, batch_id: str) -> sqlite3.Row | None:
+        with self._lock:
+            return self._conn.execute(
+                "SELECT * FROM bean_batches WHERE id = ?", (batch_id,)
+            ).fetchone()
+
     def count_shots(self) -> int:
         with self._lock:
             return self._conn.execute("SELECT COUNT(*) AS n FROM shots").fetchone()["n"]
@@ -164,7 +264,8 @@ class Database:
                 "SELECT COUNT(*) AS n FROM shot_series"
             ).fetchone()["n"]
 
-    def max_updated_at(self) -> int | None:
+    def max_updated_at(self) -> str | None:
+        """Juengstes ``updated_at`` im Archiv - der Cursor des Abgleichs."""
         with self._lock:
             row = self._conn.execute("SELECT MAX(updated_at) AS m FROM shots").fetchone()
             return row["m"]
@@ -182,39 +283,62 @@ class Database:
     def list_beans(self) -> list[dict[str, Any]]:
         """Bohnen mit Bezugszahl, Zeitraum und genutzten Muehleneinstellungen.
 
-        Die Einstellungen kommen als eigene Abfrage statt via GROUP_CONCAT: sie
-        sind Freitext und enthalten selbst Kommas ("4,2"), eine verkettete
-        Liste liesse sich nicht mehr zuverlaessig zerlegen.
+        Grundlage ist jetzt Decaids Bohnenliste, nicht mehr der Freitext an den
+        Bezuegen: damit tauchen auch Bohnen auf, die zwar angelegt, aber noch
+        nicht bezogen wurden, und ein Umbenennen fuehrt nicht zu zwei Eintraegen.
+
+        Die Muehleneinstellungen kommen als eigene Abfrage statt via
+        GROUP_CONCAT: sie sind Freitext und enthalten selbst Kommas ("4,2"),
+        eine verkettete Liste liesse sich nicht mehr zuverlaessig zerlegen.
         """
         with self._lock:
             beans = list(self._conn.execute("""
-                SELECT bean_brand, bean_type,
-                       COUNT(*) AS shot_count,
-                       MIN(started_at) AS first_shot,
-                       MAX(started_at) AS last_shot,
+                SELECT b.id AS bean_id, b.name AS bean_name, b.roaster,
+                       b.species, b.processing, b.decaf, b.archived,
+                       COUNT(s.id) AS shot_count,
+                       MIN(s.started_at) AS first_shot,
+                       MAX(s.started_at) AS last_shot,
                        (SELECT x.grinder_setting FROM shots x
-                         WHERE x.bean_brand IS s.bean_brand AND x.bean_type IS s.bean_type
+                         WHERE x.bean_id = b.id AND x.grinder_setting IS NOT NULL
                          ORDER BY x.started_at DESC LIMIT 1) AS last_grinder_setting,
                        (SELECT x.grinder_model FROM shots x
-                         WHERE x.bean_brand IS s.bean_brand AND x.bean_type IS s.bean_type
+                         WHERE x.bean_id = b.id AND x.grinder_model IS NOT NULL
                          ORDER BY x.started_at DESC LIMIT 1) AS last_grinder_model
-                FROM shots s
-                GROUP BY s.bean_brand, s.bean_type
-                ORDER BY last_shot DESC
+                FROM beans b
+                LEFT JOIN shots s ON s.bean_id = b.id
+                GROUP BY b.id
+                ORDER BY last_shot IS NULL, last_shot DESC
             """))
-            settings: dict[tuple[Any, Any], list[str]] = {}
+            settings: dict[str, list[str]] = {}
             for row in self._conn.execute(
-                "SELECT DISTINCT bean_brand, bean_type, grinder_setting FROM shots "
-                "WHERE grinder_setting IS NOT NULL ORDER BY grinder_setting"
+                "SELECT DISTINCT bean_id, grinder_setting FROM shots "
+                "WHERE grinder_setting IS NOT NULL AND bean_id IS NOT NULL "
+                "ORDER BY grinder_setting"
             ):
-                key = (row["bean_brand"], row["bean_type"])
-                settings.setdefault(key, []).append(row["grinder_setting"])
+                settings.setdefault(row["bean_id"], []).append(row["grinder_setting"])
 
         return [
-            {**dict(bean),
-             "grinder_settings": settings.get((bean["bean_brand"], bean["bean_type"]), [])}
+            {**dict(bean), "grinder_settings": settings.get(bean["bean_id"], [])}
             for bean in beans
         ]
+
+    def orphan_bean_names(self) -> list[dict[str, Any]]:
+        """Bezuege, deren Charge keiner bekannten Bohne zugeordnet ist.
+
+        Aus der de1app importierte Bezuege tragen den Bohnennamen nur als
+        Freitext. Ohne diese Ansicht verschwaenden sie aus list_beans.
+        """
+        with self._lock:
+            return [dict(row) for row in self._conn.execute("""
+                SELECT bean_name, bean_roaster,
+                       COUNT(*) AS shot_count,
+                       MIN(started_at) AS first_shot,
+                       MAX(started_at) AS last_shot
+                FROM shots
+                WHERE bean_id IS NULL AND bean_name IS NOT NULL
+                GROUP BY bean_name, bean_roaster
+                ORDER BY last_shot DESC
+            """)]
 
     def query_shots(
         self,
@@ -229,15 +353,16 @@ class Database:
     ) -> tuple[list[sqlite3.Row], int]:
         """Gefilterte Shots plus Gesamtzahl. Textfilter sind Teilstring, case-insensitiv.
 
-        ``bean`` trifft Marke *oder* Sorte, ``roaster`` nur die Marke.
+        ``bean`` trifft den Bohnennamen *oder* den Roester, ``roaster`` nur
+        den Roester.
         """
         where: list[str] = []
         params: list[Any] = []
         if bean:
-            where.append("(LOWER(bean_brand) LIKE ? OR LOWER(bean_type) LIKE ?)")
+            where.append("(LOWER(bean_name) LIKE ? OR LOWER(bean_roaster) LIKE ?)")
             params += [f"%{bean.lower()}%"] * 2
         if roaster:
-            where.append("LOWER(bean_brand) LIKE ?")
+            where.append("LOWER(bean_roaster) LIKE ?")
             params.append(f"%{roaster.lower()}%")
         if profile:
             where.append("LOWER(profile_name) LIKE ?")
@@ -270,7 +395,7 @@ class Database:
         clause = ""
         params: list[Any] = []
         if bean:
-            clause = "WHERE LOWER(bean_brand) LIKE ? OR LOWER(bean_type) LIKE ?"
+            clause = "WHERE LOWER(bean_name) LIKE ? OR LOWER(bean_roaster) LIKE ?"
             params = [f"%{bean.lower()}%"] * 2
         with self._lock:
             row = self._conn.execute(
@@ -378,11 +503,12 @@ class Database:
         *,
         name: str,
         version_hash: str,
-        raw_tcl: str,
+        raw_json: str,
         parsed_json: str,
         profile_notes: str | None,
         seen_at: str,
         semantic_hash: str | None = None,
+        source: str = "decaid",
     ) -> tuple[int, bool]:
         """Legt die Profilversion an oder aktualisiert nur ``last_seen``.
 
@@ -403,43 +529,14 @@ class Database:
 
             cursor = self._conn.execute(
                 "INSERT INTO profiles "
-                "(name, version_hash, semantic_hash, raw_tcl, parsed_json, profile_notes, "
-                " first_seen, last_seen) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (name, version_hash, semantic_hash, raw_tcl, parsed_json, profile_notes,
-                 seen_at, seen_at),
+                "(name, version_hash, semantic_hash, source, raw_json, parsed_json, "
+                " profile_notes, first_seen, last_seen) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (name, version_hash, semantic_hash, source, raw_json, parsed_json,
+                 profile_notes, seen_at, seen_at),
             )
             self._conn.commit()
             return int(cursor.lastrowid), True
-
-    def all_profiles_for_reparse(self) -> list[sqlite3.Row]:
-        """Alle Versionen mit Roh-TCL - Grundlage fuer ein Neu-Parsen."""
-        with self._lock:
-            return list(self._conn.execute(
-                "SELECT id, raw_tcl, parsed_json, semantic_hash FROM profiles ORDER BY id"
-            ))
-
-    def update_profile_parse(
-        self,
-        profile_id: int,
-        *,
-        name: str,
-        parsed_json: str,
-        semantic_hash: str | None,
-        profile_notes: str | None,
-    ) -> None:
-        """Schreibt das Ergebnis eines Neu-Parsens.
-
-        ``raw_tcl`` und ``version_hash`` bleiben unangetastet - die Identitaet
-        einer Version haengt an der Datei, nicht an unserer Deutung.
-        """
-        with self._lock:
-            self._conn.execute(
-                "UPDATE profiles SET name = ?, parsed_json = ?, semantic_hash = ?, "
-                "profile_notes = ? WHERE id = ?",
-                (name, parsed_json, semantic_hash, profile_notes, profile_id),
-            )
-            self._conn.commit()
 
     def link_shot_profile(self, shot_id: str, profile_id: int) -> None:
         with self._lock:

@@ -6,12 +6,12 @@ from collections.abc import Iterator
 
 import pytest
 from fastmcp import Client
+from helpers import decaid_detail, store_shot
 from starlette.testclient import TestClient
 
 from visualizer_mcp.config import Config
 from visualizer_mcp.db import Database
 from visualizer_mcp.server import SERVER_NAME, build_app, build_mcp
-from visualizer_mcp.visualizer_client import shot_row_from_detail
 
 from .conftest import TEST_SECRET
 
@@ -83,8 +83,8 @@ async def test_status_reports_empty_archive(config: Config, db: Database) -> Non
 
 
 async def test_status_reports_real_counts(config: Config, db: Database) -> None:
-    detail = json.loads((FIXTURES / "shot_reference.json").read_text(encoding="utf-8"))
-    db.upsert_shot(shot_row_from_detail(detail, "2026-08-01T10:00:00Z"), [])
+    store_shot(db, decaid_detail("de1app-1785525360",
+                                 timestamp="2026-07-31T19:16:00"))
     db.set_state("last_sync_at", "2026-08-01T10:00:00Z")
     db.set_state("backfill_completed_at", "2026-08-01T10:00:00Z")
 
@@ -104,7 +104,8 @@ async def test_status_warns_about_stale_sync(config: Config, db: Database) -> No
     async with Client(build_mcp(config, db)) as client:
         payload = (await client.call_tool("status", {})).data
 
-    assert any("1-Monats-Fenster" in w for w in payload["warnings"])
+    assert any("Tablet war so lange nicht erreichbar" in w
+               for w in payload["warnings"])
 
 
 async def test_no_secret_leaks_into_mcp_metadata(config: Config, db: Database) -> None:
@@ -114,3 +115,5 @@ async def test_no_secret_leaks_into_mcp_metadata(config: Config, db: Database) -
     blob = json.dumps([t.model_dump(mode="json") for t in tools]) + json.dumps(result.data)
     assert TEST_SECRET not in blob
     assert config.visualizer_password not in blob
+    assert config.decaid_url in json.dumps(result.data), (
+        "die LAN-Adresse ist kein Geheimnis und hilft beim Nachsehen")

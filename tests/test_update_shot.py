@@ -1,4 +1,10 @@
-"""Das Schreibtool: Sichtbarkeit, Write-through-Kette, Read-back (SPEC ss18)."""
+"""Das Schreibtool: Sichtbarkeit, Write-through-Kette, Read-back (SPEC ss18).
+
+Der Ersatz-Decaid bildet nach, was am 2026-09-14 gegen die echte API gemessen
+wurde: geschuetzte Felder werden mit 400 abgewiesen statt stillschweigend
+verworfen, und ein 200 belegt trotzdem nicht, dass jedes Feld uebernommen
+wurde - deshalb liest das Tool immer frisch nach.
+"""
 
 from __future__ import annotations
 
@@ -12,36 +18,28 @@ import httpx
 import pytest
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
+from helpers import decaid_detail, store_shot
 
 from visualizer_mcp.config import Config
 from visualizer_mcp.db import Database
+from visualizer_mcp.decaid_client import DecaidClient, DecaidRejected
 from visualizer_mcp.metrics import METRICS_VERSION, warm_metrics_cache
 from visualizer_mcp.server import build_mcp
 from visualizer_mcp.sync import SyncCoordinator
-from visualizer_mcp.visualizer_client import (
-    RequestRejected,
-    VisualizerClient,
-    series_rows_from_detail,
-    shot_row_from_detail,
-)
 
-FIXTURES = pathlib.Path(__file__).parent / "fixtures"
-REFERENCE = "6eb25d36-ff0c-48d0-8f88-0b05f9c7418a"
+REFERENCE = "de1app-1785525360"
 
 
-def load(name: str) -> dict:
-    return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
+def reference_detail() -> dict:
+    return decaid_detail(REFERENCE, timestamp="2026-07-31T19:16:00",
+                         enjoyment=40.0, notes="test")
 
 
 @pytest.fixture
 def db(tmp_path: pathlib.Path) -> Iterator[Database]:
     database = Database(tmp_path / "writes.db")
     database.migrate()
-    payload = load("shot_reference.json")
-    database.upsert_shot(
-        shot_row_from_detail(payload, "2026-08-01T10:00:00Z"),
-        series_rows_from_detail(payload),
-    )
+    store_shot(database, reference_detail())
     warm_metrics_cache(database)
     yield database
     database.close()
@@ -52,21 +50,13 @@ def writable(valid_env: dict[str, str]) -> Config:
     return Config.from_env({**valid_env, "WRITE_ENABLED": "true"})
 
 
-class FakeVisualizer:
-    """Haelt einen Shot im Speicher und verhaelt sich wie die echte API.
+class FakeDecaid:
+    """Haelt einen Bezug im Speicher und verhaelt sich wie die echte API."""
 
-    Bildet die drei Eigenheiten nach, die die Verifikation am 2026-08-01
-    zutage gefoerdert hat: PATCH braucht Accept: application/json, nicht
-    erlaubte Felder werden still verworfen, und bleibt danach nichts uebrig,
-    kommt 400.
-    """
-
-    #: Was Visualizer fuer dieses (Free-)Konto tatsaechlich annimmt.
-    PERMITTED = {
-        "bean_brand", "bean_type", "roast_date", "roast_level", "bean_notes",
-        "grinder_setting", "bean_weight", "drink_weight",
-        "espresso_enjoyment", "espresso_notes", "drink_tds", "drink_ey", "barista",
-    }
+    #: Annotationen, die Decaid entgegennimmt. ``measurements``, ``id`` und
+    #: ``createdAt`` weist es mit 400 ab (T14).
+    PERMITTED = {"espressoNotes", "enjoyment", "actualDoseWeight", "actualYield",
+                 "extras"}
 
     def __init__(self, detail: dict[str, Any]) -> None:
         self.detail = json.loads(json.dumps(detail))
@@ -78,26 +68,27 @@ class FakeVisualizer:
             self.gets += 1
             return httpx.Response(200, json=self.detail)
 
-        if request.headers.get("Accept") != "application/json":
-            return httpx.Response(422, json={"error": "Request must be JSON."})
-
         body = json.loads(request.content)
-        fields = body.get("shot", {})
+        for protected in ("id", "createdAt", "measurements"):
+            if protected in body:
+                return httpx.Response(
+                    400, json={"detail": f"{protected} is read-only"}
+                )
+
+        fields = body.get("annotations") or {}
         self.patches.append(fields)
         applied = {k: v for k, v in fields.items() if k in self.PERMITTED}
         if not applied:
-            return httpx.Response(
-                400,
-                json={"error": "param is missing or the value is empty or invalid: shot"},
-            )
-        self.detail.update(applied)
-        self.detail["updated_at"] = self.detail.get("updated_at", 0) + 1
+            return httpx.Response(400, json={"detail": "nothing to update"})
+
+        self.detail.setdefault("annotations", {}).update(applied)
+        self.detail["updatedAt"] = "2026-09-14T18:00:00Z"
         return httpx.Response(200, json=self.detail)
 
 
-def make_coordinator(fake: FakeVisualizer, db: Database) -> SyncCoordinator:
-    client = VisualizerClient(
-        "shots@example.org", "hunter2-but-long-enough",
+def make_coordinator(fake: FakeDecaid, db: Database) -> SyncCoordinator:
+    client = DecaidClient(
+        "http://10.100.100.171:8080",
         transport=httpx.MockTransport(fake.handler),
     )
     return SyncCoordinator(client, db)
@@ -112,8 +103,8 @@ async def call(mcp, name: str, args: dict | None = None):
 
 
 async def test_tool_is_absent_without_the_switch(config: Config, db: Database) -> None:
-    """SPEC ss18.4: aus heisst nicht vorhanden, nicht 'lehnt ab'."""
-    fake = FakeVisualizer(load("shot_reference.json"))
+    """SPEC ss18.4: aus heisst nicht vorhanden, nicht "lehnt ab"."""
+    fake = FakeDecaid(reference_detail())
     async with Client(build_mcp(config, db, make_coordinator(fake, db))) as client:
         names = {t.name for t in await client.list_tools()}
     assert "update_shot" not in names
@@ -121,7 +112,7 @@ async def test_tool_is_absent_without_the_switch(config: Config, db: Database) -
 
 
 async def test_tool_appears_with_the_switch(writable: Config, db: Database) -> None:
-    fake = FakeVisualizer(load("shot_reference.json"))
+    fake = FakeDecaid(reference_detail())
     async with Client(build_mcp(writable, db, make_coordinator(fake, db))) as client:
         tools = {t.name: t for t in await client.list_tools()}
     assert "update_shot" in tools
@@ -130,7 +121,7 @@ async def test_tool_appears_with_the_switch(writable: Config, db: Database) -> N
 
 
 async def test_tool_stays_absent_without_a_connection(writable: Config, db: Database) -> None:
-    # Ohne Visualizer-Verbindung gibt es nichts zu schreiben.
+    # Ohne Decaid-Verbindung gibt es nichts zu schreiben.
     async with Client(build_mcp(writable, db, None)) as client:
         assert "update_shot" not in {t.name for t in await client.list_tools()}
 
@@ -139,7 +130,7 @@ async def test_tool_stays_absent_without_a_connection(writable: Config, db: Data
 
 
 async def test_unknown_field_never_reaches_the_api(writable: Config, db: Database) -> None:
-    fake = FakeVisualizer(load("shot_reference.json"))
+    fake = FakeDecaid(reference_detail())
     mcp = build_mcp(writable, db, make_coordinator(fake, db))
 
     with pytest.raises(ToolError) as excinfo:
@@ -150,22 +141,33 @@ async def test_unknown_field_never_reaches_the_api(writable: Config, db: Databas
 
 
 async def test_validation_happens_before_the_api_call(writable: Config, db: Database) -> None:
-    fake = FakeVisualizer(load("shot_reference.json"))
+    fake = FakeDecaid(reference_detail())
     mcp = build_mcp(writable, db, make_coordinator(fake, db))
 
     with pytest.raises(ToolError):
-        await call(mcp, "update_shot",
-                   {"id": REFERENCE, "fields": {"espresso_enjoyment": 999}})
+        await call(mcp, "update_shot", {"id": REFERENCE, "fields": {"enjoyment": 999}})
+    assert fake.patches == []
+
+
+async def test_protected_fields_never_reach_the_api(writable: Config, db: Database) -> None:
+    """Decaid wuerde sie mit 400 abweisen - das Tool kommt ihm zuvor."""
+    fake = FakeDecaid(reference_detail())
+    mcp = build_mcp(writable, db, make_coordinator(fake, db))
+
+    for field in ("id", "timestamp", "measurements", "workflow"):
+        with pytest.raises(ToolError) as excinfo:
+            await call(mcp, "update_shot", {"id": REFERENCE, "fields": {field: "x"}})
+        assert "nicht aenderbar" in str(excinfo.value)
     assert fake.patches == []
 
 
 async def test_unknown_shot_is_caught_before_the_api(writable: Config, db: Database) -> None:
-    fake = FakeVisualizer(load("shot_reference.json"))
+    fake = FakeDecaid(reference_detail())
     mcp = build_mcp(writable, db, make_coordinator(fake, db))
 
     with pytest.raises(ToolError) as excinfo:
         await call(mcp, "update_shot",
-                   {"id": "gibt-es-nicht", "fields": {"espresso_enjoyment": 50}})
+                   {"id": "gibt-es-nicht", "fields": {"enjoyment": 50}})
     assert "shot_not_found" in str(excinfo.value)
     assert fake.patches == []
 
@@ -176,22 +178,21 @@ async def test_unknown_shot_is_caught_before_the_api(writable: Config, db: Datab
 async def test_write_through_updates_api_then_database(
     writable: Config, db: Database
 ) -> None:
-    fake = FakeVisualizer(load("shot_reference.json"))
+    fake = FakeDecaid(reference_detail())
     mcp = build_mcp(writable, db, make_coordinator(fake, db))
 
     result = await call(mcp, "update_shot", {
         "id": REFERENCE,
-        "fields": {"espresso_enjoyment": 88, "espresso_notes": "schmeckt jetzt rund"},
+        "fields": {"enjoyment": 88, "espressoNotes": "schmeckt jetzt rund"},
     })
 
-    # 1. Es ging an die API - mit dem dokumentierten shot-Wrapper.
+    # 1. Es ging an die API - im annotations-Umschlag.
     assert len(fake.patches) == 1
-    assert fake.patches[0] == {"espresso_enjoyment": 88,
-                               "espresso_notes": "schmeckt jetzt rund"}
+    assert fake.patches[0] == {"enjoyment": 88, "espressoNotes": "schmeckt jetzt rund"}
 
     # 2. Die Antwort nennt vorher und nachher, beides aus dem Read-back.
-    assert result["changes"]["espresso_enjoyment"] == {"before": 40, "after": 88}
-    assert result["changes"]["espresso_notes"] == {
+    assert result["changes"]["enjoyment"] == {"before": 40.0, "after": 88}
+    assert result["changes"]["espressoNotes"] == {
         "before": "test", "after": "schmeckt jetzt rund"
     }
     assert "unchanged" not in result
@@ -202,78 +203,70 @@ async def test_write_through_updates_api_then_database(
     assert row["notes"] == "schmeckt jetzt rund"
 
 
-async def test_dose_change_recomputes_the_ratio(writable: Config, db: Database) -> None:
-    """Der Grund, warum der Metrik-Cache mitgezogen wird."""
-    before_row = db.get_shot_row(REFERENCE)
-    assert before_row["dose_g"] == 18.0
-    assert before_row["ratio"] == pytest.approx(2.011, abs=0.001)
-
-    fake = FakeVisualizer(load("shot_reference.json"))
+async def test_the_metrics_cache_is_refilled_not_just_emptied(
+    writable: Config, db: Database
+) -> None:
+    """Der Grund, warum der Read-back die Metriken mitzieht."""
+    fake = FakeDecaid(reference_detail())
     mcp = build_mcp(writable, db, make_coordinator(fake, db))
-    await call(mcp, "update_shot", {"id": REFERENCE, "fields": {"bean_weight": 20.0}})
-
-    row = db.get_shot_row(REFERENCE)
-    assert row["dose_g"] == 20.0
-    assert row["ratio"] == pytest.approx(36.2 / 20.0, abs=0.001)
+    await call(mcp, "update_shot", {"id": REFERENCE, "fields": {"enjoyment": 70}})
 
     metrics = db.get_cached_metrics(REFERENCE, METRICS_VERSION)
     assert metrics is not None, "der Cache muss neu gefuellt sein, nicht bloss geleert"
-    assert metrics["ratio"] == pytest.approx(36.2 / 20.0, abs=0.001)
+    assert metrics["pi_end"] == 21.1
+
+
+async def test_a_zero_rating_is_written_as_a_rating(
+    writable: Config, db: Database
+) -> None:
+    """Die Null-Regel gilt beim Lesen der Import-Aera, nicht bei einer Eingabe.
+
+    Der Bezug traegt eine de1app-Kennung; setzt der Nutzer hier ausdruecklich 0,
+    muss das ankommen und nicht als "nicht bewertet" verschwinden.
+    """
+    fake = FakeDecaid(reference_detail())
+    mcp = build_mcp(writable, db, make_coordinator(fake, db))
+
+    result = await call(mcp, "update_shot", {"id": REFERENCE, "fields": {"enjoyment": 0}})
+    assert fake.patches == [{"enjoyment": 0}]
+    assert result["changes"]["enjoyment"]["after"] == 0
 
 
 async def test_silently_dropped_field_is_reported(writable: Config, db: Database) -> None:
-    """Der gefaehrlichste Fall: 200 zurueck, aber nichts geschrieben.
+    """Der gefaehrlichste Fall: 200 zurueck, aber nichts geaendert.
 
-    Visualizer verwirft private_notes ohne Premium still. Weil ein erlaubtes
-    Feld mitkommt, meldet die API Erfolg - nur der Read-back deckt es auf.
+    Hier deckt allein der Read-back auf, dass der Wert schon so dastand.
     """
-    fake = FakeVisualizer(load("shot_reference.json"))
+    fake = FakeDecaid(reference_detail())
     mcp = build_mcp(writable, db, make_coordinator(fake, db))
 
-    result = await call(mcp, "update_shot", {
-        "id": REFERENCE,
-        "fields": {"espresso_enjoyment": 70, "private_notes": "geheim"},
-    })
+    result = await call(mcp, "update_shot",
+                        {"id": REFERENCE, "fields": {"enjoyment": 40}})
 
-    assert result["changes"]["espresso_enjoyment"]["after"] == 70
-    assert result["unchanged"] == ["private_notes"]
-    assert "Premium" in result["note"]
+    assert result["unchanged"] == ["enjoyment"]
+    assert "nicht uebernommen" in result["note"]
 
 
 async def test_api_rejection_becomes_a_tool_error(writable: Config, db: Database) -> None:
-    fake = FakeVisualizer(load("shot_reference.json"))
+    class Stubborn(FakeDecaid):
+        PERMITTED: set[str] = set()
+
+    fake = Stubborn(reference_detail())
     mcp = build_mcp(writable, db, make_coordinator(fake, db))
 
-    # Nur ein nicht erlaubtes Feld -> die API laesst nichts uebrig -> 400.
     with pytest.raises(ToolError) as excinfo:
-        await call(mcp, "update_shot",
-                   {"id": REFERENCE, "fields": {"private_notes": "geheim"}})
-    assert "visualizer_rejected" in str(excinfo.value)
+        await call(mcp, "update_shot", {"id": REFERENCE, "fields": {"enjoyment": 50}})
+    assert "decaid_rejected" in str(excinfo.value)
 
 
-async def test_client_sends_the_accept_header(db: Database) -> None:
-    """Belegt, dass der Client den Header wirklich mitschickt."""
-    fake = FakeVisualizer(load("shot_reference.json"))
-    client = VisualizerClient(
-        "a@b.org", "lang-genug-hier", transport=httpx.MockTransport(fake.handler)
-    )
+async def test_a_protected_field_at_the_api_is_not_retried(db: Database) -> None:
+    """Gegenprobe direkt am Client: 400 ist endgueltig, kein Wiederholen."""
+    fake = FakeDecaid(reference_detail())
+    client = DecaidClient("http://10.100.100.171:8080",
+                          transport=httpx.MockTransport(fake.handler))
     async with client:
-        detail = await client.update_shot(REFERENCE, {"espresso_enjoyment": 60})
-    assert detail["espresso_enjoyment"] == 60
-
-
-async def test_missing_accept_header_would_fail(db: Database) -> None:
-    # Gegenprobe: ohne den Header antwortet die echte API mit 422.
-    fake = FakeVisualizer(load("shot_reference.json"))
-    client = VisualizerClient(
-        "a@b.org", "lang-genug-hier", transport=httpx.MockTransport(fake.handler)
-    )
-    async with client:
-        with pytest.raises(RequestRejected):
-            await client._request(
-                "PATCH", f"/shots/{REFERENCE}",
-                json_body={"shot": {"espresso_enjoyment": 60}},
-            )
+        with pytest.raises(DecaidRejected):
+            await client.update_shot(REFERENCE, {"id": "anders"})
 
 
 # ------------------------------------------------------------ (3) Protokoll
@@ -283,19 +276,19 @@ async def test_log_names_fields_but_never_values(
     writable: Config, db: Database, caplog
 ) -> None:
     caplog.set_level(logging.INFO, logger="visualizer_mcp.server")
-    fake = FakeVisualizer(load("shot_reference.json"))
+    fake = FakeDecaid(reference_detail())
     mcp = build_mcp(writable, db, make_coordinator(fake, db))
 
     await call(mcp, "update_shot", {
         "id": REFERENCE,
-        "fields": {"espresso_notes": "streng vertraulich", "espresso_enjoyment": 60},
+        "fields": {"espressoNotes": "streng vertraulich", "enjoyment": 60},
     })
 
     records = [r for r in caplog.records if r.getMessage() == "shot updated"]
     assert len(records) == 1
     fields = records[0].fields
     assert fields["shot"] == REFERENCE
-    assert fields["wrote"] == "espresso_enjoyment,espresso_notes"
+    assert fields["wrote"] == "enjoyment,espressoNotes"
     assert "dur_ms" in fields
 
     blob = "\n".join(r.getMessage() + str(getattr(r, "fields", "")) for r in caplog.records)

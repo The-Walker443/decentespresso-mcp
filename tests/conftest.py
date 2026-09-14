@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from visualizer_mcp.config import Config
+from visualizer_mcp.db import Database
 
 # 48 Zeichen wie 'openssl rand -hex 24'.
 TEST_SECRET = "0123456789abcdef0123456789abcdef0123456789abcdef"
@@ -24,3 +25,12 @@ def valid_env() -> dict[str, str]:
 @pytest.fixture
 def config(valid_env: dict[str, str]) -> Config:
     return Config.from_env(valid_env)
+
+
+@pytest.fixture
+def archive(tmp_path):
+    """Frisches Archiv mit angewendeten Migrationen."""
+    db = Database(tmp_path / "shots.db")
+    db.migrate()
+    yield db
+    db.close()

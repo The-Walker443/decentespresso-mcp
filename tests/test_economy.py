@@ -15,17 +15,17 @@ from collections.abc import Iterator
 
 import pytest
 from fastmcp import Client
+from helpers import RECENT_ID, REFERENCE_ID, corpus, store_shot_with_profile
 
 from visualizer_mcp.config import Config
 from visualizer_mcp.db import Database
+from visualizer_mcp.decaid_profile import profile_version
 from visualizer_mcp.metrics import warm_metrics_cache
 from visualizer_mcp.server import build_mcp
-from visualizer_mcp.tcl_profile import parse_profile, semantic_hash, version_hash
-from visualizer_mcp.visualizer_client import series_rows_from_detail, shot_row_from_detail
 
-FIXTURES = pathlib.Path(__file__).parent / "fixtures"
-REFERENCE = "6eb25d36-ff0c-48d0-8f88-0b05f9c7418a"
-RECENT = "36ed21cd-8fc0-489e-8ea4-959d952e04c0"
+FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "decaid"
+REFERENCE = REFERENCE_ID
+RECENT = RECENT_ID
 
 # --- Schranken (SPEC ss17.4) -------------------------------------------------
 #
@@ -57,34 +57,33 @@ def load(name: str) -> dict:
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
 
+def _profile_of(detail: dict) -> dict:
+    return detail["workflow"]["profile"]
+
+
+def _relink(db: Database, per_shot: dict[str, dict]) -> None:
+    """Haengt je Bezug eine eigene Profilversion an."""
+    for shot_id, profile in per_shot.items():
+        pid, _ = db.upsert_profile(
+            seen_at="2026-09-14T12:00:00Z", source="decaid",
+            **profile_version(profile),
+        )
+        db.link_shot_profile(shot_id, pid)
+
+
 def size_of(payload: object) -> int:
     return len(json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8"))
 
 
-def _add(db: Database, fixture: str, tcl_name: str | None) -> None:
-    payload = load(fixture)
-    db.upsert_shot(
-        shot_row_from_detail(payload, "2026-08-01T10:00:00Z"),
-        series_rows_from_detail(payload),
-    )
-    if tcl_name:
-        raw = (FIXTURES / tcl_name).read_text(encoding="utf-8")
-        parsed = parse_profile(raw)
-        profile_id, _ = db.upsert_profile(
-            name=parsed["title"] or "(ohne Titel)", version_hash=version_hash(raw),
-            semantic_hash=semantic_hash(parsed), raw_tcl=raw,
-            parsed_json=json.dumps(parsed, ensure_ascii=False),
-            profile_notes=parsed.get("notes"), seen_at="2026-08-01T10:00:00Z",
-        )
-        db.link_shot_profile(payload["id"], profile_id)
+
 
 
 @pytest.fixture
 def db(tmp_path: pathlib.Path) -> Iterator[Database]:
     database = Database(tmp_path / "economy.db")
     database.migrate()
-    _add(database, "shot_reference.json", "profile_reference.tcl")
-    _add(database, "shot_recent.json", "profile_recent.tcl")
+    for detail in corpus()[:2]:
+        store_shot_with_profile(database, detail)
     warm_metrics_cache(database)
     database.set_state("last_sync_at", "2026-08-01T10:00:00Z")
     database.set_state("backfill_completed_at", "2026-08-01T10:00:00Z")
@@ -179,17 +178,11 @@ async def test_same_profile_needs_no_notice(db: Database, config: Config) -> Non
 
 
 async def test_cosmetic_difference_is_named_as_such(db: Database, config: Config) -> None:
-    base = (FIXTURES / "profile_default_a.tcl").read_text(encoding="utf-8")
-    cosmetic = (FIXTURES / "profile_default_a_cosmetic.tcl").read_text(encoding="utf-8")
-    for shot_id, raw in ((REFERENCE, base), (RECENT, cosmetic)):
-        parsed = parse_profile(raw)
-        pid, _ = db.upsert_profile(
-            name=parsed["title"], version_hash=version_hash(raw),
-            semantic_hash=semantic_hash(parsed), raw_tcl=raw,
-            parsed_json=json.dumps(parsed), profile_notes=None,
-            seen_at="2026-08-01T10:00:00Z",
-        )
-        db.link_shot_profile(shot_id, pid)
+    """Zwei Versionen, die sich nur in den Notizen unterscheiden."""
+    base = _profile_of(corpus()[0])
+    cosmetic = dict(base)
+    cosmetic["notes"] = base.get("notes", "") + " (Tippfehler korrigiert)"
+    _relink(db, {REFERENCE: base, RECENT: cosmetic})
 
     payload = await call(build_mcp(config, db), "compare_shots", {"ids": [REFERENCE, RECENT]})
     notice = payload["profile_notice"]
@@ -198,17 +191,11 @@ async def test_cosmetic_difference_is_named_as_such(db: Database, config: Config
 
 
 async def test_different_targets_are_flagged_loudly(db: Database, config: Config) -> None:
-    base = (FIXTURES / "profile_default_a.tcl").read_text(encoding="utf-8")
-    louder = (FIXTURES / "profile_default_a_pressure_only.tcl").read_text(encoding="utf-8")
-    for shot_id, raw in ((REFERENCE, base), (RECENT, louder)):
-        parsed = parse_profile(raw)
-        pid, _ = db.upsert_profile(
-            name=parsed["title"], version_hash=version_hash(raw),
-            semantic_hash=semantic_hash(parsed), raw_tcl=raw,
-            parsed_json=json.dumps(parsed), profile_notes=None,
-            seen_at="2026-08-01T10:00:00Z",
-        )
-        db.link_shot_profile(shot_id, pid)
+    """Unterschiedliche Sollwerte - die Differenz kommt dann vom Profil."""
+    base = _profile_of(corpus()[0])
+    louder = dict(base)
+    louder["target_weight"] = float(base.get("target_weight") or 36) + 12
+    _relink(db, {REFERENCE: base, RECENT: louder})
 
     payload = await call(build_mcp(config, db), "compare_shots", {"ids": [REFERENCE, RECENT]})
     notice = payload["profile_notice"]

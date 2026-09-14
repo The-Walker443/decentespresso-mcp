@@ -1,35 +1,27 @@
 from __future__ import annotations
 
-import json
 import pathlib
-from collections.abc import Iterator
 
 import pytest
+from helpers import decaid_detail, store_shot
 
 from visualizer_mcp.db import Database
-from visualizer_mcp.visualizer_client import series_rows_from_detail, shot_row_from_detail
+from visualizer_mcp.decaid_mapping import series_rows_from_decaid, shot_row_from_decaid
 
-FIXTURES = pathlib.Path(__file__).parent / "fixtures"
-SYNCED_AT = "2026-08-01T10:00:00Z"
-
-
-@pytest.fixture
-def db(tmp_path: pathlib.Path) -> Iterator[Database]:
-    database = Database(tmp_path / "test.db")
-    database.migrate()
-    yield database
-    database.close()
+SYNCED_AT = "2026-09-14T12:00:00Z"
+POINTS = 184
 
 
 @pytest.fixture
 def reference() -> dict:
-    return json.loads((FIXTURES / "shot_reference.json").read_text(encoding="utf-8"))
+    return decaid_detail("de1app-1785525360", timestamp="2026-08-01T05:32:50",
+                         updated_at="2026-09-01T10:00:00Z")
 
 
 def test_migrations_are_idempotent(tmp_path: pathlib.Path) -> None:
     first = Database(tmp_path / "m.db")
     applied = first.migrate()
-    assert "001_init.sql" in applied
+    assert "001_decaid_init.sql" in applied
     assert first.migrate() == []          # zweiter Lauf tut nichts
     first.close()
 
@@ -38,81 +30,162 @@ def test_migrations_are_idempotent(tmp_path: pathlib.Path) -> None:
     reopened.close()
 
 
-def test_schema_has_expected_tables(db: Database) -> None:
+def test_a_visualizer_era_file_is_refused(tmp_path: pathlib.Path) -> None:
+    """Sonst liefen die CREATE-IF-NOT-EXISTS ins Leere und das alte Schema bliebe."""
+    old = Database(tmp_path / "alt.db")
+    old.migrate()
+    old._conn.execute(
+        "INSERT INTO schema_migrations (name, applied_at) VALUES ('001_init.sql', ?)",
+        (SYNCED_AT,),
+    )
+    old._conn.commit()
+    old.close()
+
+    reopened = Database(tmp_path / "alt.db")
+    with pytest.raises(RuntimeError, match="Visualizer-Aera"):
+        reopened.migrate()
+    reopened.close()
+
+
+def test_schema_has_expected_tables(archive: Database) -> None:
     names = {
         row["name"]
-        for row in db._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        for row in archive._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
     }
-    assert {"shots", "shot_series", "profiles", "sync_state"} <= names
+    assert {"shots", "shot_series", "beans", "bean_batches",
+            "profiles", "sync_state"} <= names
 
 
-def test_insert_then_reinsert_does_not_duplicate(db: Database, reference: dict) -> None:
-    shot = shot_row_from_detail(reference, SYNCED_AT)
-    series = series_rows_from_detail(reference)
+def test_insert_then_reinsert_does_not_duplicate(archive: Database, reference: dict) -> None:
+    shot = shot_row_from_decaid(reference, SYNCED_AT)
+    series = series_rows_from_decaid(reference)
 
-    assert db.upsert_shot(shot, series) is True      # neu
-    assert db.count_shots() == 1
-    assert db.count_series_points() == 94
+    assert archive.upsert_shot(shot, series) is True      # neu
+    assert archive.count_shots() == 1
+    assert archive.count_series_points() == POINTS
 
-    assert db.upsert_shot(shot, series) is False     # bekannt
-    assert db.count_shots() == 1
-    assert db.count_series_points() == 94, "Zeitreihe darf sich nicht verdoppeln"
+    assert archive.upsert_shot(shot, series) is False     # bekannt
+    assert archive.count_shots() == 1
+    assert archive.count_series_points() == POINTS, "Zeitreihe darf sich nicht verdoppeln"
 
 
-def test_upsert_updates_mutable_fields(db: Database, reference: dict) -> None:
-    db.upsert_shot(shot_row_from_detail(reference, SYNCED_AT), [])
+def test_upsert_updates_mutable_fields(archive: Database, reference: dict) -> None:
+    store_shot(archive, reference, SYNCED_AT)
 
-    changed = dict(reference)
-    changed["espresso_notes"] = "schmeckt jetzt besser"
-    changed["espresso_enjoyment"] = 88
-    changed["updated_at"] = reference["updated_at"] + 60
-    db.upsert_shot(shot_row_from_detail(changed, "2026-08-02T10:00:00Z"), [])
+    changed = decaid_detail(reference["id"], timestamp=reference["timestamp"],
+                            updated_at="2026-09-02T10:00:00Z",
+                            notes="schmeckt jetzt besser", enjoyment=88)
+    store_shot(archive, changed, "2026-09-02T12:00:00Z")
 
-    row = db._conn.execute("SELECT * FROM shots WHERE id = ?", (reference["id"],)).fetchone()
+    row = archive.get_shot_row(reference["id"])
     assert row["notes"] == "schmeckt jetzt besser"
     assert row["enjoyment"] == 88
-    assert row["updated_at"] == reference["updated_at"] + 60
-    assert db.count_shots() == 1
+    assert row["updated_at"] == "2026-09-02T10:00:00Z"
+    assert archive.count_shots() == 1
 
 
-def test_known_shot_versions(db: Database, reference: dict) -> None:
-    db.upsert_shot(shot_row_from_detail(reference, SYNCED_AT), [])
-    assert db.known_shot_versions() == {reference["id"]: reference["updated_at"]}
+def test_known_shot_versions(archive: Database, reference: dict) -> None:
+    store_shot(archive, reference, SYNCED_AT)
+    assert archive.known_shot_versions() == {reference["id"]: "2026-09-01T10:00:00Z"}
 
 
-def test_series_cascade_on_delete(db: Database, reference: dict) -> None:
-    db.upsert_shot(shot_row_from_detail(reference, SYNCED_AT),
-                   series_rows_from_detail(reference))
-    db._conn.execute("DELETE FROM shots WHERE id = ?", (reference["id"],))
-    db._conn.commit()
-    assert db.count_series_points() == 0
+def test_series_cascade_on_delete(archive: Database, reference: dict) -> None:
+    store_shot(archive, reference, SYNCED_AT)
+    archive._conn.execute("DELETE FROM shots WHERE id = ?", (reference["id"],))
+    archive._conn.commit()
+    assert archive.count_series_points() == 0
 
 
-def test_state_roundtrip(db: Database) -> None:
-    assert db.get_state("nope") is None
-    db.set_state("cursor", "42")
-    assert db.get_state("cursor") == "42"
-    db.set_state("cursor", "43")
-    assert db.get_state("cursor") == "43"
-    db.set_json_state("result", {"new": 2})
-    assert db.get_json_state("result") == {"new": 2}
+def test_a_shot_survives_an_unknown_batch(archive: Database, reference: dict) -> None:
+    """Decaid ist die Quelle - eine geloeschte Charge darf keinen Bezug kosten."""
+    detail = decaid_detail("de1app-1785525999", timestamp="2026-08-02T05:32:50")
+    detail["workflow"]["context"]["beanBatchId"] = "gibt-es-nicht"
+    store_shot(archive, detail, SYNCED_AT)
+
+    row = archive.get_shot_row("de1app-1785525999")
+    assert row["bean_batch_id"] == "gibt-es-nicht"
+    assert row["bean_id"] is None
 
 
-def test_errors_are_capped_at_20(db: Database) -> None:
+def test_state_roundtrip(archive: Database) -> None:
+    assert archive.get_state("nope") is None
+    archive.set_state("cursor", "42")
+    assert archive.get_state("cursor") == "42"
+    archive.set_state("cursor", "43")
+    assert archive.get_state("cursor") == "43"
+    archive.set_json_state("result", {"new": 2})
+    assert archive.get_json_state("result") == {"new": 2}
+
+
+def test_errors_are_capped_at_20(archive: Database) -> None:
     for i in range(30):
-        db.record_errors([f"fehler {i}"])
-    stored = db.get_json_state("last_errors")
+        archive.record_errors([f"fehler {i}"])
+    stored = archive.get_json_state("last_errors")
     assert len(stored) == 20
     assert stored[-1]["error"] == "fehler 29"
     assert stored[0]["error"] == "fehler 10"
 
 
-def test_shot_span_and_max_updated(db: Database, reference: dict) -> None:
-    db.upsert_shot(shot_row_from_detail(reference, SYNCED_AT), [])
-    recent = json.loads((FIXTURES / "shot_recent.json").read_text(encoding="utf-8"))
-    db.upsert_shot(shot_row_from_detail(recent, SYNCED_AT), [])
+def test_shot_span_and_max_updated(archive: Database, reference: dict) -> None:
+    store_shot(archive, reference, SYNCED_AT)
+    store_shot(archive, decaid_detail("aaaa1111-0000-4000-8000-000000000001",
+                                      timestamp="2026-09-13T07:50:12",
+                                      updated_at="2026-09-13T08:00:00Z"), SYNCED_AT)
 
-    oldest, newest = db.shot_span()
-    assert oldest == "2026-07-31T19:16:00Z"
+    oldest, newest = archive.shot_span()
+    assert oldest == "2026-08-01T05:32:50Z"
     assert newest > oldest
-    assert db.max_updated_at() == max(reference["updated_at"], recent["updated_at"])
+    assert archive.max_updated_at() == "2026-09-13T08:00:00Z"
+
+
+def test_beans_come_from_decaids_list(archive: Database, reference: dict) -> None:
+    """Auch eine noch nie bezogene Bohne taucht auf."""
+    archive.upsert_beans([{
+        "id": "bean-1", "name": "Tugu Kawisari", "roaster": "Roesterei",
+        "species": "arabica", "processing": "washed", "decaf": 0, "archived": 0,
+        "notes": None, "created_at": None, "updated_at": None,
+        "raw_json": "{}", "synced_at": SYNCED_AT,
+    }])
+    beans = archive.list_beans()
+    assert [b["bean_name"] for b in beans] == ["Tugu Kawisari"]
+    assert beans[0]["shot_count"] == 0
+    assert beans[0]["grinder_settings"] == []
+
+
+def test_grinder_settings_keep_their_commas(archive: Database, reference: dict) -> None:
+    """"4,2" ist eine Einstellung, keine zwei - darum kein GROUP_CONCAT."""
+    archive.upsert_beans([{
+        "id": "bean-1", "name": "Tugu Kawisari", "roaster": None, "species": None,
+        "processing": None, "decaf": None, "archived": None, "notes": None,
+        "created_at": None, "updated_at": None, "raw_json": "{}", "synced_at": SYNCED_AT,
+    }])
+    archive.upsert_bean_batches([{
+        "id": "batch-1", "bean_id": "bean-1", "roast_date": "2026-07-20",
+        "buy_date": None, "freeze_date": None, "unfreeze_date": None,
+        "frozen": 0, "archived": 0, "created_at": None, "updated_at": None,
+        "raw_json": "{}", "synced_at": SYNCED_AT,
+    }])
+
+    detail = decaid_detail("de1app-1785525360", timestamp="2026-08-01T05:32:50")
+    detail["workflow"]["context"]["beanBatchId"] = "batch-1"
+    detail["workflow"]["context"]["grinderSetting"] = "4,2"
+    store_shot(archive, detail, SYNCED_AT)
+    assert archive.link_shots_to_beans() == 1
+
+    beans = archive.list_beans()
+    assert beans[0]["shot_count"] == 1
+    assert beans[0]["grinder_settings"] == ["4,2"]
+    assert beans[0]["last_grinder_setting"] == "4,2"
+
+
+def test_shots_without_a_known_bean_are_still_findable(archive: Database) -> None:
+    detail = decaid_detail("de1app-1785525360", timestamp="2026-08-01T05:32:50")
+    detail["workflow"]["context"]["beanBatchId"] = None
+    store_shot(archive, detail, SYNCED_AT)
+
+    orphans = archive.orphan_bean_names()
+    assert len(orphans) == 1
+    assert orphans[0]["shot_count"] == 1
+    assert orphans[0]["bean_name"]

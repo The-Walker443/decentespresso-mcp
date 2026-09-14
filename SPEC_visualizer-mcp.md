@@ -1023,13 +1023,25 @@ eigene Messung an der echten API.
 
 ### 20.3 Ingestion
 
-- **Backfill:** `GET /api/v1/shots/ids` liefert alle IDs in einem Zug, danach
-  Einzelabruf je unbekannter ID.
-- **Inkrementell:** Listen-Pagination (`limit=100`, `offset`, `order=desc`) mit
-  **clientseitigem `updatedAt`-Cursor**. Serverseitig gibt es keinen Zeitfilter
-  (T8), also wird so lange geblättert, bis eine Seite nur noch Bezüge mit
-  `updatedAt <= Cursor` enthält. Das erfasst neue **und** nachträglich editierte
-  Bezüge, weil `updatedAt` serverseitig gepflegt wird (T15).
+**Abweichung vom Auftrag: ein Verfahren statt zweier.** Die Bezugsliste liefert
+je Eintrag alles außer `measurements` — insbesondere `updatedAt`. Damit steht
+ohne einen einzigen Detailabruf fest, welche Bezüge sich geändert haben;
+Backfill und inkrementeller Lauf sind derselbe Algorithmus, `full=true`
+erzwingt nur das Neuholen. `GET /api/v1/shots/ids` wird dafür nicht gebraucht.
+
+**Die Liste wird immer vollständig gelesen.** Der Auftrag sah vor, das Blättern
+zu beenden, sobald eine Seite nur noch Bezüge mit `updatedAt <= Cursor` enthält.
+Das trägt nicht: die Liste ist nach **Bezugszeit** sortiert, nicht nach
+Änderungszeit. Ein im Juni gezogener Bezug, dessen Notiz heute ergänzt wurde,
+steht weiterhin hinten — ein früh abbrechendes Blättern sähe ihn nie. Bei 169
+Bezügen kostet die volle Liste zwei Anfragen im LAN; dafür findet der Abgleich
+auch nachträgliche Änderungen, was der ganze Zweck des Cursors war.
+
+**Obergrenze je Lauf:** 60 Detailabrufe. Ein Detail wiegt rund 140 kB; der
+erste Backfill wären sonst gut 23 MB in einem Zug über das WLAN des Tablets.
+Gemessen am 2026-09-14: 169 Bezüge in drei Läufen, 12,7 s, keine Fehler.
+Angefangene Backfills gelten erst als abgeschlossen, wenn nichts mehr offen
+ist — sonst liefe der nächste Lauf inkrementell und ließe die Lücke stehen.
 - **Ereignisgetrieben (optional):** `/ws/v1/machine/shotState` abonnieren; bei
   Shot-Ende kurz warten, dann `GET /api/v1/shots/latest`. Polling bleibt als
   Fallback **aktiv**, der WebSocket ist eine Beschleunigung, keine Bedingung.
@@ -1050,6 +1062,43 @@ nur als Profilkurve.
 **Zeitachse:** Es gibt kein `time`-Feld (T12). `elapsed` wird aus
 `machine.timestamp` minus dem ersten Messpunkt gerechnet; beim Referenzbezug
 184 Punkte über 45,58 s, mittlerer Abstand 0,249 s.
+
+#### Zwei bindende Normalisierungen
+
+Beide gehen auf Befunde des Annotationsumzugs aus M8 (2/n) zurück und sind am
+gesamten Bestand nachgemessen.
+
+**(1) Zeitstempel: das Archiv führt durchgehend UTC.** Decaid tut das nicht
+einheitlich. Aus der de1app importierte Bezüge tragen ihren Zeitstempel bereits
+in UTC, von Decaid selbst aufgezeichnete in Ortszeit ohne Zeitzonenangabe.
+Diskriminator ist die Kennung (`de1app-<unixzeit>` = UTC), gegengeprüft an
+`createdAt`; weichen beide voneinander ab, hat Decaid sein Verhalten geändert,
+und das erzeugt eine Warnung statt eines stillen Fehlers. Umgerechnet wird über
+`Europe/Berlin` **mit voller Sommerzeitbehandlung** — ein fester Versatz wäre
+nach dem letzten Oktobersonntag falsch (2026: 25. Oktober). In der mehrdeutigen
+Stunde der Rückstellung gilt die erste Lesart. Je Bezug hält `time_source` fest,
+woher der Stempel kam. Die Zeitzonendatenbank hängt als `tzdata` in den
+Abhängigkeiten, weil ein schlankes Basisimage `/usr/share/zoneinfo` nicht
+zusichert.
+
+Am Bestand (2026-09-14, 169 Bezüge) trennt sich das sauber und überlappungsfrei
+— genau am Tag, an dem Decaid die Aufzeichnung übernahm:
+
+| `time_source` | Bezüge | Zeitraum |
+|---|---|---|
+| `utc` (Import) | 88 | 2026-06-24 02:22 … 2026-08-30 12:02 |
+| `local_berlin` (nativ) | 81 | 2026-08-30 18:55 … 2026-09-14 18:34 |
+
+**(2) Bewertung: `0.0` aus der Import-Ära ist keine Bewertung.** Decaid legt
+importierte Bezüge mit `enjoyment: 0.0` an. Über alle Bezüge gemessen: 75 der
+88 importierten stehen so da, echte Bewertungen liegen zwischen 20 und 100, und
+**kein einziger** nativ aufgezeichneter Bezug trägt je `0.0`. Bei Bezügen mit
+de1app-Kennung wird eine 0 deshalb als `NULL` archiviert. Ohne diese Regel
+kämen 75 Scheinbewertungen ins Archiv, und `audit_archive` sowie die Wächter
+aus §20.7 würden sie für bare Münze nehmen. Beim **Schreiben** gilt die Regel
+nicht: was der Nutzer ausdrücklich auf 0 setzt, ist eine Eingabe.
+
+Ergebnis am Bestand: 0 Nullen im Archiv, 24 echte Bewertungen erhalten.
 
 **`pi_end` — Abweichung vom Auftrag.** Der Auftrag will die Ableitung primär aus
 `profileFrame`-Wechseln. Die Messung zeigt, dass das so nicht trägt:
@@ -1080,12 +1129,41 @@ bereits kreuzgeprüft wurde. `version_hash`/`semantic_hash` bleiben, die
 Kanonisierung wird auf das JSON umgestellt. **Der TCL-Parser wird als deprecated
 markiert, nicht gelöscht.**
 
+**Wie oft welche Quelle trägt** (169 Bezüge, 2026-09-14). Die dreistufige
+Hierarchie ist kein Vorratsbeschluss: die de1app hat den Maschinenzustand nie
+aufgezeichnet, Decaid tut es. Ohne die zweite Stufe hätten 84 Bezüge einen
+geratenen `pi_end`.
+
+| Herkunft | `substate` | `profile_frame` | Heuristik |
+|---|---|---|---|
+| importiert (88) | — | 84 | 3 |
+| nativ (81) | 77 | 2 | 2 |
+
+`METRICS_VERSION` steigt dabei von 2 auf 3; der Cache rechnet sich selbsttätig
+neu. Die Erwartungswerte aus §13 sind am Decaid-Referenzbezug neu bestimmt —
+die alten Zahlen gehörten zu einem Bezug, den es im Archiv nicht mehr gibt.
+
+**Profilversionierung** läuft ab jetzt über das im Workflow eingebettete
+Profil-JSON statt über TCL. Das erspart den zweiten Abruf und die häufigste
+Fehlerquelle der Visualizer-Ära: ein Profil, das die API nicht herausgab (422),
+oder eines, dessen TCL der Parser nicht verstand. `tcl_profile.py` bleibt für
+den Altbestand lesbar, wird aber nicht mehr benutzt.
+
 ### 20.5 Schreibtools
 
 `update_shot` zieht auf `PUT /api/v1/shots/<id>` um; Whitelist auf
 `annotations`-Felder. Leitplanken aus §18 unverändert: Validierung vor dem
 Senden, Read-back vorher→nachher, nur auf ausdrückliche Anweisung, hinter
-`WRITE_ENABLED`. Neu: `update_bean`, `update_batch` (inkl.
+`WRITE_ENABLED`.
+
+**Die Whitelist enthält vorerst nur `espressoNotes` und `enjoyment`** — genau
+die beiden Felder, die beim Annotationsumzug gegen die echte API geschrieben
+und wieder gelesen wurden. `actualDoseWeight` und `actualYield` stehen in
+denselben Annotationen, sind aber noch nicht schreibend verifiziert; sie sind
+mit eben dieser Begründung ausdrücklich gesperrt, statt ungeprüft mitzulaufen.
+Lieber ein Feld zu wenig als eines, das stillschweigend verworfen wird.
+
+Noch offen: `update_bean`, `update_batch` (inkl.
 `freezeDate`/`unfreezeDate`/`frozen` mit Datumsvalidierung), `get_workflow`,
 `set_workflow` (nur Mahlgrad, Dosis, Zielgewicht, Bohnen-/Batch-Referenz —
 **kein Profilwechsel in v1**).

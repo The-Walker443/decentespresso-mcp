@@ -1,8 +1,6 @@
-"""Whitelist und Validierung schreibender Zugriffe (SPEC ss18.2)."""
+"""Whitelist und Validierung schreibender Zugriffe (SPEC ss18.2, ss20.5)."""
 
 from __future__ import annotations
-
-from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -24,23 +22,21 @@ def problems_of(fields: dict) -> list[str]:
 # ------------------------------------------------------------------ Whitelist
 
 
-def test_the_whitelist_is_exactly_the_agreed_set() -> None:
-    # Aendert sich diese Liste, ist das eine bewusste Entscheidung - kein Versehen.
-    assert set(ALLOWED_FIELDS) == {
-        "bean_brand", "bean_type", "roast_date", "roast_level", "bean_notes",
-        "grinder_setting", "bean_weight", "drink_weight",
-        "espresso_enjoyment", "espresso_notes", "private_notes",
-        "drink_tds", "drink_ey", "barista",
-    }
+def test_the_whitelist_is_exactly_the_verified_set() -> None:
+    """Aufgenommen ist nur, was gegen Decaid geschrieben und gelesen wurde.
+
+    Aendert sich diese Liste, ist das eine bewusste Entscheidung nach einer
+    Verifikation - kein Versehen.
+    """
+    assert set(ALLOWED_FIELDS) == {"espressoNotes", "enjoyment"}
 
 
 def test_unknown_field_is_rejected_with_the_allowed_list() -> None:
-    problems = problems_of({"espresso_enjoyment": 50, "kaffeesorte": "x"})
+    problems = problems_of({"enjoyment": 50, "kaffeesorte": "x"})
     assert len(problems) == 1
     assert "kaffeesorte" in problems[0]
     # Die Meldung muss weiterhelfen, nicht nur abweisen.
-    assert "bean_type" in problems[0]
-    assert "espresso_enjoyment" in problems[0]
+    assert "espressoNotes" in problems[0]
 
 
 @pytest.mark.parametrize("field", sorted(BLOCKED_FIELDS))
@@ -51,8 +47,19 @@ def test_blocked_fields_name_the_reason(field: str) -> None:
 
 
 def test_telemetry_and_identity_are_blocked() -> None:
-    for field in ("id", "start_time", "duration", "data", "profile_title"):
+    for field in ("id", "timestamp", "measurements", "workflow", "stopReason"):
         assert field in BLOCKED_FIELDS
+
+
+def test_unverified_fields_are_blocked_with_a_reason() -> None:
+    """Dosis und Bezugsgewicht stehen in denselben Annotationen.
+
+    Sie sind aber nicht schreibend geprueft; ein stillschweigend verworfenes
+    Feld waere schlimmer als eine klare Abweisung.
+    """
+    for field in ("actualDoseWeight", "actualYield"):
+        assert field in BLOCKED_FIELDS
+        assert "verifiziert" in BLOCKED_FIELDS[field]
 
 
 def test_empty_fields_is_an_error() -> None:
@@ -60,7 +67,7 @@ def test_empty_fields_is_an_error() -> None:
 
 
 def test_all_problems_are_collected() -> None:
-    problems = problems_of({"unbekannt": 1, "id": "x", "espresso_enjoyment": 999})
+    problems = problems_of({"unbekannt": 1, "id": "x", "enjoyment": 999})
     assert len(problems) == 3
 
 
@@ -69,73 +76,23 @@ def test_all_problems_are_collected() -> None:
 
 @pytest.mark.parametrize("value", [0, 50, 100, "75", 80.0])
 def test_enjoyment_accepts_whole_numbers_in_range(value) -> None:
-    assert validate_fields({"espresso_enjoyment": value})["espresso_enjoyment"] == int(
-        float(value)
-    )
+    assert validate_fields({"enjoyment": value})["enjoyment"] == int(float(value))
+
+
+def test_zero_is_a_deliberate_rating_here() -> None:
+    """Anders als beim Lesen: was der Nutzer ausdruecklich setzt, gilt.
+
+    Die Null-Regel aus ``decaid_mapping`` betrifft den Vorgabewert der
+    Import-Aera, nicht eine Eingabe.
+    """
+    assert validate_fields({"enjoyment": 0})["enjoyment"] == 0
 
 
 @pytest.mark.parametrize("value", [-1, 101, 999, 50.5, "viel", True])
 def test_enjoyment_rejects_everything_else(value) -> None:
     # Die API speichert 999 und -5 anstandslos - hier ist der einzige Schutz.
-    problems = problems_of({"espresso_enjoyment": value})
-    assert problems[0].startswith("espresso_enjoyment:")
-
-
-# ------------------------------------------------------------------ Gewichte
-
-
-@pytest.mark.parametrize(("field", "value"), [
-    ("bean_weight", 5.0), ("bean_weight", 18.5), ("bean_weight", 30.0),
-    ("drink_weight", 10.0), ("drink_weight", 36.2), ("drink_weight", 100.0),
-])
-def test_weights_inside_the_range(field: str, value: float) -> None:
-    assert validate_fields({field: value})[field] == f"{value:g}"
-
-
-@pytest.mark.parametrize(("field", "value"), [
-    ("bean_weight", 4.9), ("bean_weight", 30.1), ("bean_weight", 0),
-    ("drink_weight", 9.9), ("drink_weight", 100.1),
-])
-def test_weights_outside_the_range(field: str, value: float) -> None:
-    assert "ausserhalb" in problems_of({field: value})[0]
-
-
-def test_comma_decimal_is_accepted() -> None:
-    # Deutsche Tastatur, deutscher Nutzer.
-    assert validate_fields({"bean_weight": "18,5"})["bean_weight"] == "18.5"
-
-
-def test_weights_go_out_as_strings() -> None:
-    # Visualizer liefert diese Felder als Strings und nimmt sie so an.
-    assert validate_fields({"bean_weight": 18})["bean_weight"] == "18"
-
-
-# ----------------------------------------------------------------- Roestdatum
-
-
-def test_roast_date_accepts_iso() -> None:
-    assert validate_fields({"roast_date": "2026-06-01"})["roast_date"] == "2026-06-01"
-
-
-def test_roast_date_today_is_fine() -> None:
-    today = datetime.now(UTC).date().isoformat()
-    assert validate_fields({"roast_date": today})["roast_date"] == today
-
-
-def test_roast_date_in_the_future_is_rejected() -> None:
-    future = (datetime.now(UTC).date() + timedelta(days=1)).isoformat()
-    assert "Zukunft" in problems_of({"roast_date": future})[0]
-
-
-@pytest.mark.parametrize("value", ["01.06.2026", "2026/06/01", "Juni 2026", "", 20260601])
-def test_roast_date_rejects_non_iso(value) -> None:
-    problems = problems_of({"roast_date": value})
-    assert problems[0].startswith("roast_date:")
-
-
-def test_roast_date_error_mentions_the_de1_format() -> None:
-    # Die DE1-App schreibt TT.MM.JJJJ - der Hinweis erspart das Raten.
-    assert "TT.MM.JJJJ" in problems_of({"roast_date": "01.06.2026"})[0]
+    problems = problems_of({"enjoyment": value})
+    assert problems[0].startswith("enjoyment:")
 
 
 # --------------------------------------------------------------------- Texte
@@ -143,16 +100,16 @@ def test_roast_date_error_mentions_the_de1_format() -> None:
 
 def test_notes_at_the_limit_pass() -> None:
     text = "x" * MAX_NOTE_CHARS
-    assert validate_fields({"espresso_notes": text})["espresso_notes"] == text
+    assert validate_fields({"espressoNotes": text})["espressoNotes"] == text
 
 
 def test_notes_beyond_the_limit_fail() -> None:
-    problems = problems_of({"espresso_notes": "x" * (MAX_NOTE_CHARS + 1)})
+    problems = problems_of({"espressoNotes": "x" * (MAX_NOTE_CHARS + 1)})
     assert str(MAX_NOTE_CHARS) in problems[0]
 
 
 def test_text_fields_reject_numbers() -> None:
-    assert "Text" in problems_of({"bean_brand": 42})[0]
+    assert "Text" in problems_of({"espressoNotes": 42})[0]
 
 
 # ---------------------------------------------------------------- Loeschen

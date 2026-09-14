@@ -6,6 +6,11 @@ ergeben haben und wovon die SPEC abweicht, steht bei den jeweiligen Konstanten.
 
 Sicherheit: Credentials gehen ausschliesslich an ``httpx.BasicAuth``. Dieses
 Modul loggt niemals Header, Query-Strings mit Auth oder Response-Bodies.
+
+ÜBERHOLT ab M8: Quelle des Archivs ist Decaid im LAN (``decaid_client``).
+Dieses Modul bleibt erhalten, weil der Visualizer-Upload als Community-
+Schaufenster weiterlaufen kann - der Server benutzt es nicht mehr
+(SPEC §20.1).
 """
 
 from __future__ import annotations
