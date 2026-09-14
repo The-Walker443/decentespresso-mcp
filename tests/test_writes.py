@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from visualizer_mcp.writes import (
+from decentespresso_mcp.writes import (
     ALLOWED_FIELDS,
     BATCH,
     BEAN,

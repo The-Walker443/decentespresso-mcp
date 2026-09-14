@@ -90,7 +90,7 @@ class Config:
     @property
     def user_agent(self) -> str:
         """SPEC ss4: hoefliches Pollen mit identifizierbarem UA inkl. Kontaktadresse."""
-        return f"visualizer-mcp/{__version__} (privat, {self.visualizer_email})"
+        return f"decentespresso-mcp/{__version__} (privat, {self.visualizer_email})"
 
     @property
     def basic_auth_token(self) -> str:

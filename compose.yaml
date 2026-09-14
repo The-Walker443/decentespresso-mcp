@@ -1,7 +1,7 @@
 services:
-  visualizer-mcp:
+  decentespresso-mcp:
     build: .
-    container_name: visualizer-mcp
+    container_name: decentespresso-mcp
     restart: unless-stopped
     env_file: .env
     environment:

@@ -53,7 +53,7 @@ from .writes import BATCH, BEAN, WORKFLOW, Ruleset, ValidationError, validate_fi
 
 log = logging.getLogger(__name__)
 
-SERVER_NAME = "visualizer-espresso"
+SERVER_NAME = "decentespresso"
 
 #: SPEC ss12: status() warnt, wenn die Archivluecke gefaehrlich wird - Visualizer
 #: So lange darf ein Abgleich ausbleiben, bevor status() das anmerkt. Das

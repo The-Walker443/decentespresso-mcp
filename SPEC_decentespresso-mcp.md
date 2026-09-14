@@ -1,7 +1,16 @@
-# Spezifikation: `visualizer-mcp` — MCP-Server für Espresso-Shot-Analyse
+# Spezifikation: `decentespresso-mcp` — MCP-Server für Espresso-Shot-Analyse
 
-**Version:** 1.4 · **Stand:** 2026-09-14 · **Zielgruppe:** Claude Code (Implementierung) + Betreiber (Matthias)
+**Version:** 1.5 · **Stand:** 2026-09-14 · **Zielgruppe:** Claude Code (Implementierung) + Betreiber (Matthias)
 
+> **Änderungen 1.5 (2026-09-14):**
+> - Projekt umbenannt: `visualizer-mcp` → `decentespresso-mcp`. Der Name folgt
+>   der **Maschine**, nicht der Quelle. Seit §20 ist visualizer.coffee weder
+>   Quelle noch Ziel der Archivkette; ein Name, der auf sie zeigt, beschriebe
+>   das Projekt falsch. Betroffen sind Paketname, Modulverzeichnis,
+>   Konsolen-Entrypoint, FastMCP-Servername, User-Agent, Image-Pfad, Container-
+>   und Volumename. `visualizer_client.py` behält seinen Dateinamen — das Modul
+>   spricht wirklich mit Visualizer, der Name ist historisch korrekt.
+>
 > **Änderungen 1.4 (2026-09-14):**
 > - §20 (M8): Decaid im LAN ersetzt visualizer.coffee als Quelle.
 >   Historien-Reset, neues Quellschema mit Sollwerten pro Messpunkt,
@@ -65,7 +74,7 @@ de1app / DYE ──upload──▶ visualizer.coffee (Free-Tier, Upload-Ziel & C
                               │  REST-API (HTTP Basic Auth)
                               ▼
                    ┌────────────────────────┐
-                   │  visualizer-mcp        │  Docker-Container
+                   │  decentespresso-mcp        │  Docker-Container
                    │  ├─ Sync-Worker        │  (Poll alle N Min + manuell)
                    │  ├─ SQLite  /data      │  (Shots, Kurven, Profile, Versionen)
                    │  └─ MCP-Server         │  Streamable HTTP  :8000
@@ -119,7 +128,7 @@ Regeln:
   CSV+Meta getrennt); CSV-Endpunkt als Fallback implementieren.
 - Höflich pollen: Standardintervall 15 min, `If-None-Match`/ETag nutzen falls
   vorhanden, Backoff bei 429/5xx (exponentiell, max 1 h), User-Agent
-  `visualizer-mcp/<version> (privat, Kontakt-Mail)` setzen.
+  `decentespresso-mcp/<version> (privat, Kontakt-Mail)` setzen.
 - Alle Visualizer-Fehler loggen, aber Tools dürfen nie Credentials oder komplette
   HTTP-Header ausgeben.
 
@@ -415,12 +424,12 @@ Repo anlegen, nicht in v1 bauen.
 ### 11.1 Repo-Struktur
 
 ```
-visualizer-mcp/
+decentespresso-mcp/
 ├─ compose.yaml
 ├─ Dockerfile
 ├─ .env.example
 ├─ migrations/001_init.sql
-├─ src/visualizer_mcp/
+├─ src/decentespresso_mcp/
 │  ├─ server.py            # FastMCP-App, Tools, Prompts
 │  ├─ sync.py              # Scheduler + Sync-Worker
 │  ├─ visualizer_client.py # httpx-Client, Auth, Retry/Backoff
@@ -438,9 +447,9 @@ visualizer-mcp/
 
 ```yaml
 services:
-  visualizer-mcp:
+  decentespresso-mcp:
     build: .
-    container_name: visualizer-mcp
+    container_name: decentespresso-mcp
     restart: unless-stopped
     env_file: .env
     environment:
@@ -480,7 +489,7 @@ PUBLIC_BASE_URL=https://coffee-mcp.example.com   # nur für Log-Ausgabe der Conn
 ```yaml
 ingress:
   - hostname: coffee-mcp.example.com
-    service: http://visualizer-mcp:8000
+    service: http://decentespresso-mcp:8000
   # …bestehende Regeln…
   - service: http_status:404
 ```
@@ -634,7 +643,7 @@ Secret nötig. Der Buildcache liegt in `type=gha`.
 | Punkt | `compose.yaml` (lokal) | `compose.portainer.yaml` |
 |---|---|---|
 | Image | `build: .` | `image: ${IMAGE_REPOSITORY}:${IMAGE_TAG}` |
-| Daten | Bind-Mount `./data`, braucht `chown 10001` | benanntes Volume `visualizer_mcp_data` |
+| Daten | Bind-Mount `./data`, braucht `chown 10001` | benanntes Volume `decentespresso_mcp_data` |
 | Config | `env_file: .env` | `${VAR}` aus den Portainer-Stack-Variablen |
 
 Das benannte Volume ist der wichtigere der drei: Docker legt es mit der
@@ -957,7 +966,7 @@ geholt werden konnte (§1). Ab M8 gilt:
         DE1 ──BLE──▶ Decaid (Tablet, 10.100.100.171:8080)   ← Master
                           │  REST + WebSocket, reines LAN
                           ▼
-                 visualizer-mcp (Docker)   ← Archiv & Analyse
+                 decentespresso-mcp (Docker)   ← Archiv & Analyse
                           │  internes Docker-Netz
                     cloudflared ──▶ Claude
                           ▲

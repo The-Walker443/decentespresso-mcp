@@ -7,7 +7,7 @@
 #   - keine .env-Datei: Portainer setzt die ${VAR} aus den Stack-Variablen
 #
 # Zu setzende Variablen (Portainer -> Stack -> Environment variables):
-#   IMAGE_REPOSITORY   z. B. ghcr.io/<owner>/visualizer-mcp
+#   IMAGE_REPOSITORY   z. B. ghcr.io/<owner>/decentespresso-mcp
 #   IMAGE_TAG          latest  (oder ein sha-... fuer eine feste Version)
 #   VISUALIZER_EMAIL
 #   VISUALIZER_PASSWORD
@@ -19,9 +19,9 @@
 #   CLOUDFLARED_NETWORK  Name des vorhandenen Tunnel-Netzes
 
 services:
-  visualizer-mcp:
+  decentespresso-mcp:
     image: ${IMAGE_REPOSITORY}:${IMAGE_TAG:-latest}
-    container_name: visualizer-mcp
+    container_name: decentespresso-mcp
     restart: unless-stopped
 
     environment:
@@ -44,7 +44,7 @@ services:
       DB_PATH: /data/shots.db
 
     volumes:
-      - visualizer_mcp_data:/data
+      - decentespresso_mcp_data:/data
 
     networks:
       # tunnel = Weg fuer Claude herein. Decaid wird darueber NIE
@@ -78,8 +78,8 @@ services:
         max-file: "3"
 
 volumes:
-  visualizer_mcp_data:
-    name: visualizer_mcp_data
+  decentespresso_mcp_data:
+    name: decentespresso_mcp_data
 
 networks:
   tunnel:

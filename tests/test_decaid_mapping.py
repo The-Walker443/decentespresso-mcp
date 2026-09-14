@@ -12,7 +12,7 @@ from datetime import datetime
 
 import pytest
 
-from visualizer_mcp.decaid_mapping import (
+from decentespresso_mcp.decaid_mapping import (
     MACHINE_TZ,
     SOURCE_LOCAL,
     SOURCE_UTC,
@@ -75,7 +75,7 @@ def test_crosscheck_against_created_at_warns(caplog) -> None:
     """Aendert Decaid sein Verhalten, soll das auffallen statt still zu wirken."""
     import logging
 
-    caplog.set_level(logging.WARNING, logger="visualizer_mcp.decaid_mapping")
+    caplog.set_level(logging.WARNING, logger="decentespresso_mcp.decaid_mapping")
     # Import-Kennung, aber Zeitstempel zwei Stunden neben createdAt.
     odd = imported("2026-08-01T07:32:50")
     odd["createdAt"] = "2026-08-01T05:32:50Z"

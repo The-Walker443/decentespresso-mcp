@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from visualizer_mcp.config import Config, ConfigError
-from visualizer_mcp.guards import ALL_RULES
+from decentespresso_mcp.config import Config, ConfigError
+from decentespresso_mcp.guards import ALL_RULES
 
 from .conftest import TEST_PASSWORD, TEST_SECRET
 
@@ -28,7 +28,7 @@ def test_connector_url_is_none_without_base_url(valid_env: dict[str, str]) -> No
 
 def test_user_agent_identifies_server_and_contact(config: Config) -> None:
     # SPEC ss4: hoeflich pollen heisst identifizierbar sein.
-    assert config.user_agent.startswith("visualizer-mcp/")
+    assert config.user_agent.startswith("decentespresso-mcp/")
     assert "shots@example.org" in config.user_agent
 
 

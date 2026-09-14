@@ -89,7 +89,7 @@ class DecaidClient:
             base_url=base_url.rstrip("/"),
             timeout=timeout,
             headers={
-                "User-Agent": f"visualizer-mcp/{__version__} (privat, LAN)",
+                "User-Agent": f"decentespresso-mcp/{__version__} (privat, LAN)",
                 "Accept": "application/json",
             },
             transport=transport,

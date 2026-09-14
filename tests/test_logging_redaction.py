@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import logging
 
-from visualizer_mcp.config import Config
-from visualizer_mcp.logging_setup import REDACTED, KeyValueFormatter, setup_logging
+from decentespresso_mcp.config import Config
+from decentespresso_mcp.logging_setup import REDACTED, KeyValueFormatter, setup_logging
 
 from .conftest import TEST_PASSWORD, TEST_SECRET
 
@@ -68,7 +68,7 @@ def test_short_values_are_not_redacted() -> None:
 
 def test_setup_logging_redacts_on_stdout(capsys, config: Config) -> None:
     setup_logging(config.log_level, secrets=config.secret_values())
-    logging.getLogger("visualizer_mcp.test").info(
+    logging.getLogger("decentespresso_mcp.test").info(
         "connector at %s with password %s", config.connector_url, TEST_PASSWORD
     )
     out = capsys.readouterr().out

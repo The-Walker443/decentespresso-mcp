@@ -19,8 +19,8 @@ import pathlib
 
 import pytest
 
-from visualizer_mcp.metrics import compute_metrics, phase_boundaries
-from visualizer_mcp.visualizer_client import (
+from decentespresso_mcp.metrics import compute_metrics, phase_boundaries
+from decentespresso_mcp.visualizer_client import (
     STATE_CHANGE_NONE,
     series_rows_from_detail,
     shot_row_from_detail,

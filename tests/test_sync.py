@@ -14,9 +14,9 @@ import pathlib
 import pytest
 from helpers import decaid_detail, store_shot
 
-from visualizer_mcp.db import Database
-from visualizer_mcp.decaid_client import DecaidError, DecaidUnreachable, ShotPage
-from visualizer_mcp.sync import (
+from decentespresso_mcp.db import Database
+from decentespresso_mcp.decaid_client import DecaidError, DecaidUnreachable, ShotPage
+from decentespresso_mcp.sync import (
     MAX_DETAILS_PER_RUN,
     STATE_BACKFILL_DONE,
     STATE_LAST_REACHABLE,

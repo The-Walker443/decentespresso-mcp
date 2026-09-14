@@ -8,7 +8,7 @@ import threading
 
 import pytest
 
-from visualizer_mcp.tcl_profile import (
+from decentespresso_mcp.tcl_profile import (
     PROFILE_TYPE_BY_SETTINGS,
     TCL_INTERPRETER_AVAILABLE,
     normalize_tcl,
@@ -314,7 +314,7 @@ def test_module_import_survives_a_broken_tkinter(monkeypatch) -> None:
             raise ImportError("libtk8.6.so: cannot open shared object file")
         return real_import(name, *args, **kwargs)
 
-    module = sys.modules["visualizer_mcp.tcl_profile"]
+    module = sys.modules["decentespresso_mcp.tcl_profile"]
     monkeypatch.setattr(builtins, "__import__", refuse_tkinter)
     monkeypatch.delitem(sys.modules, "tkinter", raising=False)
     try:
@@ -407,7 +407,7 @@ def test_fallback_rejects_broken_lists(raw: str) -> None:
 @pytest.mark.skipif(not TCL_INTERPRETER_AVAILABLE, reason="braucht tkinter")
 @pytest.mark.parametrize("raw", BROKEN_LISTS)
 def test_tcl_rejects_the_same_inputs(raw: str) -> None:
-    from visualizer_mcp.tcl_profile import TclError
+    from decentespresso_mcp.tcl_profile import TclError
 
     with pytest.raises((TclError, ValueError)):
         split_list(raw, prefer_tcl=True)

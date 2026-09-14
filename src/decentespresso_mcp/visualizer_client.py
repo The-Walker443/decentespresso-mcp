@@ -161,7 +161,7 @@ class VisualizerClient:
             timeout=timeout,
             follow_redirects=True,
             auth=httpx.BasicAuth(email, password),
-            headers={"User-Agent": user_agent or f"visualizer-mcp/{__version__} (privat)"},
+            headers={"User-Agent": user_agent or f"decentespresso-mcp/{__version__} (privat)"},
             transport=transport,
         )
 

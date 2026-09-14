@@ -20,12 +20,12 @@ from fastmcp import Client
 from fastmcp.exceptions import ToolError
 from helpers import decaid_detail, store_shot
 
-from visualizer_mcp.config import Config
-from visualizer_mcp.db import Database
-from visualizer_mcp.decaid_client import DecaidClient, DecaidRejected
-from visualizer_mcp.metrics import METRICS_VERSION, warm_metrics_cache
-from visualizer_mcp.server import build_mcp
-from visualizer_mcp.sync import SyncCoordinator
+from decentespresso_mcp.config import Config
+from decentespresso_mcp.db import Database
+from decentespresso_mcp.decaid_client import DecaidClient, DecaidRejected
+from decentespresso_mcp.metrics import METRICS_VERSION, warm_metrics_cache
+from decentespresso_mcp.server import build_mcp
+from decentespresso_mcp.sync import SyncCoordinator
 
 REFERENCE = "de1app-1785525360"
 
@@ -275,7 +275,7 @@ async def test_a_protected_field_at_the_api_is_not_retried(db: Database) -> None
 async def test_log_names_fields_but_never_values(
     writable: Config, db: Database, caplog
 ) -> None:
-    caplog.set_level(logging.INFO, logger="visualizer_mcp.server")
+    caplog.set_level(logging.INFO, logger="decentespresso_mcp.server")
     fake = FakeDecaid(reference_detail())
     mcp = build_mcp(writable, db, make_coordinator(fake, db))
 

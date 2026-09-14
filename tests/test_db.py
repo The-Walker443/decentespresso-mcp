@@ -5,8 +5,8 @@ import pathlib
 import pytest
 from helpers import decaid_detail, store_shot
 
-from visualizer_mcp.db import Database
-from visualizer_mcp.decaid_mapping import series_rows_from_decaid, shot_row_from_decaid
+from decentespresso_mcp.db import Database
+from decentespresso_mcp.decaid_mapping import series_rows_from_decaid, shot_row_from_decaid
 
 SYNCED_AT = "2026-09-14T12:00:00Z"
 POINTS = 184

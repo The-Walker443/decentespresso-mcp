@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from visualizer_mcp.guards import (
+from decentespresso_mcp.guards import (
     ALL_RULES,
     RULE_BEAN_AGE,
     RULE_DOSE_OUTLIER,

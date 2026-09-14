@@ -45,4 +45,4 @@ USER app
 VOLUME ["/data"]
 EXPOSE 8000
 
-CMD ["visualizer-mcp"]
+CMD ["decentespresso-mcp"]

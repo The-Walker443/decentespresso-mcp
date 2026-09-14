@@ -20,11 +20,11 @@ from helpers import (
     store_shot_with_profile,
 )
 
-from visualizer_mcp.config import Config
-from visualizer_mcp.db import Database
-from visualizer_mcp.metrics import warm_metrics_cache
-from visualizer_mcp.server import build_mcp
-from visualizer_mcp.sync import SyncCoordinator
+from decentespresso_mcp.config import Config
+from decentespresso_mcp.db import Database
+from decentespresso_mcp.metrics import warm_metrics_cache
+from decentespresso_mcp.server import build_mcp
+from decentespresso_mcp.sync import SyncCoordinator
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "decaid"
 
@@ -531,7 +531,7 @@ async def test_sync_now_runs_the_coordinator(config: Config, db: Database) -> No
             self.calls: list[bool] = []
 
         async def run(self, *, full: bool | None = None):
-            from visualizer_mcp.sync import SyncResult
+            from decentespresso_mcp.sync import SyncResult
 
             self.calls.append(full)
             return SyncResult(new_shots=1, mode="incremental")
@@ -554,14 +554,14 @@ class RecordingCoordinator(SyncCoordinator):
         self.runs = 0
 
     async def run(self, *, full: bool | None = None):
-        from visualizer_mcp.sync import SyncResult
+        from decentespresso_mcp.sync import SyncResult
 
         self.runs += 1
         return SyncResult(new_shots=0, mode="incremental")
 
 
 async def test_latest_skips_sync_when_fresh(config: Config, db: Database) -> None:
-    from visualizer_mcp.db import utc_now_iso
+    from decentespresso_mcp.db import utc_now_iso
 
     db.set_state("last_sync_at", utc_now_iso())
     coordinator = RecordingCoordinator(db)
@@ -584,7 +584,7 @@ async def test_latest_syncs_when_stale(config: Config, db: Database) -> None:
 
 
 async def test_latest_survives_a_failing_sync(config: Config, db: Database) -> None:
-    from visualizer_mcp.decaid_client import DecaidError
+    from decentespresso_mcp.decaid_client import DecaidError
 
     class FailingCoordinator(RecordingCoordinator):
         async def run(self, *, full: bool | None = None):
@@ -623,7 +623,7 @@ async def test_list_shots_first_page_syncs_when_stale(config: Config, db: Databa
 async def test_list_shots_first_page_skips_sync_when_fresh(
     config: Config, db: Database
 ) -> None:
-    from visualizer_mcp.db import utc_now_iso
+    from decentespresso_mcp.db import utc_now_iso
 
     db.set_state("last_sync_at", utc_now_iso())
     coordinator = RecordingCoordinator(db)

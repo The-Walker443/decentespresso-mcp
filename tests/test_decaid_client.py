@@ -13,7 +13,7 @@ import pathlib
 import httpx
 import pytest
 
-from visualizer_mcp.decaid_client import (
+from decentespresso_mcp.decaid_client import (
     MAX_PAGE_SIZE,
     VERIFIED_DECAID_VERSION,
     DecaidClient,

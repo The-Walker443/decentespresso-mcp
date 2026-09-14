@@ -1,4 +1,4 @@
-# visualizer-mcp
+# decentespresso-mcp
 
 MCP-Server, der Espresso-Bezuege der Decent DE1 lokal archiviert (SQLite)
 und Claude per Custom Connector zur Analyse bereitstellt.
@@ -8,7 +8,13 @@ ueber das eigene Netz. Damit laeuft kein Teil der Archivkette mehr ueber
 eine fremde Cloud. Der Upload nach [visualizer.coffee](https://visualizer.coffee)
 kann als Community-Schaufenster weiterlaufen, ist aber nicht mehr noetig.
 
-Vollstaendige Spezifikation: [SPEC_visualizer-mcp.md](SPEC_visualizer-mcp.md).
+Vollstaendige Spezifikation: [SPEC_decentespresso-mcp.md](SPEC_decentespresso-mcp.md).
+
+> **Umbenannt.** Das Projekt hiess bis M8 `decentespresso-mcp`. Der Name folgt
+> jetzt der **Maschine**, nicht der Quelle: seit M8 ist visualizer.coffee
+> weder Quelle noch Ziel der Archivkette, ein Name, der auf sie zeigt, waere
+> schlicht falsch. `visualizer_client.py` behaelt seinen Dateinamen — das
+> Modul spricht wirklich mit Visualizer.
 
 ## Stand: Milestone M8 (Quelle = Decaid, alles lokal)
 
@@ -371,7 +377,7 @@ Was dabei anders ist als in der Spec angenommen:
 - Leere Felder (`private_notes`, `metadata`) fehlen im Response komplett.
 
 Das vollstaendige Feldmapping steht als Tabelle im Docstring von
-`shot_row_from_detail()` in [visualizer_client.py](src/visualizer_mcp/visualizer_client.py).
+`shot_row_from_detail()` in [visualizer_client.py](src/decentespresso_mcp/visualizer_client.py).
 
 ## Entwicklung
 
@@ -400,7 +406,7 @@ Lokal starten (ohne Docker):
 ```bash
 cp .env.example .env    # ausfuellen, MCP_PATH_SECRET erzeugen
 set -a; . ./.env; set +a
-python -m visualizer_mcp
+python -m decentespresso_mcp
 ```
 
 ## Deployment A: docker compose auf dem Host
@@ -422,7 +428,7 @@ Cloudflare-Tunnel-Ingress ergaenzen:
 ```yaml
 ingress:
   - hostname: coffee-mcp.example.com
-    service: http://visualizer-mcp:8000
+    service: http://decentespresso-mcp:8000
   # ...bestehende Regeln...
   - service: http_status:404
 ```
@@ -458,7 +464,7 @@ sondern von GitHub Actions, und Portainer zieht es aus `ghcr.io`.
 
    | Variable | Beispiel |
    |---|---|
-   | `IMAGE_REPOSITORY` | `ghcr.io/<owner>/visualizer-mcp` |
+   | `IMAGE_REPOSITORY` | `ghcr.io/<owner>/decentespresso-mcp` |
    | `IMAGE_TAG` | `latest` |
    | `VISUALIZER_EMAIL` | dein Visualizer-Login |
    | `VISUALIZER_PASSWORD` | dein Visualizer-Passwort |
@@ -468,13 +474,40 @@ sondern von GitHub Actions, und Portainer zieht es aus `ghcr.io`.
    | `SYNC_INTERVAL_MIN` | `15` (optional) |
 
 5. **Deploy the stack.** Beim ersten Start legt Docker das benannte Volume
-   `visualizer_mcp_data` an — mit der Eigentuemerschaft aus dem Image, das
+   `decentespresso_mcp_data` an — mit der Eigentuemerschaft aus dem Image, das
    haendische `chown 10001` entfaellt hier also.
+
+#### Cutover vom alten Volume
+
+Das Volume heisst seit der Umbenennung `decentespresso_mcp_data` statt
+`visualizer_mcp_data`. Das ist **Absicht und faellt mit dem Historien-Reset
+aus M8 zusammen**: das neue Schema laesst sich ohnehin nicht auf eine Datei
+der Visualizer-Aera anwenden, `db.py` weigert sich ausdruecklich. Ein frisches
+Volume ist damit kein Verlust, sondern der vorgesehene Weg.
+
+Eines gehoert aber mit: **`shots-visualizer-era.db`**, die Sicherung des alten
+Bestands. Sie ist die einzige Quelle fuer Notizen und Bewertungen aus der
+Zeit vor Decaid und wird vom Migrationsskript gelesen. Vor dem Wegwerfen des
+alten Volumes also:
+
+```bash
+# Aus dem alten Volume herausholen
+docker run --rm -v visualizer_mcp_data:/alt -v "$PWD":/out alpine \
+  cp /alt/shots-visualizer-era.db /out/
+
+# In das neue legen (der Stack darf dabei laufen)
+docker run --rm -v decentespresso_mcp_data:/neu -v "$PWD":/in alpine \
+  sh -c 'cp /in/shots-visualizer-era.db /neu/ && chown 10001:10001 /neu/shots-visualizer-era.db'
+```
+
+Der Dateiname bleibt bewusst `shots-visualizer-era.db` — er benennt genau,
+woher die Daten stammen. Das alte Volume erst loeschen, wenn die Datei im
+neuen liegt und das Migrationsskript gelaufen ist.
 
 ### Aktualisieren
 
 Nach einem Push auf `main` wartet man den Workflow ab und drueckt in Portainer
-*Stacks → visualizer-mcp → Update the stack* mit angehaktem **Re-pull image**.
+*Stacks → decentespresso-mcp → Update the stack* mit angehaktem **Re-pull image**.
 Ohne den Haken bleibt der alte Layer liegen, weil sich der Tag `latest` nicht
 geaendert hat.
 
@@ -487,7 +520,7 @@ Die URL enthaelt das Secret und wird deshalb **nicht** beim Start geloggt. Bei
 Bedarf abrufen:
 
 ```bash
-docker compose exec visualizer-mcp visualizer-mcp --print-connector-url
+docker compose exec decentespresso-mcp decentespresso-mcp --print-connector-url
 ```
 
 Ergibt `https://<host>/<MCP_PATH_SECRET>/mcp` — diese URL in claude.ai unter
@@ -499,8 +532,8 @@ Der Server synchronisiert im Hintergrund selbst; der erste Lauf ist automatisch 
 Backfill. Manuell:
 
 ```bash
-docker compose exec visualizer-mcp visualizer-mcp --backfill    # alle Seiten
-docker compose exec visualizer-mcp visualizer-mcp --sync-once   # nur Neues/Geaendertes
+docker compose exec decentespresso-mcp decentespresso-mcp --backfill    # alle Seiten
+docker compose exec decentespresso-mcp decentespresso-mcp --sync-once   # nur Neues/Geaendertes
 ```
 
 Beide geben eine JSON-Zusammenfassung aus und beenden sich mit Exit-Code 1, wenn
@@ -652,7 +685,7 @@ docker compose logs | grep -iE 'authorization|<die-ersten-8-zeichen-des-secrets>
 ### 2. Healthcheck
 
 ```bash
-docker inspect --format '{{.State.Health.Status}}' visualizer-mcp
+docker inspect --format '{{.State.Health.Status}}' decentespresso-mcp
 ```
 
 **Erfolg:** `healthy` (kann bis zu 75 s dauern — `start_period` 15 s plus ein
@@ -661,7 +694,7 @@ Intervall).
 ### 3. Kriterium 5 — Neustart ohne Datenverlust
 
 ```bash
-docker compose exec visualizer-mcp python -c \
+docker compose exec decentespresso-mcp python -c \
   "import sqlite3;print(sqlite3.connect('/data/shots.db').execute('select count(*) from shots').fetchone())"
 docker compose restart
 # 30 s warten, dann denselben Befehl erneut
@@ -674,7 +707,7 @@ bereits verbucht).
 ### 4. Connector einbinden
 
 ```bash
-docker compose exec visualizer-mcp visualizer-mcp --print-connector-url
+docker compose exec decentespresso-mcp decentespresso-mcp --print-connector-url
 ```
 
 Die ausgegebene URL in claude.ai unter Einstellungen → Connectors → *Add custom
@@ -709,7 +742,7 @@ Nachfrage taucht der Bezug spaetestens nach `SYNC_INTERVAL_MIN` + 1 min in
 Kommt nichts an:
 
 ```bash
-docker compose exec visualizer-mcp visualizer-mcp --sync-once
+docker compose exec decentespresso-mcp decentespresso-mcp --sync-once
 ```
 
 Die JSON-Ausgabe zeigt `new_shots`, `errors` und `warnings` im Klartext.

@@ -9,9 +9,9 @@ from fastmcp import Client
 from helpers import decaid_detail, store_shot
 from starlette.testclient import TestClient
 
-from visualizer_mcp.config import Config
-from visualizer_mcp.db import Database
-from visualizer_mcp.server import SERVER_NAME, build_app, build_mcp
+from decentespresso_mcp.config import Config
+from decentespresso_mcp.db import Database
+from decentespresso_mcp.server import SERVER_NAME, build_app, build_mcp
 
 from .conftest import TEST_SECRET
 

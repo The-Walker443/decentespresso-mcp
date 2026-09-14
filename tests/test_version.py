@@ -16,10 +16,10 @@ import sys
 import pytest
 from fastmcp import Client
 
-from visualizer_mcp import __version__, milestone
-from visualizer_mcp.config import Config
-from visualizer_mcp.db import Database
-from visualizer_mcp.server import build_mcp
+from decentespresso_mcp import __version__, milestone
+from decentespresso_mcp.config import Config
+from decentespresso_mcp.db import Database
+from decentespresso_mcp.server import build_mcp
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 
@@ -65,7 +65,7 @@ def test_version_is_readable_in_a_fresh_interpreter() -> None:
     # importlib.metadata liest die installierten Metadaten - das muss auch
     # ohne den Quellbaum im Pfad klappen, so wie im Container.
     result = subprocess.run(
-        [sys.executable, "-c", "import visualizer_mcp; print(visualizer_mcp.__version__)"],
+        [sys.executable, "-c", "import decentespresso_mcp; print(decentespresso_mcp.__version__)"],
         capture_output=True, text=True, cwd=str(ROOT.parent), check=True,
     )
     assert result.stdout.strip() == __version__
@@ -90,10 +90,10 @@ def test_milestone_is_derived_from_the_minor_version() -> None:
     ("kaputt", None),
 ])
 def test_milestone_derivation(monkeypatch, version: str, expected: str | None) -> None:
-    import visualizer_mcp
+    import decentespresso_mcp
 
-    monkeypatch.setattr(visualizer_mcp, "__version__", version)
-    assert visualizer_mcp.milestone() == expected
+    monkeypatch.setattr(decentespresso_mcp, "__version__", version)
+    assert decentespresso_mcp.milestone() == expected
 
 
 # -------------------------------------------------------------------- status
@@ -128,7 +128,7 @@ async def test_build_ref_is_null_outside_a_built_image(
 async def test_user_agent_carries_the_real_version(config: Config) -> None:
     # SPEC ss4 will einen identifizierbaren User-Agent; mit einer eingefrorenen
     # Version waere er das nur noch nominell.
-    assert config.user_agent.startswith(f"visualizer-mcp/{pyproject_version()} ")
+    assert config.user_agent.startswith(f"decentespresso-mcp/{pyproject_version()} ")
 
 
 # ------------------------------------------------------- Meilenstein gepflegt
@@ -140,7 +140,7 @@ def test_version_matches_the_last_milestone_in_the_spec() -> None:
     Sucht die hoechste in SPEC ss14 gelistete Ausbaustufe und vergleicht sie
     mit der Nebenversion.
     """
-    spec = (ROOT / "SPEC_visualizer-mcp.md").read_text(encoding="utf-8")
+    spec = (ROOT / "SPEC_decentespresso-mcp.md").read_text(encoding="utf-8")
     section = spec.split("## 14.")[1].split("---")[0]
     milestones = [int(m) for m in re.findall(r"\*\*M(\d+)\*\*", section)]
     assert milestones, "SPEC ss14 listet keine Meilensteine mehr"

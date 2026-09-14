@@ -15,11 +15,11 @@ from fastmcp import Client
 from fastmcp.exceptions import ToolError
 from helpers import decaid_detail, store_shot
 
-from visualizer_mcp.config import Config
-from visualizer_mcp.db import Database
-from visualizer_mcp.decaid_client import DecaidClient
-from visualizer_mcp.server import build_mcp
-from visualizer_mcp.sync import SyncCoordinator
+from decentespresso_mcp.config import Config
+from decentespresso_mcp.db import Database
+from decentespresso_mcp.decaid_client import DecaidClient
+from decentespresso_mcp.server import build_mcp
+from decentespresso_mcp.sync import SyncCoordinator
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "decaid"
 BEAN_ID = "bean-1"
@@ -355,7 +355,7 @@ async def test_an_unchanged_value_is_reported_as_such(
 async def test_the_log_names_fields_but_never_values(
     writable: Config, db: Database, coordinator: SyncCoordinator, caplog
 ) -> None:
-    caplog.set_level(logging.INFO, logger="visualizer_mcp.server")
+    caplog.set_level(logging.INFO, logger="decentespresso_mcp.server")
     await call(build_mcp(writable, db, coordinator), "update_bean",
                {"id": BEAN_ID, "fields": {"notes": "streng vertraulich"}})
 

@@ -11,13 +11,13 @@ import pathlib
 from datetime import datetime, timedelta
 from typing import Any
 
-from visualizer_mcp.decaid_mapping import (
+from decentespresso_mcp.decaid_mapping import (
     batch_row_from_decaid,
     bean_row_from_decaid,
     series_rows_from_decaid,
     shot_row_from_decaid,
 )
-from visualizer_mcp.decaid_profile import profile_version
+from decentespresso_mcp.decaid_profile import profile_version
 
 #: Unterscheidet "nicht angegeben" von "ausdruecklich None".
 _KEEP = object()

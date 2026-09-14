@@ -12,10 +12,10 @@ from datetime import UTC, datetime, timedelta
 import httpx
 import pytest
 
-from visualizer_mcp.config import Config
-from visualizer_mcp.db import Database
-from visualizer_mcp.guards import Finding
-from visualizer_mcp.notify import (
+from decentespresso_mcp.config import Config
+from decentespresso_mcp.db import Database
+from decentespresso_mcp.guards import Finding
+from decentespresso_mcp.notify import (
     MAX_MESSAGES_PER_RUN,
     STATE_NOTIFIED,
     compose,
@@ -63,7 +63,7 @@ def ntfy(monkeypatch):
         kwargs["transport"] = httpx.MockTransport(fake.handler)
         return original(*args, **kwargs)
 
-    monkeypatch.setattr("visualizer_mcp.notify.httpx.AsyncClient", patched)
+    monkeypatch.setattr("decentespresso_mcp.notify.httpx.AsyncClient", patched)
     return fake
 
 
@@ -147,7 +147,7 @@ async def test_a_failing_ntfy_does_not_raise(
 
     original = httpx.AsyncClient
     monkeypatch.setattr(
-        "visualizer_mcp.notify.httpx.AsyncClient",
+        "decentespresso_mcp.notify.httpx.AsyncClient",
         lambda *a, **k: original(*a, **{**k, "transport": httpx.MockTransport(refusing)}),
     )
     assert await send(notifying, [finding("bean_age", "s1")], archive) == 0
@@ -162,7 +162,7 @@ async def test_a_failed_message_is_retried_next_time(
 
     original = httpx.AsyncClient
     monkeypatch.setattr(
-        "visualizer_mcp.notify.httpx.AsyncClient",
+        "decentespresso_mcp.notify.httpx.AsyncClient",
         lambda *a, **k: original(*a, **{**k, "transport": httpx.MockTransport(refusing)}),
     )
     await send(notifying, [finding("bean_age", "s1")], archive)

@@ -17,11 +17,11 @@ import pytest
 from fastmcp import Client
 from helpers import RECENT_ID, REFERENCE_ID, corpus, store_shot_with_profile
 
-from visualizer_mcp.config import Config
-from visualizer_mcp.db import Database
-from visualizer_mcp.decaid_profile import profile_version
-from visualizer_mcp.metrics import warm_metrics_cache
-from visualizer_mcp.server import build_mcp
+from decentespresso_mcp.config import Config
+from decentespresso_mcp.db import Database
+from decentespresso_mcp.decaid_profile import profile_version
+from decentespresso_mcp.metrics import warm_metrics_cache
+from decentespresso_mcp.server import build_mcp
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "decaid"
 REFERENCE = REFERENCE_ID
@@ -234,7 +234,7 @@ async def test_profiles_can_be_switched_off(mcp) -> None:
 
 
 async def test_every_call_is_logged_with_size_and_duration(mcp, caplog) -> None:
-    caplog.set_level(logging.INFO, logger="visualizer_mcp.telemetry")
+    caplog.set_level(logging.INFO, logger="decentespresso_mcp.telemetry")
     await call(mcp, "get_shot_metrics", {"id": REFERENCE})
 
     records = [r for r in caplog.records if r.getMessage() == "tool call"]
@@ -248,7 +248,7 @@ async def test_every_call_is_logged_with_size_and_duration(mcp, caplog) -> None:
 async def test_failed_calls_are_logged_without_leaking(mcp, caplog) -> None:
     from fastmcp.exceptions import ToolError
 
-    caplog.set_level(logging.INFO, logger="visualizer_mcp.telemetry")
+    caplog.set_level(logging.INFO, logger="decentespresso_mcp.telemetry")
     with pytest.raises(ToolError):
         await call(mcp, "get_shot", {"id": "gibt-es-nicht"})
 
@@ -260,7 +260,7 @@ async def test_failed_calls_are_logged_without_leaking(mcp, caplog) -> None:
 
 async def test_log_never_carries_arguments(mcp, caplog) -> None:
     """Argumente sind der wahrscheinlichste Weg, auf dem etwas ins Log geraet."""
-    caplog.set_level(logging.INFO, logger="visualizer_mcp.telemetry")
+    caplog.set_level(logging.INFO, logger="decentespresso_mcp.telemetry")
     await call(mcp, "list_shots", {"bean": "Tchibo", "limit": 3})
 
     blob = "\n".join(r.getMessage() + str(getattr(r, "fields", "")) for r in caplog.records)
@@ -272,8 +272,8 @@ async def test_log_never_carries_arguments(mcp, caplog) -> None:
 
 async def test_write_tool_costs_what_it_is_worth(valid_env, db) -> None:
     """Der Schreibmodus darf die Tool-Liste nicht sprengen (SPEC ss17.3/ss18.4)."""
-    from visualizer_mcp.sync import SyncCoordinator
-    from visualizer_mcp.visualizer_client import VisualizerClient
+    from decentespresso_mcp.sync import SyncCoordinator
+    from decentespresso_mcp.visualizer_client import VisualizerClient
 
     writable = Config.from_env({**valid_env, "WRITE_ENABLED": "true"})
     coordinator = SyncCoordinator(

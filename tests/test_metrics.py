@@ -15,9 +15,9 @@ from collections.abc import Iterator
 import pytest
 from helpers import break_the_scale, corpus, decaid_detail, store_shot
 
-from visualizer_mcp.db import Database
-from visualizer_mcp.decaid_mapping import series_rows_from_decaid
-from visualizer_mcp.metrics import (
+from decentespresso_mcp.db import Database
+from decentespresso_mcp.decaid_mapping import series_rows_from_decaid
+from decentespresso_mcp.metrics import (
     METRICS_VERSION,
     compute_metrics,
     curve_shape,

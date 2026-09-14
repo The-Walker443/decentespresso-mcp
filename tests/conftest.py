@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import pytest
 
-from visualizer_mcp.config import Config
-from visualizer_mcp.db import Database
+from decentespresso_mcp.config import Config
+from decentespresso_mcp.db import Database
 
 # 48 Zeichen wie 'openssl rand -hex 24'.
 TEST_SECRET = "0123456789abcdef0123456789abcdef0123456789abcdef"

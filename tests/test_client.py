@@ -10,7 +10,7 @@ import pathlib
 import httpx
 import pytest
 
-from visualizer_mcp.visualizer_client import (
+from decentespresso_mcp.visualizer_client import (
     AuthFailed,
     RateLimiter,
     RequestRejected,
@@ -53,7 +53,7 @@ async def test_basic_auth_header_is_sent() -> None:
 
     expected = base64.b64encode(f"{EMAIL}:{PASSWORD}".encode()).decode()
     assert seen["authorization"] == f"Basic {expected}"
-    assert seen["user-agent"].startswith("visualizer-mcp/")
+    assert seen["user-agent"].startswith("decentespresso-mcp/")
 
 
 async def test_401_raises_auth_failed() -> None:
@@ -232,7 +232,7 @@ class TestRateLimiter:
             for window in limiter._windows:
                 window.hits.clear()
 
-        monkeypatch.setattr("visualizer_mcp.visualizer_client.asyncio.sleep", fake_sleep)
+        monkeypatch.setattr("decentespresso_mcp.visualizer_client.asyncio.sleep", fake_sleep)
         limiter = RateLimiter(windows=((60.0, 2),))
         await limiter.acquire()
         await limiter.acquire()

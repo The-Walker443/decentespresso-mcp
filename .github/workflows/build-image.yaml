@@ -73,7 +73,7 @@ jobs:
         with:
           context: .
           load: true
-          tags: visualizer-mcp:smoke
+          tags: decentespresso-mcp:smoke
           build-args: |
             BUILD_REF=${{ github.sha }}
           # Baucache zwischen Laeufen: der pip-Schritt dominiert die Laufzeit.
@@ -90,9 +90,9 @@ jobs:
         # Dockerfile weg, soll der Build rot werden - nicht der Container beim
         # Start. Genau dieser Absturz ist einmal in Produktion passiert.
         run: |
-          docker run --rm visualizer-mcp:smoke python - <<'PY'
+          docker run --rm decentespresso-mcp:smoke python - <<'PY'
           import tkinter                     # bricht ohne libtk8.6 sofort ab
-          from visualizer_mcp.tcl_profile import (
+          from decentespresso_mcp.tcl_profile import (
               TCL_IMPORT_ERROR, TCL_INTERPRETER_AVAILABLE, parse_profile, semantic_hash,
           )
 
@@ -124,13 +124,13 @@ jobs:
 
           import os
 
-          from visualizer_mcp import __version__, milestone
+          from decentespresso_mcp import __version__, milestone
 
           assert __version__ != "0+unbekannt", "Paketmetadaten fehlen im Image"
           assert os.environ.get("BUILD_REF"), "BUILD_REF wurde nicht durchgereicht"
           print(f"Version {__version__} ({milestone()}), Build {os.environ['BUILD_REF'][:8]}")
 
-          import visualizer_mcp.server  # noqa: F401  - App-Import muss tragen
+          import decentespresso_mcp.server  # noqa: F401  - App-Import muss tragen
           print("Profilparser im Image: ok")
           PY
 

@@ -20,12 +20,12 @@ from fastmcp import Client
 from helpers import REFERENCE_ID, corpus, decaid_detail, store_shot_with_profile
 from test_sync import FakeDecaid
 
-from visualizer_mcp.config import Config
-from visualizer_mcp.db import Database
-from visualizer_mcp.logging_setup import REDACTED, setup_logging
-from visualizer_mcp.metrics import warm_metrics_cache
-from visualizer_mcp.server import build_mcp
-from visualizer_mcp.sync import run_sync
+from decentespresso_mcp.config import Config
+from decentespresso_mcp.db import Database
+from decentespresso_mcp.logging_setup import REDACTED, setup_logging
+from decentespresso_mcp.metrics import warm_metrics_cache
+from decentespresso_mcp.server import build_mcp
+from decentespresso_mcp.sync import run_sync
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "decaid"
 REFERENCE = REFERENCE_ID
@@ -143,7 +143,7 @@ async def test_criterion_6_no_secret_in_tool_output(config: Config, db: Database
 
 def test_criterion_6_no_secret_in_logs(capsys, config: Config) -> None:
     setup_logging(config.log_level, secrets=config.secret_values())
-    log = logging.getLogger("visualizer_mcp.test")
+    log = logging.getLogger("decentespresso_mcp.test")
 
     # Alle Formen, in denen ein Geheimnis realistisch in eine Logzeile geraet.
     log.info("connector %s", config.connector_url)
@@ -184,7 +184,7 @@ def test_basic_auth_token_is_the_wire_format(config: Config) -> None:
 def test_unknown_auth_headers_are_masked_too(capsys, config: Config, line: str) -> None:
     # Faengt auch ab, was die Konfiguration gar nicht kennt.
     setup_logging(config.log_level, secrets=config.secret_values())
-    logging.getLogger("visualizer_mcp.test").info("%s", line)
+    logging.getLogger("decentespresso_mcp.test").info("%s", line)
     out = capsys.readouterr().out
     logging.getLogger().handlers.clear()
 

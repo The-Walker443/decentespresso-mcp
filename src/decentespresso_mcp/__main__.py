@@ -62,7 +62,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     setup_logging(config.log_level, secrets=config.secret_values())
-    log = logging.getLogger("visualizer_mcp")
+    log = logging.getLogger("decentespresso_mcp")
     for warning in config.startup_warnings():
         log.warning(warning)
 
@@ -101,7 +101,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 async def _run_sync_cli(config: Config, *, full: bool) -> int:
-    log = logging.getLogger("visualizer_mcp")
+    log = logging.getLogger("decentespresso_mcp")
     db = open_database(config.db_path)
     client = DecaidClient(config.decaid_url)
     try:
