@@ -1,0 +1,95 @@
+{
+  "id": "61289677-96c3-4168-8e01-f960c18c6a7a",
+  "name": "Workflow",
+  "description": "Description",
+  "profile": {
+    "version": "2",
+    "title": "D-Flow",
+    "notes": "A simple to use profiling system By Damian Brakel\n        D-Flow's Default profile is provided as an example profile for you to get started in creating your own",
+    "author": "Damian.",
+    "beverage_type": "espresso",
+    "steps": [
+      {
+        "name": "Filling",
+        "pump": "pressure",
+        "transition": "fast",
+        "exit": {
+          "type": "pressure",
+          "condition": "over",
+          "value": 1.5
+        },
+        "volume": 100.0,
+        "seconds": 25.0,
+        "weight": 5.0,
+        "temperature": 96.0,
+        "sensor": "coffee",
+        "pressure": 3.0,
+        "limiter": null
+      },
+      {
+        "name": "Infusing",
+        "pump": "pressure",
+        "transition": "fast",
+        "exit": null,
+        "volume": 100.0,
+        "seconds": 60.0,
+        "weight": 4.0,
+        "temperature": 96.0,
+        "sensor": "coffee",
+        "pressure": 3.0,
+        "limiter": null
+      },
+      {
+        "name": "Pouring",
+        "pump": "flow",
+        "transition": "fast",
+        "exit": null,
+        "volume": 0.0,
+        "seconds": 127.0,
+        "weight": 0.0,
+        "temperature": 96.0,
+        "sensor": "coffee",
+        "flow": 1.7,
+        "limiter": {
+          "value": 8.5,
+          "range": 0.2
+        }
+      }
+    ],
+    "target_volume": 0.0,
+    "target_weight": 42.0,
+    "target_volume_count_start": 2,
+    "tank_temperature": 0.0
+  },
+  "context": {
+    "targetDoseWeight": 18.0,
+    "targetYield": 42.0,
+    "grinderModel": "Testmuehle 000",
+    "grinderSetting": "2.70",
+    "beanBatchId": "10585dd5-1681-4763-868d-36d3713c100c",
+    "coffeeName": "Arabica Honey Process",
+    "coffeeRoaster": "Tugu Kawisari",
+    "extras": {
+      "basketId": "d5fb625d-c25f-44de-b849-5a65daab28c1",
+      "basketName": "Decent 18g",
+      "rpm": 0
+    }
+  },
+  "steamSettings": {
+    "targetTemperature": 160,
+    "duration": 120,
+    "flow": 0.0,
+    "stopAtTemperature": 0.0
+  },
+  "hotWaterData": {
+    "targetTemperature": 95,
+    "duration": 30,
+    "volume": 100,
+    "flow": 10.0
+  },
+  "rinseData": {
+    "targetTemperature": 90,
+    "duration": 15,
+    "flow": 4.0
+  }
+}

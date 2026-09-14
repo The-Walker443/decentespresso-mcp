@@ -8,11 +8,13 @@ Fehler und wirft sie gebuendelt.
 from __future__ import annotations
 
 import base64
+import ipaddress
 import os
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import PurePosixPath, PureWindowsPath
+from urllib.parse import urlparse
 
 from . import __version__
 
@@ -51,6 +53,12 @@ class Config:
     #: SPEC ss18.4. Ist er aus, existiert das Schreibtool gar nicht - es lehnt
     #: nicht ab, es steht nicht in der Tool-Liste.
     write_enabled: bool
+    #: SPEC ss20: Decaid im LAN ist ab M8 die Quelle. Nur private Adressen.
+    decaid_url: str
+    #: Benachrichtigung der Waechter (SPEC ss20.7); leer = keine.
+    ntfy_url: str | None
+    ntfy_topic: str | None
+    ntfy_token: str | None
 
     @property
     def mcp_path(self) -> str:
@@ -119,7 +127,9 @@ class Config:
             f"public_base_url={self.public_base_url!r}, "
             f"display_tz={self.display_tz!r}, "
             f"host={self.host!r}, port={self.port}, "
-            f"write_enabled={self.write_enabled})"
+            f"write_enabled={self.write_enabled}, "
+            f"decaid_url={self.decaid_url!r}, "
+            f"ntfy={'an' if self.ntfy_url else 'aus'})"
         )
 
     @classmethod
@@ -165,6 +175,21 @@ class Config:
         port = _int_in_range(src, "PORT", 8000, 1, 65535, problems)
         write_enabled = _bool(src, "WRITE_ENABLED", default=False, problems=problems)
 
+        decaid_url = (src.get("DECAID_URL") or "").strip()
+        if not decaid_url:
+            problems.append(
+                "DECAID_URL fehlt - ab M8 ist Decaid im LAN die Quelle "
+                "(z. B. http://10.100.100.171:8080)"
+            )
+        else:
+            problems.extend(_lan_url_problems(decaid_url))
+
+        ntfy_url = (src.get("NTFY_URL") or "").strip() or None
+        ntfy_topic = (src.get("NTFY_TOPIC") or "").strip() or None
+        ntfy_token = (src.get("NTFY_TOKEN") or "").strip() or None
+        if ntfy_url and not ntfy_topic:
+            problems.append("NTFY_URL ist gesetzt, aber NTFY_TOPIC fehlt")
+
         if problems:
             raise ConfigError(problems)
 
@@ -180,7 +205,42 @@ class Config:
             host=host,
             port=port,
             write_enabled=write_enabled,
+            decaid_url=decaid_url,
+            ntfy_url=ntfy_url,
+            ntfy_topic=ntfy_topic,
+            ntfy_token=ntfy_token,
         )
+
+
+def _lan_url_problems(url: str) -> list[str]:
+    """Prueft, dass DECAID_URL auf eine private Adresse zeigt (SPEC ss20.6).
+
+    Nur IP-Literale werden akzeptiert, keine Hostnamen. Ein Name laesst sich
+    spaeter umbiegen, ohne dass die Konfiguration sich aendert - und dann liefe
+    der Bezugsdatenverkehr womoeglich ins offene Netz. Die Adresse des Tablets
+    steht ohnehin fest.
+    """
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        return [f"DECAID_URL muss mit http:// oder https:// beginnen, ist aber {url!r}"]
+    if not parsed.hostname:
+        return [f"DECAID_URL enthaelt keinen Host: {url!r}"]
+
+    try:
+        address = ipaddress.ip_address(parsed.hostname)
+    except ValueError:
+        return [
+            f"DECAID_URL={parsed.hostname!r} ist ein Hostname. Erwartet wird eine "
+            "feste private IP (z. B. 10.100.100.171) - ein Name kann spaeter "
+            "woandershin zeigen, und der Decaid-Verkehr darf das LAN nicht "
+            "verlassen."
+        ]
+    if not (address.is_private or address.is_loopback or address.is_link_local):
+        return [
+            f"DECAID_URL zeigt auf die oeffentliche Adresse {address}. Decaid wird "
+            "ausschliesslich im LAN angesprochen (SPEC ss20.6)."
+        ]
+    return []
 
 
 def _bool(

@@ -14,6 +14,8 @@
 #   MCP_PATH_SECRET    openssl rand -hex 24
 #   PUBLIC_BASE_URL    https://<hostname>
 #   WRITE_ENABLED      false (Default) oder true fuer schreibende Tools
+#   DECAID_URL         http://10.100.100.171:8080 (nur private IPs, SPEC 20.6)
+#   NTFY_URL/NTFY_TOPIC/NTFY_TOKEN   optional, Waechter-Nachrichten
 #   CLOUDFLARED_NETWORK  Name des vorhandenen Tunnel-Netzes
 
 services:
@@ -29,6 +31,10 @@ services:
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
       SYNC_INTERVAL_MIN: ${SYNC_INTERVAL_MIN:-15}
       WRITE_ENABLED: ${WRITE_ENABLED:-false}
+      DECAID_URL: ${DECAID_URL}
+      NTFY_URL: ${NTFY_URL:-}
+      NTFY_TOPIC: ${NTFY_TOPIC:-}
+      NTFY_TOKEN: ${NTFY_TOKEN:-}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       TZ: ${TZ:-Europe/Berlin}
       DB_PATH: /data/shots.db
@@ -37,6 +43,9 @@ services:
       - visualizer_mcp_data:/data
 
     networks:
+      # tunnel = Weg fuer Claude herein. Decaid wird darueber NIE
+      # angesprochen (SPEC 20.6); dafuer braucht der Container eine
+      # Route ins LAN - je nach Setup das Host-Netz oder ein macvlan.
       - tunnel
 
     # Keine Host-Ports: erreichbar nur ueber das interne Docker-Netz (SPEC ss10.4).

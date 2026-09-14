@@ -1,6 +1,6 @@
 [project]
 name = "visualizer-mcp"
-version = "0.7.0"
+version = "0.8.0"
 description = "MCP-Server fuer Espresso-Shot-Analyse (visualizer.coffee -> SQLite -> Claude)"
 requires-python = ">=3.12"
 dependencies = [

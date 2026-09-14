@@ -1,0 +1,66 @@
+[
+  {
+    "id": "a705e101-7572-4b62-9514-f3e9245faa20",
+    "roaster": "Rösttrommel",
+    "name": "Sugar Cane Decaf",
+    "species": "Arabica",
+    "decaf": false,
+    "processing": "Washed",
+    "notes": "Decaf",
+    "archived": false,
+    "createdAt": "2026-09-08T19:21:07.549765",
+    "updatedAt": "2026-09-08T19:32:16.960068"
+  },
+  {
+    "id": "1136ead2-7a0f-44cb-b45e-e8c8485e14a6",
+    "roaster": "Tugu Kawisari",
+    "name": "Arabica Honey Process",
+    "species": "Arabica",
+    "decaf": false,
+    "country": "Bali",
+    "processing": "Honey",
+    "archived": false,
+    "createdAt": "2026-09-06T18:52:07.490516",
+    "updatedAt": "2026-09-06T18:52:07.490516"
+  },
+  {
+    "id": "bd4f06fb-214d-45c7-b0d3-dff5e55a0c74",
+    "roaster": "Tchibo",
+    "name": "Espresso Arabica",
+    "decaf": false,
+    "notes": "Langzeitröstverfahren",
+    "archived": false,
+    "createdAt": "2026-08-30T17:39:26.531643",
+    "updatedAt": "2026-08-30T17:39:26.531643"
+  },
+  {
+    "id": "1fb10258-2bfd-41e9-96c5-c97bed5d99ed",
+    "roaster": "Tchibo",
+    "name": "Test",
+    "decaf": false,
+    "notes": "alte bohne",
+    "archived": false,
+    "createdAt": "2026-08-30T17:39:26.531391",
+    "updatedAt": "2026-08-30T17:39:26.531391"
+  },
+  {
+    "id": "2a6388a8-4092-49d1-a815-89d4192562db",
+    "roaster": "Rewe Beste Wahl",
+    "name": "incahuasi 100% Bio Arabica Espresso",
+    "decaf": false,
+    "notes": "tiefgefrohren",
+    "archived": false,
+    "createdAt": "2026-08-30T17:39:26.531332",
+    "updatedAt": "2026-08-30T17:39:26.531332"
+  },
+  {
+    "id": "521a5e49-3521-4fd3-846c-7b7e03470dc0",
+    "roaster": "Bogatz",
+    "name": "Espresso Arabica",
+    "decaf": false,
+    "notes": "Langzeitröstverfahren",
+    "archived": false,
+    "createdAt": "2026-08-30T17:39:26.531141",
+    "updatedAt": "2026-08-30T17:39:26.531141"
+  }
+]

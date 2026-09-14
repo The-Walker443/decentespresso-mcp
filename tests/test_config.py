@@ -154,3 +154,53 @@ def test_secret_values_cover_password_path_secret_and_wire_token(config: Config)
         TEST_PASSWORD, TEST_SECRET, config.basic_auth_token
     }
     assert TEST_PASSWORD not in config.basic_auth_token
+
+
+# --------------------------------------------------- DECAID_URL (SPEC ss20.6)
+
+
+def test_decaid_url_is_required(valid_env: dict[str, str]) -> None:
+    del valid_env["DECAID_URL"]
+    with pytest.raises(ConfigError) as excinfo:
+        Config.from_env(valid_env)
+    assert any("DECAID_URL fehlt" in p for p in excinfo.value.problems)
+
+
+@pytest.mark.parametrize("url", [
+    "http://10.100.100.171:8080",
+    "http://192.168.1.50:8080",
+    "http://172.16.0.9:8080",
+    "http://127.0.0.1:8080",
+    "http://169.254.1.1:8080",
+])
+def test_private_addresses_are_accepted(valid_env: dict[str, str], url: str) -> None:
+    assert Config.from_env({**valid_env, "DECAID_URL": url}).decaid_url == url
+
+
+def test_public_address_is_refused(valid_env: dict[str, str]) -> None:
+    with pytest.raises(ConfigError) as excinfo:
+        Config.from_env({**valid_env, "DECAID_URL": "http://8.8.8.8:8080"})
+    assert "oeffentliche Adresse" in excinfo.value.problems[0]
+
+
+def test_hostname_is_refused(valid_env: dict[str, str]) -> None:
+    # Ein Name laesst sich spaeter umbiegen, ohne dass die Konfiguration sich
+    # aendert - dann liefe der Bezugsdatenverkehr womoeglich ins offene Netz.
+    with pytest.raises(ConfigError) as excinfo:
+        Config.from_env({**valid_env, "DECAID_URL": "http://tablet.local:8080"})
+    assert "Hostname" in excinfo.value.problems[0]
+
+
+def test_wrong_scheme_is_refused(valid_env: dict[str, str]) -> None:
+    with pytest.raises(ConfigError):
+        Config.from_env({**valid_env, "DECAID_URL": "ftp://10.0.0.1"})
+
+
+def test_ntfy_url_without_topic_is_refused(valid_env: dict[str, str]) -> None:
+    with pytest.raises(ConfigError) as excinfo:
+        Config.from_env({**valid_env, "NTFY_URL": "http://ntfy.example.com"})
+    assert "NTFY_TOPIC" in excinfo.value.problems[0]
+
+
+def test_ntfy_is_optional(config: Config) -> None:
+    assert config.ntfy_url is None and config.ntfy_topic is None

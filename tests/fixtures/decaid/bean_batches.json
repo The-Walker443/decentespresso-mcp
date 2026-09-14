@@ -1,0 +1,77 @@
+[
+  {
+    "id": "0a640616-b680-4a10-8062-c1f9fd892cfe",
+    "beanId": "a705e101-7572-4b62-9514-f3e9245faa20",
+    "roastDate": "2026-09-02T00:00:00.000Z",
+    "buyDate": "2026-09-08T00:00:00.000Z",
+    "freezeDate": "2026-09-08T00:00:00.000Z",
+    "frozen": false,
+    "archived": false,
+    "createdAt": "2026-09-08T19:21:07.578896",
+    "updatedAt": "2026-09-08T19:32:16.996511"
+  },
+  {
+    "id": "10585dd5-1681-4763-868d-36d3713c100c",
+    "beanId": "1136ead2-7a0f-44cb-b45e-e8c8485e14a6",
+    "roastDate": "2026-08-15T00:00:00.000Z",
+    "roastLevel": "Medium",
+    "freezeDate": "2026-08-28T00:00:00.000Z",
+    "frozen": false,
+    "archived": false,
+    "createdAt": "2026-09-06T18:52:07.532023",
+    "updatedAt": "2026-09-06T18:52:07.532023"
+  },
+  {
+    "id": "508f525e-eabd-4815-a605-951ead51f9cd",
+    "beanId": "bd4f06fb-214d-45c7-b0d3-dff5e55a0c74",
+    "roastLevel": "kräftig",
+    "frozen": false,
+    "archived": false,
+    "createdAt": "2026-08-30T17:39:26.531670",
+    "updatedAt": "2026-08-30T17:39:26.531670"
+  },
+  {
+    "id": "785c517b-535a-4e83-8409-51c10c0473c5",
+    "beanId": "1fb10258-2bfd-41e9-96c5-c97bed5d99ed",
+    "frozen": false,
+    "archived": false,
+    "createdAt": "2026-08-30T17:39:26.531516",
+    "updatedAt": "2026-08-30T17:39:26.531516"
+  },
+  {
+    "id": "7a7f855e-93a2-49fd-861c-ca37733d4e4a",
+    "beanId": "521a5e49-3521-4fd3-846c-7b7e03470dc0",
+    "roastLevel": "kräftig",
+    "frozen": false,
+    "archived": false,
+    "createdAt": "2026-08-30T17:39:26.531451",
+    "updatedAt": "2026-08-30T17:39:26.531451"
+  },
+  {
+    "id": "906d1333-792b-4725-8f55-723b4d457a41",
+    "beanId": "1fb10258-2bfd-41e9-96c5-c97bed5d99ed",
+    "roastLevel": "kräftig",
+    "frozen": false,
+    "archived": false,
+    "createdAt": "2026-08-30T17:39:26.531418",
+    "updatedAt": "2026-08-30T17:39:26.531418"
+  },
+  {
+    "id": "31651424-030c-47cb-a84d-2b5e167b7d42",
+    "beanId": "2a6388a8-4092-49d1-a815-89d4192562db",
+    "roastLevel": "kräftig",
+    "frozen": false,
+    "archived": false,
+    "createdAt": "2026-08-30T17:39:26.531361",
+    "updatedAt": "2026-08-30T17:39:26.531361"
+  },
+  {
+    "id": "0af7ddab-404e-4155-b74e-94c2fced829d",
+    "beanId": "521a5e49-3521-4fd3-846c-7b7e03470dc0",
+    "roastLevel": "kräftig",
+    "frozen": false,
+    "archived": false,
+    "createdAt": "2026-08-30T17:39:26.531294",
+    "updatedAt": "2026-08-30T17:39:26.531294"
+  }
+]

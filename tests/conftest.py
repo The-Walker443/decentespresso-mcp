@@ -16,6 +16,8 @@ def valid_env() -> dict[str, str]:
         "VISUALIZER_PASSWORD": TEST_PASSWORD,
         "MCP_PATH_SECRET": TEST_SECRET,
         "PUBLIC_BASE_URL": "https://coffee-mcp.example.com",
+        # SPEC ss20: ab M8 Pflicht, und nur private Adressen.
+        "DECAID_URL": "http://10.100.100.171:8080",
     }
 
 

@@ -1,7 +1,12 @@
 # Spezifikation: `visualizer-mcp` — MCP-Server für Espresso-Shot-Analyse
 
-**Version:** 1.3 · **Stand:** 2026-08-31 · **Zielgruppe:** Claude Code (Implementierung) + Betreiber (Matthias)
+**Version:** 1.4 · **Stand:** 2026-09-14 · **Zielgruppe:** Claude Code (Implementierung) + Betreiber (Matthias)
 
+> **Änderungen 1.4 (2026-09-14):**
+> - §20 (M8): Decaid im LAN ersetzt visualizer.coffee als Quelle.
+>   Historien-Reset, neues Quellschema mit Sollwerten pro Messpunkt,
+>   Wächter und Audit. Verifikationstabelle T1–T19 gegen Decaid 0.8.5+2624.
+>
 > **Änderungen 1.3 (2026-08-31):**
 > - §19 Versionierung: `version` kommt aus den Paketmetadaten, `milestone` wird
 >   daraus abgeleitet, `build_ref` nennt den gebauten Commit.
@@ -581,6 +586,8 @@ mit Zusammenfassung loggen (`new=2 updated=1 profiles=0 dur=1.2s`).
   gestraffte Docstrings, Messung je Aufruf.
 - **M7** Schreibende Tools (§18): `update_shot` mit Whitelist, Validierung und
   Write-through, hinter `WRITE_ENABLED`.
+- **M8** Quelle = Decaid (§20): LAN-Ingestion, neues Quellschema, Wächter und
+  Audit; Visualizer nur noch optionales Schaufenster.
 
 Nach jedem Milestone: Tests grün, **Version in `pyproject.toml` bumpen**
 (Nebenversion = Meilensteinnummer, siehe §19), kurzer Commit. API-Schemas in M1 zuerst gegen
@@ -932,3 +939,187 @@ Damit ist beim Deployment eindeutig:
 
 Der Smoke-Step im Workflow prüft beides im fertigen Image: dass die
 Paketmetadaten lesbar sind und dass `BUILD_REF` durchgereicht wurde.
+
+---
+
+## 20. Quelle = Decaid, alles lokal (M8)
+
+> **Nummerierung:** Der Auftrag nannte §19; das war bereits durch
+> „Versionierung und Build-Identität" belegt. M8 ist deshalb §20.
+
+### 20.1 Zielbild
+
+Bis M7 war visualizer.coffee die Quelle. Damit lief die Archivkette über eine
+fremde Cloud, und das Free-Tier-Fenster von einem Monat bestimmte, was überhaupt
+geholt werden konnte (§1). Ab M8 gilt:
+
+```
+        DE1 ──BLE──▶ Decaid (Tablet, 10.100.100.171:8080)   ← Master
+                          │  REST + WebSocket, reines LAN
+                          ▼
+                 visualizer-mcp (Docker)   ← Archiv & Analyse
+                          │  internes Docker-Netz
+                    cloudflared ──▶ Claude
+                          ▲
+                          └─ NIEMALS Decaid-Verkehr (§20.6)
+
+        Decaid ──optional──▶ visualizer.coffee   (Community-Schaufenster,
+                                                  nicht Teil der Archivkette)
+```
+
+**Decaid ist der Master.** Keine Cloud in der Kette zwischen Maschine und
+Archiv. Das Visualizer-Plugin in Decaid bleibt erlaubt, ist aber nur noch ein
+Veröffentlichungsweg — fällt es aus, ändert das am Archiv nichts.
+
+Belege für den Gewinn, gemessen am 2026-09-14: Decaid hält **168 Bezüge** zurück
+bis 2026-06-24. Der Visualizer-Bestand derselben Maschine lag bei 71, und selbst
+ein frischer Sync von dort kam nur auf 69, weil ältere Bezüge aus dem
+Free-Tier-Fenster gefallen waren.
+
+**Historien-Reset ist genehmigt:** neue DB-Datei, Migrationen frisch nummeriert,
+kein Migrationspfad von den Visualizer-Daten.
+
+### 20.2 Verifikationsergebnisse
+
+Gegen die laufende Instanz geprüft am **2026-09-14**, Decaid **0.8.5+2624**
+(Commit `a08bc41e`, gebaut 2026-09-02). Der Auftrag verwies auf eine Tabelle
+T1–T15 aus einer Quellcode-Verifikation; die lag nicht bei, daher ist dies die
+eigene Messung an der echten API.
+
+| # | Geprüft | Ergebnis |
+|---|---|---|
+| T1 | Pfadpräfix | **Alles unter `/api/v1/`.** `/shots/ids`, `/shots/latest`, `/shots/<id>` ohne Präfix → 404 |
+| T2 | `GET /api/v1/info` | 200, `{version, fullVersion, commit, commitShort, buildTime, buildNumber, localIp, appStore, branch}` |
+| T3 | `GET /api/v1/shots` Envelope | `{items, total, limit, offset}` — `total` vorhanden |
+| T4 | `limit`-Obergrenze | **Deckelt still bei 100.** `limit=101` und `limit=500` liefern je 100 Elemente ohne Fehler |
+| T5 | `offset` | Wirkt; `offset=0` und `offset=1` liefern verschiedene Bezüge |
+| T6 | `order` | `asc` → ältester zuerst (2026-06-24), `desc` → neuester. Default ist `desc` |
+| T7 | `beanId`-Filter | Wirkt (`beanId=x` → `total=0`). `profileId` wird **ignoriert** (`total` unverändert) |
+| T8 | Zeitfilter serverseitig | **Existiert nicht.** `updated_after`, `updatedAfter`, `since`, `sort` werden stillschweigend ignoriert, `total` bleibt 168 |
+| T9 | `GET /api/v1/shots/ids` | 200, **alle 168 IDs unpaginiert** als flaches Array |
+| T10 | `GET /api/v1/shots/latest` | 200, vollständiges Detail inkl. `measurements` |
+| T11 | `GET /api/v1/shots/<id>` | 200, Detail mit `measurements` (184 Punkte beim Referenzbezug) |
+| T12 | `measurements`-Struktur | `{machine{…}, scale{…}, volume}` je Punkt. **Kein `time`-Feld** — Zeitachse aus `machine.timestamp` minus erstem. `profileFrame` liegt unter `machine`, nicht auf Punktebene |
+| T13 | `PUT /shots/<id>` Deep-Merge | Bestätigt: nur `annotations.espressoNotes` gesendet → übrige `annotations` (`enjoyment`) und alle 184 `measurements` unverändert |
+| T14 | Geschützte Felder | `PUT` mit `createdAt`/`measurements`/`id` → **400**, nichts geändert. Strenger als Visualizer, das Unerlaubtes still verwarf |
+| T15 | `updatedAt` serverseitig | Bei Inhaltsänderung gesetzt (`06:02:39Z` → `15:37:24Z`), `createdAt` unangetastet |
+| T16 | Beans / Batches | Beans unter `/api/v1/beans`. **Batches unter `/api/v1/bean-batches`** bzw. `/api/v1/beans/<id>/batches` — `/api/v1/batches` → 404. Felder: `roastDate`, `buyDate`, `freezeDate`, `frozen`, `archived`, `beanId` |
+| T17 | WebSocket | `/ws/v1/machine/shotState` → **101 Upgrade**. `/ws/v1/machine/state` → 404 |
+| T18 | `enjoyment`-Skala | **0–100 als Float** (beobachtet: 40.0, 50.0, 80.0, 100.0). Keine Sterne-Skala, also **kein ×20-Mapping nötig** |
+| T19 | Retention / Pruning | Kein Hinweis: Bestand reicht lückenlos bis 2026-06-24 zurück, kein Endpunkt dafür |
+
+**Abweichungen vom Auftrag** — gemeldet statt still umgebaut:
+
+1. **Pfade** (T1): der Auftrag nennt `/shots/ids`, `/shots/latest`, `/shots/<id>`
+   ohne `/api/v1`-Präfix. So sind sie nicht erreichbar.
+2. **Batches** (T16): `/api/v1/batches` existiert nicht; der Pfad ist
+   `/api/v1/bean-batches`.
+3. **Geschützte Felder** (T14): werden mit `400` abgewiesen, nicht ignoriert —
+   das ist besser als das Visualizer-Verhalten aus §18.1.3 und erlaubt eine
+   klarere Fehlermeldung.
+4. **`enjoyment`** (T18): bereits 0–100. Die im Auftrag vorsorglich erwähnte
+   Umrechnung Sterne×20 entfällt.
+5. **`pi_end` aus `profileFrame`** — siehe §20.4, die Ableitung trägt so nicht.
+
+### 20.3 Ingestion
+
+- **Backfill:** `GET /api/v1/shots/ids` liefert alle IDs in einem Zug, danach
+  Einzelabruf je unbekannter ID.
+- **Inkrementell:** Listen-Pagination (`limit=100`, `offset`, `order=desc`) mit
+  **clientseitigem `updatedAt`-Cursor**. Serverseitig gibt es keinen Zeitfilter
+  (T8), also wird so lange geblättert, bis eine Seite nur noch Bezüge mit
+  `updatedAt <= Cursor` enthält. Das erfasst neue **und** nachträglich editierte
+  Bezüge, weil `updatedAt` serverseitig gepflegt wird (T15).
+- **Ereignisgetrieben (optional):** `/ws/v1/machine/shotState` abonnieren; bei
+  Shot-Ende kurz warten, dann `GET /api/v1/shots/latest`. Polling bleibt als
+  Fallback **aktiv**, der WebSocket ist eine Beschleunigung, keine Bedingung.
+
+**Betriebsregel: Tablet offline ist kein Fehlerzustand.** Ist Decaid nicht
+erreichbar, geht der Sync in den Zustand `waiting_for_tablet`, wartet mit
+Backoff und holt nach, sobald das Tablet wieder da ist. Das Tablet schläft, wird
+bewegt, hängt am WLAN — das ist der Normalfall, kein Ausnahmefall. Es gibt
+deshalb keine Fehlermeldung, keine Benachrichtigung und keinen roten Status;
+`status()` zeigt schlicht, wann zuletzt Kontakt bestand.
+
+### 20.4 Quellschema und Metriken
+
+`measurements` werden vollständig übernommen, **inklusive `targetPressure` und
+`targetFlow`** — die Sollwerte liegen damit erstmals pro Messpunkt vor, nicht
+nur als Profilkurve.
+
+**Zeitachse:** Es gibt kein `time`-Feld (T12). `elapsed` wird aus
+`machine.timestamp` minus dem ersten Messpunkt gerechnet; beim Referenzbezug
+184 Punkte über 45,58 s, mittlerer Abstand 0,249 s.
+
+**`pi_end` — Abweichung vom Auftrag.** Der Auftrag will die Ableitung primär aus
+`profileFrame`-Wechseln. Die Messung zeigt, dass das so nicht trägt:
+
+```
+profileFrame:   (0.00, 2)  (0.99, 0)  (3.73, 1)  (21.10, 2)
+state.substate: preparingForShot → preinfusion (0.99) → pouring (21.10)
+```
+
+Der Wert bei t=0 ist ein Rest des Vorgängerbezugs, und der Wechsel 0→1 bei
+3,73 s liegt **mitten in der Präinfusion**. „Letzter `profileFrame`-Wechsel"
+träfe hier zufällig richtig, bei einem Profil mit zwei Ausschank-Frames aber
+nicht mehr. `state.substate` nennt den Übergang direkt und ist damit die
+belastbare Quelle.
+
+Deshalb die Reihenfolge: `pi_end_source` = `substate` (Wechsel `preinfusion` →
+`pouring`), ersatzweise `profile_frame` (letzter Wechsel vor Ausschankbeginn),
+dann die Ableitungen aus §8 als Fallback. Übrige Metrikdefinitionen unverändert,
+`METRICS_VERSION` wird gebumpt.
+
+**`curve_shape`** bekommt je Abschnitt zusätzlich Soll-vs-Ist, da `targetFlow`
+und `targetPressure` jetzt punktweise vorliegen.
+
+**Profilversionierung:** Quellformat ist das eingebettete Profil-JSON unter
+`workflow.profile` (Struktur `{version, title, author, notes, beverage_type,
+steps[], target_weight, …}`) — dieselbe Gestalt, gegen die der TCL-Parser in M2
+bereits kreuzgeprüft wurde. `version_hash`/`semantic_hash` bleiben, die
+Kanonisierung wird auf das JSON umgestellt. **Der TCL-Parser wird als deprecated
+markiert, nicht gelöscht.**
+
+### 20.5 Schreibtools
+
+`update_shot` zieht auf `PUT /api/v1/shots/<id>` um; Whitelist auf
+`annotations`-Felder. Leitplanken aus §18 unverändert: Validierung vor dem
+Senden, Read-back vorher→nachher, nur auf ausdrückliche Anweisung, hinter
+`WRITE_ENABLED`. Neu: `update_bean`, `update_batch` (inkl.
+`freezeDate`/`unfreezeDate`/`frozen` mit Datumsvalidierung), `get_workflow`,
+`set_workflow` (nur Mahlgrad, Dosis, Zielgewicht, Bohnen-/Batch-Referenz —
+**kein Profilwechsel in v1**).
+
+Die Visualizer-Tools verschwinden aus der Tool-Liste; `visualizer_client.py`
+wird als deprecated markiert, aber nicht gelöscht.
+
+### 20.6 Status und Sicherheit
+
+`status()` bekommt `decaid_status`: erreichbar ja/nein, zuletzt erreichbar,
+Decaid-Version aus `/api/v1/info` mit Warnung bei Abweichung von der getesteten
+Version (Konstante im Code, bei jedem verifizierten Update nachziehen).
+
+**`DECAID_URL` wird beim Start auf private IP-Bereiche geprüft** (RFC 1918,
+Loopback, link-local). Eine öffentliche Adresse ist ein Konfigurationsfehler und
+verhindert den Start.
+
+**Der Decaid-Verkehr darf unter keinen Umständen durch den Cloudflare-Tunnel
+laufen.** Die Verbindung Container → Tablet ist reines LAN. Der Tunnel bleibt
+ausschließlich der Weg, auf dem Claude den MCP-Endpoint erreicht.
+
+### 20.7 Wächter und Audit
+
+Post-Shot-Prüfregeln als eigenes Modul im Sync-Worker, jede Regel einzeln
+abschaltbar:
+
+- Bohnen- oder Batchwechsel ohne Mahlgradänderung
+- Bohnenalter aus `roastDate` des Batches, **eingefrorene Zeit zählt nicht als
+  Alterung** (`freezeDate`/`unfreezeDate`/`frozen`)
+- fehlendes `enjoyment` nach konfigurierbarer Frist
+- Dosis-Ausreißer gegenüber dem Workflow-Sollwert
+
+Benachrichtigung über ntfy (`NTFY_URL`, `NTFY_TOPIC`, optional Token),
+**höchstens eine Nachricht je Bezug**, keine sensiblen Inhalte im Text.
+
+Neues Tool `audit_archive(since?)` wendet dieselben Regeln auf den Bestand an
+und liefert einen kompakten Bericht.
