@@ -1,10 +1,10 @@
-"""Messung je Tool-Aufruf (SPEC ss17.4).
+"""Measurement per tool call (SPEC §17.4).
 
-Ohne Zahlen laesst sich Antwortoekonomie nicht beurteilen. Geloggt werden
-Toolname, Dauer und Antwortgroesse - **keine** Parameterwerte, keine URL, kein
-Pfad. Ein Shot-Filter kann harmlos aussehen, aber der Secret-Pfad steht in
-derselben Anfrage, und Argumente sind der wahrscheinlichste Weg, auf dem
-irgendwann etwas Vertrauliches in eine Logzeile geraet.
+Response economy cannot be judged without numbers. What gets logged is the
+tool name, the duration and the response size - **no** parameter values, no
+URL, no path. A shot filter may look harmless, but the secret path sits in
+the same request, and arguments are the likeliest route by which something
+confidential eventually ends up in a log line.
 """
 
 from __future__ import annotations
@@ -20,10 +20,10 @@ log = logging.getLogger(__name__)
 
 
 def response_bytes(result: Any) -> int:
-    """Groesse der Antwort in Byte, so wie sie auf die Leitung geht.
+    """Size of the response in bytes, as it goes over the wire.
 
-    Bevorzugt der strukturierte Teil - das ist das, was das Modell liest.
-    Faellt er weg, zaehlen die Textbloecke.
+    The structured part is preferred - that is what the model reads. If it is
+    absent, the text blocks are counted.
     """
     structured = getattr(result, "structured_content", None)
     if structured is not None:
@@ -41,7 +41,7 @@ def response_bytes(result: Any) -> int:
 
 
 class CallMetricsMiddleware(Middleware):
-    """Loggt je Tool-Aufruf ``tool``, ``dur_ms`` und ``bytes``."""
+    """Logs ``tool``, ``dur_ms`` and ``bytes`` for every tool call."""
 
     async def on_call_tool(
         self, context: MiddlewareContext, call_next: CallNext
@@ -51,7 +51,7 @@ class CallMetricsMiddleware(Middleware):
         try:
             result = await call_next(context)
         except Exception as exc:
-            # Nur der Fehlertyp - die Meldung koennte Argumente enthalten.
+            # The error type only - the message could carry arguments.
             log.info(
                 "tool call failed",
                 extra={"fields": {

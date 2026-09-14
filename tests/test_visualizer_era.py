@@ -1,15 +1,15 @@
-"""Visualizer-Aera: Feldmapping und Metriken auf den alten Echtdaten.
+"""Visualizer era: field mapping and metrics on the old real data.
 
-Ab M8 ist Decaid die Quelle; diese Fixtures bleiben trotzdem im Repo. Sie
-pruefen weiterhin gueltige Logik - das Feldmapping des Visualizer-Clients, der
-als Community-Upload erhalten bleibt, und die kanalbasierten Metriken, die von
-der Quelle unabhaengig sind. Nebenbei dokumentieren sie, wie die Daten vor dem
-Umzug aussahen.
+From M8 on Decaid is the source; these fixtures stay in the repo regardless.
+They still exercise valid logic - the field mapping of the Visualizer client,
+which survives as a community upload, and the channel-based metrics, which do
+not depend on the source. Along the way they document what the data looked
+like before the move.
 
-Ein Zusatznutzen: diese Bezuege haben keine Zustandsangabe der Maschine, nur
-die Rechteckwelle espresso_state_change, die metrics nicht mehr liest. Sie
-laufen damit ueber den Heuristikpfad von pi_end - den einzigen realen Datensatz,
-auf dem dieser Pfad geprueft wird.
+One added benefit: these shots carry no machine state, only the
+espresso_state_change square wave that metrics no longer reads. They therefore
+run through the heuristic path of pi_end - the only real data set on which
+that path is exercised.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ def load(name: str) -> dict:
 
 @pytest.fixture
 def reference() -> dict:
-    """Referenz-Shot aus SPEC ss13 (6eb25d36..., D-Flow / default)."""
+    """Reference shot from SPEC §13 (6eb25d36..., D-Flow / default)."""
     return load("shot_reference.json")
 
 
@@ -56,8 +56,8 @@ def test_metadata_mapping(reference: dict) -> None:
 
 
 def test_unmeasured_values_become_null(reference: dict) -> None:
-    # Visualizer liefert "0" fuer nicht erfasste TDS/EY - eine TDS von 0 % gibt
-    # es nicht, als Zahl gespeichert wuerde sie jede Auswertung verzerren.
+    # Visualizer returns "0" for unrecorded TDS/EY - a TDS of 0 % does not
+    # exist, and stored as a number it would skew every analysis.
     assert reference["drink_tds"] == "0"
     row = shot_row_from_detail(reference, SYNCED_AT)
     assert row["drink_tds"] is None
@@ -95,7 +95,7 @@ def test_notes_are_mapped(reference: dict) -> None:
 
 
 def test_absent_optional_fields_do_not_crash(reference: dict) -> None:
-    # private_notes und metadata fehlen im Response komplett, wenn sie leer sind.
+    # private_notes and metadata are absent from the response entirely when empty.
     assert "private_notes" not in reference
     assert "metadata" not in reference
     row = shot_row_from_detail(reference, SYNCED_AT)
@@ -119,14 +119,14 @@ def test_series_mapping(reference: dict) -> None:
     assert first["weight"] == float(reference["data"]["espresso_weight"][0])
     assert first["temp_basket"] == float(reference["data"]["espresso_temperature_basket"][0])
 
-    # Alle Werte kamen als Strings und muessen jetzt Zahlen sein.
+    # Every value arrived as a string and must now be a number.
     assert all(isinstance(r["elapsed"], float) for r in rows)
     assert all(r["pressure"] is None or isinstance(r["pressure"], float) for r in rows)
 
 
 def test_state_change_sentinel_becomes_null(reference: dict) -> None:
     raw = [float(v) for v in reference["data"]["espresso_state_change"]]
-    assert STATE_CHANGE_NONE in raw, "Fixture sollte den Sentinel enthalten"
+    assert STATE_CHANGE_NONE in raw, "the fixture should contain the sentinel"
     rows = series_rows_from_detail(reference)
     assert all(r["state_change"] != STATE_CHANGE_NONE for r in rows)
     assert any(r["state_change"] is not None for r in rows), "echte Marken bleiben erhalten"
@@ -142,7 +142,7 @@ def test_shorter_channel_is_padded_with_null(reference: dict) -> None:
 
 
 def test_duplicate_elapsed_is_dropped(reference: dict) -> None:
-    # elapsed ist Teil des Primaerschluessels - Duplikate wuerden den Insert sprengen.
+    # elapsed is part of the primary key - duplicates would break the insert.
     detail = json.loads(json.dumps(reference))
     detail["timeframe"][3] = detail["timeframe"][2]
     rows = series_rows_from_detail(detail)
@@ -159,7 +159,7 @@ def test_second_fixture_maps_too() -> None:
     assert len(series_rows_from_detail(recent)) == len(recent["timeframe"])
 
 
-# ------------------------------------------- Metriken auf den Altdaten
+# --------------------------------------------- Metrics on the old data
 
 
 @pytest.fixture
@@ -170,10 +170,10 @@ def reference_metrics(reference: dict) -> dict:
 
 
 def test_channel_metrics_are_source_independent(reference_metrics: dict) -> None:
-    """Was aus Druck, Fluss und Waage kommt, haengt nicht an der Quelle.
+    """What comes from pressure, flow and scale does not depend on the source.
 
-    Dieselben Werte wie vor dem Umzug - der Wechsel zu Decaid hat an diesen
-    Definitionen nichts geaendert.
+    The same values as before the move - switching to Decaid changed nothing
+    about these definitions.
     """
     assert reference_metrics["peak_pressure_infusion"] == 4.1
     assert reference_metrics["max_pressure_global"] == 5.4
@@ -187,27 +187,27 @@ def test_channel_metrics_are_source_independent(reference_metrics: dict) -> None
 
 
 def test_the_heuristic_path_on_real_data(reference_metrics: dict) -> None:
-    """Der einzige echte Datensatz, auf dem der Heuristikpfad laeuft.
+    """The only real data set on which the heuristic path runs.
 
-    Diese Bezuege kennen nur ``espresso_state_change``; ``substate`` und
-    ``profile_frame`` gibt es nicht. pi_end faellt damit auf den Druckanker
-    zurueck: 0.6 x 5.43 bar = 3.26 bar, erstmals erreicht bei 6.43 s.
+    These shots know only ``espresso_state_change``; ``substate`` and
+    ``profile_frame`` do not exist. pi_end therefore falls back to the pressure
+    anchor: 0.6 x 5.43 bar = 3.26 bar, first reached at 6.43 s.
     """
     assert reference_metrics["pi_end_source"] == "heuristic"
     assert reference_metrics["pi_end"] == 6.4
-    assert any("Heuristik" in w for w in reference_metrics["warnings"]), (
-        "eine Naeherung muss als solche gekennzeichnet sein"
+    assert any("heuristic" in w for w in reference_metrics["warnings"]), (
+        "an approximation must be marked as one"
     )
 
 
 def test_phase_boundaries_ignore_the_old_square_wave(reference: dict) -> None:
-    """Gegenprobe: die alte Rechteckwelle wird nicht mehr gelesen.
+    """Cross-check: the old square wave is no longer read.
 
-    Das ist Absicht - ``espresso_state_change`` sagt *dass* gewechselt wurde,
-    nicht *wozu*. Decaids ``substate`` sagt beides (SPEC ss20.4).
+    That is deliberate - ``espresso_state_change`` says *that* something
+    changed, not *to what*. Decaid's ``substate`` says both (SPEC §20.4).
     """
     rows = series_rows_from_detail(reference)
-    assert any(r["state_change"] is not None for r in rows), "sonst prueft das nichts"
+    assert any(r["state_change"] is not None for r in rows), "otherwise this checks nothing"
     assert phase_boundaries(rows) == []
 
 
@@ -220,6 +220,6 @@ def test_a_broken_scale_was_already_flagged_back_then(reference: dict) -> None:
     )
     assert metrics["t_first_drops"] is None
     assert metrics["ratio"] is None
-    # Druckmetriken bleiben nutzbar - die Waage betrifft sie nicht.
+    # The pressure metrics stay usable - the scale does not affect them.
     assert metrics["peak_pressure_infusion"] is not None
-    assert any("Waage" in w for w in metrics["warnings"])
+    assert any("cale" in w for w in metrics["warnings"])

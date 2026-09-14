@@ -1,1 +1,1 @@
-# Paket, damit die Testmodule 'from .conftest import ...' nutzen koennen.
+# A package, so the test modules can use 'from .conftest import ...'.

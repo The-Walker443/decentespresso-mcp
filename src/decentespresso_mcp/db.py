@@ -1,9 +1,9 @@
-"""SQLite-Zugriff: Migrationen, Upserts, Sync-Zustand (SPEC ss5).
+"""SQLite access: migrations, upserts, sync state (SPEC §5).
 
-Die Klasse ist synchron und thread-safe ueber eine Lock-geschuetzte Einzel-
-verbindung. Der async Sync-Worker ruft sie via ``asyncio.to_thread`` auf - fuer
-einen Single-User-Dienst ist das einfacher und robuster als eine async
-SQLite-Bibliothek.
+The class is synchronous and thread-safe through a single lock-guarded
+connection. The async sync worker calls into it via ``asyncio.to_thread`` -
+for a single-user service that is simpler and sturdier than an async
+SQLite library.
 """
 
 from __future__ import annotations
@@ -22,11 +22,11 @@ log = logging.getLogger(__name__)
 
 
 def default_migrations_dir() -> Path:
-    """Findet ``migrations/`` in Repo-Layout wie im Container.
+    """Finds ``migrations/`` in the repo layout as well as in the container.
 
-    Das Paket liegt im Image unter site-packages, die Migrationen aber neben dem
-    WORKDIR (/app/migrations) - eine feste paketrelative Ableitung greift daher
-    nur beim Editable-Install im Repo.
+    In the image the package lives under site-packages while the migrations sit
+    next to the WORKDIR (/app/migrations) - a fixed package-relative path would
+    therefore only work for an editable install in the repo.
     """
     override = os.environ.get("MIGRATIONS_DIR")
     candidates = [
@@ -39,12 +39,12 @@ def default_migrations_dir() -> Path:
         if candidate.is_dir():
             return candidate
     raise FileNotFoundError(
-        "migrations/ nicht gefunden, gesucht in: "
+        "migrations/ not found, looked in: "
         + ", ".join(str(c) for c in candidates)
     )
 
-#: Spalten von shot_series in Einfuegereihenfolge. Deckungsgleich mit dem, was
-#: decaid_mapping.series_rows_from_decaid liefert.
+#: Columns of shot_series in insertion order. Identical to what
+#: decaid_mapping.series_rows_from_decaid returns.
 SERIES_COLUMNS = (
     "shot_id", "elapsed",
     "pressure", "flow_in", "flow_out", "weight", "temp_mix", "temp_basket", "volume",
@@ -52,7 +52,7 @@ SERIES_COLUMNS = (
     "state", "substate", "profile_frame",
 )
 
-#: Deckungsgleich mit decaid_mapping.shot_row_from_decaid.
+#: Identical to decaid_mapping.shot_row_from_decaid.
 _SHOT_COLUMNS = (
     "id", "started_at", "time_source", "created_at", "updated_at",
     "duration_s", "stop_reason", "workflow_id", "profile_name",
@@ -81,15 +81,14 @@ def _upsert_sql(table: str, columns: tuple[str, ...]) -> str:
         f"ON CONFLICT(id) DO UPDATE SET {sets}"
     )
 
-# profile_id bleibt beim Upsert unangetastet - die Verknuepfung setzt die
-# Profilversionierung.
+# profile_id is left untouched on upsert - profile versioning sets the link.
 _UPSERT_SHOT = _upsert_sql("shots", _SHOT_COLUMNS)
 _UPSERT_BEAN = _upsert_sql("beans", _BEAN_COLUMNS)
 _UPSERT_BATCH = _upsert_sql("bean_batches", _BATCH_COLUMNS)
 
 
-#: Migrationen der Visualizer-Aera. Liegt eine davon in einer Datei vor, ist es
-#: nicht das Archiv, das dieser Server ab M8 fuehrt.
+#: Migrations of the Visualizer era. If a file carries one of these, it is not
+#: the archive this server has kept since M8.
 _VISUALIZER_ERA_MIGRATIONS = frozenset({
     "001_init.sql",
     "002_profile_semantic_hash.sql",
@@ -127,7 +126,7 @@ class Database:
     # ---------------------------------------------------------------- Migrationen
 
     def migrate(self) -> list[str]:
-        """Wendet alle noch nicht angewendeten ``migrations/*.sql`` an."""
+        """Applies every ``migrations/*.sql`` not yet applied."""
         with self._lock:
             self._conn.execute(
                 "CREATE TABLE IF NOT EXISTS schema_migrations ("
@@ -154,30 +153,30 @@ class Database:
             return applied
 
     def _refuse_visualizer_era(self, applied: set[str]) -> None:
-        """Bricht ab, wenn die Datei noch aus der Visualizer-Aera stammt.
+        """Aborts if the file still comes from the Visualizer era.
 
-        Die neuen Migrationen bestehen aus ``CREATE TABLE IF NOT EXISTS`` - auf
-        eine alte Datei angewendet wuerden sie stillschweigend nichts tun und
-        das alte Schema stehen lassen, waehrend der Server so taete, als waere
-        er auf dem neuen Stand. Der Historien-Reset verlangt eine neue Datei.
+        The new migrations consist of ``CREATE TABLE IF NOT EXISTS`` - applied
+        to an old file they would silently do nothing and leave the old schema
+        standing, while the server acted as if it were up to date. The history
+        reset calls for a new file.
         """
         stale = sorted(applied & _VISUALIZER_ERA_MIGRATIONS)
         if stale:
             raise RuntimeError(
-                f"{self.path} stammt aus der Visualizer-Aera (angewendet: "
-                f"{', '.join(stale)}). Ab M8 ist Decaid die Quelle und das "
-                "Schema ein anderes; eine neue Datei anlegen und die alte als "
-                "shots-visualizer-era.db behalten."
+                f"{self.path} comes from the Visualizer era (applied: "
+                f"{', '.join(stale)}). Since M8 Decaid is the source and the "
+                "schema is a different one; create a new file and keep the old "
+                "one as shots-visualizer-era.db."
             )
 
     # --------------------------------------------------------------------- Shots
 
     def known_shot_versions(self) -> dict[str, str | None]:
-        """``{shot_id: updated_at}`` - Grundlage fuer Dedupe und Update-Erkennung.
+        """``{shot_id: updated_at}`` - the basis for dedupe and change detection.
 
-        ``updated_at`` ist ISO8601 in UTC und damit lexikographisch
-        vergleichbar; Decaid bietet keinen serverseitigen Zeitfilter, der
-        Abgleich laeuft deshalb hier.
+        ``updated_at`` is ISO8601 in UTC and therefore comparable
+        lexicographically; Decaid offers no server-side time filter, so the
+        comparison happens here.
         """
         with self._lock:
             return {
@@ -186,16 +185,16 @@ class Database:
             }
 
     def upsert_shot(self, shot: dict[str, Any], series: Sequence[dict[str, Any]]) -> bool:
-        """Schreibt Shot + Zeitreihe. Gibt True zurueck, wenn der Shot neu war."""
+        """Writes shot plus time series. Returns True if the shot was new."""
         with self._lock:
             cur = self._conn.execute("SELECT 1 FROM shots WHERE id = ?", (shot["id"],))
             is_new = cur.fetchone() is None
             self._conn.execute(_UPSERT_SHOT, shot)
-            # Zeitreihe komplett ersetzen: sie ist unveraenderlich, aber ein
-            # abgebrochener Vorlauf koennte Teilstaende hinterlassen haben.
+            # Replace the series wholesale: it is immutable, but an aborted
+            # earlier run could have left partial state behind.
             self._conn.execute("DELETE FROM shot_series WHERE shot_id = ?", (shot["id"],))
-            # Metriken haengen an der Zeitreihe und an dose/yield - alle drei
-            # koennen sich hier gerade geaendert haben.
+            # Metrics depend on the series and on dose/yield - all three could
+            # have just changed.
             self._conn.execute("DELETE FROM shot_metrics WHERE shot_id = ?", (shot["id"],))
             if series:
                 self._conn.executemany(
@@ -206,7 +205,7 @@ class Database:
             self._conn.commit()
             return is_new
 
-    # ------------------------------------------------- Bohnen und Chargen
+    # -------------------------------------------------- Beans and batches
 
     def upsert_beans(self, beans: Sequence[dict[str, Any]]) -> int:
         with self._lock:
@@ -221,11 +220,11 @@ class Database:
         return len(batches)
 
     def link_shots_to_beans(self) -> int:
-        """Traegt ``bean_id`` aus der Charge nach.
+        """Fills in ``bean_id`` from the batch.
 
-        Der Bezug nennt nur die Charge; welche Bohne dahintersteht, weiss allein
-        bean_batches. Erst nachdem Bohnen und Chargen da sind, laesst sich das
-        aufloesen - deshalb ein eigener Schritt am Ende des Abgleichs.
+        A shot names only its batch; which bean stands behind it is known to
+        bean_batches alone. This can only be resolved once beans and batches are
+        in place - hence a separate step at the end of the sync.
         """
         with self._lock:
             cur = self._conn.execute("""
@@ -241,11 +240,11 @@ class Database:
             return cur.rowcount
 
     def shots_for_guards(self, since: str | None = None) -> list[dict[str, Any]]:
-        """Bezuege aufsteigend nach Zeit - die Eingabe der Waechter.
+        """Shots ascending by time - the input to the guards.
 
-        Aufsteigend, weil die Mahlgradregel den Vorgaenger braucht. Nur die
-        Felder, auf die eine Regel schaut; Notizen bleiben aussen vor, damit
-        ein Befund gar nicht erst Freitext enthalten kann.
+        Ascending because the grind rule needs the predecessor. Only the fields
+        a rule looks at; notes stay out, so that a finding cannot carry free
+        text in the first place.
         """
         clause = "WHERE started_at >= ?" if since else ""
         params = [since] if since else []
@@ -288,13 +287,13 @@ class Database:
             ).fetchone()["n"]
 
     def max_updated_at(self) -> str | None:
-        """Juengstes ``updated_at`` im Archiv - der Cursor des Abgleichs."""
+        """The most recent ``updated_at`` in the archive - the sync cursor."""
         with self._lock:
             row = self._conn.execute("SELECT MAX(updated_at) AS m FROM shots").fetchone()
             return row["m"]
 
     def shot_span(self) -> tuple[str | None, str | None]:
-        """(aeltestes, neuestes) ``started_at`` - fuer status()."""
+        """(oldest, newest) ``started_at`` - for status()."""
         with self._lock:
             row = self._conn.execute(
                 "SELECT MIN(started_at) AS lo, MAX(started_at) AS hi FROM shots"
@@ -304,15 +303,15 @@ class Database:
     # ------------------------------------------------------------- Abfragen
 
     def list_beans(self) -> list[dict[str, Any]]:
-        """Bohnen mit Bezugszahl, Zeitraum und genutzten Muehleneinstellungen.
+        """Beans with shot count, date range and the grind settings used.
 
-        Grundlage ist jetzt Decaids Bohnenliste, nicht mehr der Freitext an den
-        Bezuegen: damit tauchen auch Bohnen auf, die zwar angelegt, aber noch
-        nicht bezogen wurden, und ein Umbenennen fuehrt nicht zu zwei Eintraegen.
+        The basis is now Decaid's bean list rather than free text on the shots:
+        beans that were created but never pulled show up too, and a rename does
+        not produce two entries.
 
-        Die Muehleneinstellungen kommen als eigene Abfrage statt via
-        GROUP_CONCAT: sie sind Freitext und enthalten selbst Kommas ("4,2"),
-        eine verkettete Liste liesse sich nicht mehr zuverlaessig zerlegen.
+        The grind settings come from a separate query rather than GROUP_CONCAT:
+        they are free text and contain commas themselves ("4,2"), so a
+        concatenated list could no longer be split reliably.
         """
         with self._lock:
             beans = list(self._conn.execute("""
@@ -346,10 +345,10 @@ class Database:
         ]
 
     def orphan_bean_names(self) -> list[dict[str, Any]]:
-        """Bezuege, deren Charge keiner bekannten Bohne zugeordnet ist.
+        """Shots whose batch maps to no known bean.
 
-        Aus der de1app importierte Bezuege tragen den Bohnennamen nur als
-        Freitext. Ohne diese Ansicht verschwaenden sie aus list_beans.
+        Shots imported from the de1app carry the bean name as free text only.
+        Without this view they would vanish from list_beans.
         """
         with self._lock:
             return [dict(row) for row in self._conn.execute("""
@@ -374,10 +373,11 @@ class Database:
         limit: int = 10,
         offset: int = 0,
     ) -> tuple[list[sqlite3.Row], int]:
-        """Gefilterte Shots plus Gesamtzahl. Textfilter sind Teilstring, case-insensitiv.
+        """Filtered shots plus the total count. Text filters are case-insensitive
+        substrings.
 
-        ``bean`` trifft den Bohnennamen *oder* den Roester, ``roaster`` nur
-        den Roester.
+        ``bean`` matches the bean name *or* the roastery, ``roaster`` only the
+        roastery.
         """
         where: list[str] = []
         params: list[Any] = []
@@ -435,7 +435,7 @@ class Database:
     def find_profile(
         self, *, version_hash: str | None = None, name: str | None = None
     ) -> sqlite3.Row | None:
-        """Version per Hash-Praefix, sonst die neueste Version eines Namens."""
+        """A version by hash prefix, otherwise the newest version of a name."""
         with self._lock:
             if version_hash:
                 return self._conn.execute(
@@ -464,7 +464,7 @@ class Database:
     # ------------------------------------------------------------------ Metriken
 
     def get_cached_metrics(self, shot_id: str, version: int) -> dict[str, Any] | None:
-        """Cache-Treffer nur bei passender ``metrics_version``."""
+        """A cache hit only when ``metrics_version`` matches."""
         with self._lock:
             row = self._conn.execute(
                 "SELECT metrics_json FROM shot_metrics "
@@ -490,7 +490,7 @@ class Database:
             self._conn.commit()
 
     def shot_ids_without_metrics(self, version: int) -> list[str]:
-        """Shots ohne gueltigen Cache - inklusive derer mit veralteter Version."""
+        """Shots without a valid cache - including those on an outdated version."""
         with self._lock:
             return [
                 row["id"]
@@ -512,7 +512,7 @@ class Database:
     # ------------------------------------------------------------------ Profile
 
     def shot_ids_without_profile(self) -> list[str]:
-        """Shots, denen noch eine Profilversion fehlt (SPEC ss6.4)."""
+        """Shots still missing a profile version (SPEC §6.4)."""
         with self._lock:
             return [
                 row["id"]
@@ -533,11 +533,11 @@ class Database:
         semantic_hash: str | None = None,
         source: str = "decaid",
     ) -> tuple[int, bool]:
-        """Legt die Profilversion an oder aktualisiert nur ``last_seen``.
+        """Creates the profile version, or only updates ``last_seen``.
 
-        Rueckgabe ``(profile_id, is_new)``. Dedupe laeuft ueber ``version_hash``
-        (SPEC ss5): dieselbe Version bekommt nie einen zweiten Datensatz, und
-        alte Shots bleiben an genau der Version haengen, mit der sie liefen.
+        Returns ``(profile_id, is_new)``. Dedupe runs through ``version_hash``
+        (SPEC §5): the same version never gets a second record, and old shots
+        stay attached to exactly the version they ran on.
         """
         with self._lock:
             row = self._conn.execute(
@@ -616,7 +616,7 @@ class Database:
         self.set_state(key, json.dumps(value, ensure_ascii=False))
 
     def record_errors(self, errors: Iterable[str], keep: int = 20) -> None:
-        """Haengt Fehler an ``sync_state['last_errors']`` an (SPEC ss6.5, max 20)."""
+        """Appends errors to ``sync_state['last_errors']`` (SPEC §6.5, max 20)."""
         new = list(errors)
         if not new:
             return

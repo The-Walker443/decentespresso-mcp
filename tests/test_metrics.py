@@ -1,10 +1,10 @@
-"""Metriken nach SPEC ss8, gegen den echten Referenzbezug aus Decaid.
+"""Metrics per SPEC §8, against the real reference shot from Decaid.
 
-Die Zahlen hier stammen aus einer aufgezeichneten Antwort von Decaid 0.8.5
-und loesen die Erwartungen der Visualizer-Aera ab. Sachlich geaendert hat
-sich vor allem die Herkunft von ``pi_end``: Decaid meldet den Maschinen-
-zustand im Klartext, das Ende der Praeinfusion wird also abgelesen statt aus
-einer Rechteckwelle plus Druckanker erschlossen.
+The numbers here come from a recorded response of Decaid 0.8.5 and supersede
+the expectations of the Visualizer era. What changed in substance is above all
+the origin of ``pi_end``: Decaid reports the machine state in plain text, so
+the end of preinfusion is read off rather than inferred from a square wave
+plus a pressure anchor.
 """
 
 from __future__ import annotations
@@ -59,22 +59,22 @@ def db(tmp_path: pathlib.Path) -> Iterator[Database]:
     database.close()
 
 
-# ------------------------------------------------------------- Phasenmarken
+# ----------------------------------------------------------- Phase markers
 
 
 def test_phase_boundaries_come_from_the_substate(reference_rows: list[dict]) -> None:
     # preparingForShot -> preinfusion (0.99 s) -> pouring (21.11 s).
-    # Grenzen kommen ungerundet zurueck - gerundet wird erst die Metrik.
+    # Boundaries come back unrounded - only the metric gets rounded.
     assert phase_boundaries(reference_rows) == pytest.approx(
         [0.99, 21.105], abs=0.001
     )
 
 
 def test_the_profile_frame_is_the_fallback(reference_rows: list[dict]) -> None:
-    """Ohne Zustandsangabe bleiben die Schrittwechsel - ohne Vorgaengerrest.
+    """Without a state report the step changes remain - minus the leftover.
 
-    Nachgemessen: profileFrame steht auf dem ersten Messpunkt noch auf dem
-    Wert des vorherigen Bezugs. Dieser Wechsel zaehlt nicht.
+    Measured: on the first data point profileFrame still holds the value of
+    the previous shot. That change does not count.
     """
     assert frame_boundaries(reference_rows) == pytest.approx(
         [0.99, 3.734, 21.105], abs=0.001
@@ -90,7 +90,7 @@ def test_no_markers_means_no_boundaries() -> None:
     assert phase_boundaries(rows) == []
 
 
-# ------------------------------------------------------- Referenz-Erwartungen
+# --------------------------------------------------- Reference expectations
 
 
 def test_reference_matches_spec_13(reference: dict) -> None:
@@ -101,25 +101,25 @@ def test_reference_matches_spec_13(reference: dict) -> None:
 
 
 def test_reference_exact_values(reference: dict) -> None:
-    """Pinnt die berechneten Werte, damit Definitionsaenderungen auffallen."""
+    """Pins the computed values so definition changes get noticed."""
     assert reference["pi_end"] == 21.1
     assert reference["pi_end_source"] == "substate"
     assert reference["peak_pressure_infusion"] == 6.6
     assert reference["t_peak"] == 23.1
     assert reference["max_pressure_global"] == 9.0
     assert reference["t_max_pressure_global"] == 25.8
-    assert reference["end_pressure"] == 8.5      # Mittel der letzten 2 s
+    assert reference["end_pressure"] == 8.5      # mean of the last 2 s
     assert reference["duration_s"] == 45.6
     assert reference["ratio"] == 2.311
     assert reference["warnings"] == []
 
 
 def test_infusion_peak_is_not_the_global_maximum(reference: dict) -> None:
-    """Der Grund fuer die Aufteilung in SPEC ss8 1.1.
+    """The reason for the split in SPEC §8 1.1.
 
-    Bei D-Flow steigt der Druck nach der Praeinfusion weiter an: das globale
-    Maximum liegt hinter dem Infusionsfenster und sagt ueber den Puckaufbau
-    nichts aus.
+    With D-Flow the pressure keeps rising after preinfusion: the global maximum
+    sits beyond the infusion window and says nothing about how the puck was
+    built.
     """
     assert reference["max_pressure_global"] > reference["peak_pressure_infusion"]
     assert reference["t_max_pressure_global"] > reference["pi_end"] + 2.0
@@ -127,8 +127,8 @@ def test_infusion_peak_is_not_the_global_maximum(reference: dict) -> None:
 
 
 def test_t_first_drops_follows_the_030_g_threshold(reference: dict) -> None:
-    # SPEC ss8: kleinstes elapsed mit weight > 0.3 g. Die Schwelle statt des
-    # ersten Ausschlags ueberhaupt, weil die Waage rauscht.
+    # SPEC §8: smallest elapsed with weight > 0.3 g. The threshold rather than
+    # the first deflection at all, because the scale is noisy.
     assert reference["t_first_drops"] == 14.2
     rows = series_rows_from_decaid(reference_detail())
     first_any = next(r["elapsed"] for r in rows if r["weight"] and r["weight"] > 0)
@@ -144,7 +144,7 @@ def test_pour_phase_metrics(reference: dict) -> None:
 
 
 def test_dip_is_measured_from_the_infusion_peak(reference: dict) -> None:
-    # Bei diesem Profil faellt der Druck nach dem Infusionsgipfel nicht ab.
+    # With this profile the pressure does not drop after the infusion peak.
     assert reference["pressure_dip_after_peak"] == 0.0
 
 
@@ -169,15 +169,15 @@ def test_curve_shape_describes_direction_and_linearity(reference_rows, reference
     shape = curve_shape(reference_rows, reference)
     first, _, last = shape["segments"]
 
-    # Vor dem Bezug steht der Druck noch.
+    # Before the pour the pressure is still at rest.
     assert first["p"]["from"] == 0.0
-    assert first["p"]["dir"] == "flat"
+    assert first["p"]["dir"] == "steady"
 
     # Bezugsphase: Druck steigt bis 8.5 bar.
     assert last["p"]["dir"] == "rising"
     assert last["p"]["to"] == 8.5
     assert isinstance(last["p"]["linear"], bool)
-    assert last["fo"]["dir"] in {"rising", "falling", "flat"}
+    assert last["fo"]["dir"] in {"rising", "falling", "steady"}
 
 
 def test_curve_shape_carries_the_markers(reference_rows, reference) -> None:
@@ -193,7 +193,7 @@ def test_curve_shape_falls_back_to_markers_without_machine_phases() -> None:
 
     shape = curve_shape(rows, metrics)
     assert shape["source"] == "markers"
-    # Ohne Maschinenmarken teilt pi_end den Bezug in zwei Abschnitte.
+    # Without machine markers pi_end splits the shot into two segments.
     assert len(shape["segments"]) == 2
     assert shape["segments"][0]["to"] == metrics["pi_end"]
 
@@ -218,7 +218,7 @@ def test_curve_shape_flags_flat_and_linear() -> None:
         for t in range(40)
     ]
     segment = curve_shape(rows, {})["segments"][0]
-    assert segment["p"]["dir"] == "flat"
+    assert segment["p"]["dir"] == "steady"
     assert segment["p"]["linear"] is True
     assert segment["fo"]["dir"] == "rising"
     assert segment["fo"]["linear"] is True
@@ -235,8 +235,8 @@ def test_curve_shape_detects_a_curved_course() -> None:
         for t in range(40)
     ]
     segment = curve_shape(rows, {})["segments"][0]
-    assert segment["p"]["dir"] == "flat", "Anfang und Ende liegen gleich hoch"
-    assert segment["p"]["linear"] is False, "der Weg dazwischen ist es nicht"
+    assert segment["p"]["dir"] == "steady", "start and end sit at the same height"
+    assert segment["p"]["linear"] is False, "the path between them is not"
 
 
 def test_curve_shape_omits_channels_without_data() -> None:
@@ -259,9 +259,9 @@ def test_curve_shape_handles_an_empty_series() -> None:
 
 
 def _synthetic(*, with_markers: bool) -> list[dict]:
-    """Dreieckiger Druckverlauf: 0 -> 10 bar bei t=5, dann konstant.
+    """Triangular pressure curve: 0 -> 10 bar at t=5, then constant.
 
-    Mit Marken meldet die Maschine bei t=3.0 den Wechsel nach ``pouring``.
+    With markers the machine reports the change to ``pouring`` at t=3.0.
     """
     rows = []
     for i in range(101):
@@ -278,30 +278,31 @@ def _synthetic(*, with_markers: bool) -> list[dict]:
 
 
 def _without_machine_phases(rows: list[dict]) -> list[dict]:
-    """Wie ein Bezug aussaehe, dessen Firmware keine Phasen meldet."""
+    """What a shot would look like whose firmware reports no phases."""
     return [{**r, "substate": None, "state": None, "profile_frame": None}
             for r in rows]
 
 
 def test_heuristic_fallback_on_a_real_series_without_markers() -> None:
-    """SPEC ss13: eigener Test fuer den Heuristikpfad.
+    """SPEC §13: a test of its own for the heuristic path.
 
-    Derselbe echte Bezug, nur ohne jede Phasenangabe der Maschine - so saehe
-    er aus, wenn die Firmware weder Zustand noch Schrittnummer liefert. Der
-    Pfad bleibt geprueft, obwohl im Archiv bisher immer ``substate`` griff.
+    The same real shot, only without any phase report from the machine - which
+    is what it would look like if the firmware provided neither state nor step
+    number. The path stays covered even though ``substate`` has always applied
+    in the archive so far.
     """
     rows = _without_machine_phases(series_rows_from_decaid(reference_detail()))
     assert phase_boundaries(rows) == []
 
     metrics = compute_metrics(rows, dose_g=DOSE_G, yield_g=YIELD_G)
     assert metrics["pi_end_source"] == "heuristic"
-    # 0.6 x 9.0 bar = 5.4 bar, erstmals erreicht bei t = 22.8 - also spaeter
-    # als der tatsaechliche Phasenwechsel.
+    # 0.6 x 9.0 bar = 5.4 bar, first reached at t = 22.8 - later than the
+    # actual phase change.
     assert metrics["pi_end"] == pytest.approx(22.8, abs=0.05)
-    assert any("Phasenmarken" in w for w in metrics["warnings"])
+    assert any("phase markers" in w for w in metrics["warnings"])
 
-    # Der Unterschied zur Markenfassung ist erheblich - genau deshalb wird die
-    # Quelle mitgeliefert und nicht bloss der Wert.
+    # The difference from the marker version is considerable - which is exactly
+    # why the source is reported and not merely the value.
     with_markers = compute_metrics(
         series_rows_from_decaid(reference_detail()), dose_g=DOSE_G, yield_g=YIELD_G
     )
@@ -315,7 +316,7 @@ def test_fallback_heuristic_without_markers() -> None:
     # 0.6 x 10 bar = 6 bar, erstmals erreicht bei t = 3.0.
     assert metrics["pi_end"] == 3.0
     assert metrics["pi_end_source"] == "heuristic"
-    assert any("Phasenmarken" in w for w in metrics["warnings"])
+    assert any("phase markers" in w for w in metrics["warnings"])
 
 
 def test_marker_wins_over_heuristic() -> None:
@@ -342,23 +343,23 @@ def test_missing_scale_is_reported() -> None:
     metrics = compute_metrics(rows)
     assert metrics["t_first_drops"] is None
     assert metrics["avg_flow_pour"] is None
-    assert any("Waage" in w for w in metrics["warnings"])
-    assert any("Korbtemperatur" in w for w in metrics["warnings"])
+    assert any("cale" in w for w in metrics["warnings"])
+    assert any("basket temperature" in w for w in metrics["warnings"])
 
 
 def test_untared_scale_invalidates_t_first_drops() -> None:
-    # Echtfall e9be2f9f: die Tasse stand beim Start auf der Waage (25.1 g).
-    # t_first_drops = 0.0 s waere eine Aussage ueber die Tasse, nicht den Bezug.
+    # Real case e9be2f9f: the cup sat on the scale at the start (25.1 g).
+    # t_first_drops = 0.0 s would say something about the cup, not the shot.
     rows = [
         {"elapsed": t / 10, "pressure": 8.0, "flow_out": 1.5,
          "weight": 25.1, "temp_basket": 88.0, "substate": None,
          "profile_frame": None}
         for t in range(40)
     ]
-    rows[0]["weight"] = 0.0     # wie im Echtfall: erst der zweite Punkt zeigt die Tasse
+    rows[0]["weight"] = 0.0     # as in the real case: only the second point shows the cup
     metrics = compute_metrics(rows)
     assert metrics["t_first_drops"] is None
-    assert any("nicht tariert" in w for w in metrics["warnings"])
+    assert any("not tared" in w for w in metrics["warnings"])
 
 
 def test_negative_weight_is_flagged() -> None:
@@ -374,8 +375,8 @@ def test_negative_weight_is_flagged() -> None:
 
 
 def test_non_positive_mean_flow_drops_the_stability_metric() -> None:
-    # Ein Variationskoeffizient um einen Mittelwert <= 0 waere negativ und
-    # damit sinnlos.
+    # A coefficient of variation around a mean <= 0 would be negative and thus
+    # meaningless.
     rows = [
         {"elapsed": t / 10, "pressure": 8.0, "flow_out": -1.0,
          "weight": 0.0, "temp_basket": 88.0, "substate": None,
@@ -385,11 +386,11 @@ def test_non_positive_mean_flow_drops_the_stability_metric() -> None:
     metrics = compute_metrics(rows)
     assert metrics["avg_flow_pour"] == -1.0
     assert metrics["flow_stability"] is None
-    assert any("flow_stability entfaellt" in w for w in metrics["warnings"])
+    assert any("flow_stability" in w for w in metrics["warnings"])
 
 
 def test_real_shot_with_broken_scale_is_flagged() -> None:
-    """Untarierte Waage: die Druckmetriken bleiben, die Waagenwerte nicht."""
+    """Untared scale: the pressure metrics survive, the scale values do not."""
     payload = break_the_scale(reference_detail())
     metrics = compute_metrics(
         series_rows_from_decaid(payload), dose_g=DOSE_G, yield_g=None,
@@ -397,7 +398,7 @@ def test_real_shot_with_broken_scale_is_flagged() -> None:
     assert metrics["t_first_drops"] is None
     assert metrics["flow_stability"] is None
     assert metrics["ratio"] is None
-    # Druckmetriken bleiben nutzbar - die Waage betrifft sie nicht.
+    # The pressure metrics stay usable - the scale does not affect them.
     assert metrics["peak_pressure_infusion"] is not None
     assert metrics["pi_end_source"] == "substate"
     assert len(metrics["warnings"]) >= 2
@@ -432,7 +433,7 @@ def test_cache_is_dropped_when_the_shot_is_rewritten(db: Database) -> None:
     assert db.count_metrics(METRICS_VERSION) == 1
 
     _store_shot(db)   # erneuter Upsert
-    assert db.count_metrics(METRICS_VERSION) == 0, "Metriken haengen an der Zeitreihe"
+    assert db.count_metrics(METRICS_VERSION) == 0, "metrics hang on the series"
 
 
 def test_stale_version_is_recomputed(db: Database) -> None:
@@ -456,4 +457,4 @@ def test_warm_cache_covers_all_shots(db: Database) -> None:
 
 
 def test_unknown_shot_yields_none(db: Database) -> None:
-    assert metrics_for_shot(db, "gibt-es-nicht") is None
+    assert metrics_for_shot(db, "does-not-exist") is None

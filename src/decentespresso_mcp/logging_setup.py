@@ -1,10 +1,11 @@
-"""Strukturiertes key=value-Logging auf stdout mit Secret-Redaction.
+"""Structured key=value logging on stdout with secret redaction.
 
-SPEC ss12 verlangt strukturierte Logs, SPEC ss10.3 dass niemals Credentials oder
-vollstaendige Secret-URLs herausfallen. Die Redaction sitzt bewusst im *Formatter*
-und nicht in einem ``logging.Filter``: so erwischt sie auch Tracebacks, ``extra``-
-Felder und alles, was Fremdbibliotheken (httpx, uvicorn) formatieren - also genau
-die Stellen, an denen ein Secret sonst durchrutscht.
+SPEC §12 calls for structured logs, SPEC §10.3 for credentials and complete
+secret URLs never falling out. The redaction deliberately sits in the
+*formatter* rather than in a ``logging.Filter``: that way it also catches
+tracebacks, ``extra`` fields and everything third-party libraries (httpx,
+uvicorn) format - which is exactly where a secret would otherwise slip
+through.
 """
 
 from __future__ import annotations
@@ -17,26 +18,26 @@ from typing import Any
 
 REDACTED = "***REDACTED***"
 
-#: Kuerzere Werte werden nicht ersetzt - sonst zerlegt ein Passwort wie "abc"
-#: jede zweite Logzeile. ``Config.startup_warnings`` weist darauf hin, wenn das
-#: konfigurierte Passwort darunter liegt.
+#: Shorter values are not replaced - otherwise a password like "abc" would
+#: shred every other log line. ``Config.startup_warnings`` points it out when
+#: the configured password falls below this.
 MIN_REDACT_LEN = 8
 
 _RESERVED = frozenset(logging.LogRecord("", 0, "", 0, "", None, None).__dict__) | {
     "message",
     "asctime",
     "taskName",
-    # uvicorn haengt eine ANSI-eingefaerbte Zweitfassung der Meldung an.
+    # uvicorn appends an ANSI-coloured second copy of the message.
     "color_message",
 }
 
 
-#: Faengt Authorization-Header unabhaengig davon ab, welches Geheimnis darin
-#: steckt - auch eines, das die Konfiguration gar nicht kennt (Fremdbibliothek,
-#: Weiterleitung, kuenftiges OAuth-Token).
-#: Die Redaction laeuft auf dem bereits formatierten Text, in dem
-#: Anfuehrungszeichen escapt sind (\"authorization\": \"Basic ...\") - der
-#: Ausdruck muss den Backslash also mitlesen.
+#: Catches Authorization headers regardless of which secret they carry -
+#: including one the configuration knows nothing about (third-party library,
+#: a forward, a future OAuth token).
+#: The redaction runs on already formatted text in which quotes are escaped
+#: (\"authorization\": \"Basic ...\"), so the expression has to read the
+#: backslash along with it.
 _AUTH_HEADER = re.compile(
     r"(authorization(?:\\?[\"'])?\s*[:=]\s*(?:\\?[\"'])?)"
     r"(?:(basic|bearer|digest)\s+)?"
@@ -51,12 +52,12 @@ def _mask_auth(match: re.Match[str]) -> str:
 
 
 def redact(text: str, secrets: Iterable[str]) -> str:
-    """Ersetzt bekannte Geheimnisse und jeden Authorization-Header.
+    """Replaces known secrets and every Authorization header.
 
-    Zwei Stufen, weil die erste allein nicht reicht: das Passwort geht als
-    base64 ueber die Leitung, nicht im Klartext. Die Konfiguration liefert
-    deshalb auch den kodierten Token mit (``Config.basic_auth_token``), und der
-    Header-Ausdruck faengt zusaetzlich ab, was hier niemand kennt.
+    Two stages, because the first alone is not enough: the password travels
+    base64-encoded, not in the clear. The configuration therefore also hands
+    over the encoded token (``Config.basic_auth_token``), and the header
+    expression additionally catches what nobody here knows about.
     """
     for secret in secrets:
         if secret and len(secret) >= MIN_REDACT_LEN:
@@ -81,7 +82,7 @@ class KeyValueFormatter(logging.Formatter):
     def __init__(self, secrets: Iterable[str] = ()) -> None:
         super().__init__()
         self._secrets = tuple(secrets)
-        self.converter = __import__("time").gmtime  # Logs immer UTC (SPEC ss6)
+        self.converter = __import__("time").gmtime  # logs are always UTC (SPEC §6)
 
     def format(self, record: logging.LogRecord) -> str:
         parts = [
@@ -100,7 +101,7 @@ class KeyValueFormatter(logging.Formatter):
 
 
 def _extra_fields(record: logging.LogRecord) -> Mapping[str, Any]:
-    """``extra={"fields": {...}}`` bevorzugt, sonst alle Nicht-Standard-Attribute."""
+    """``extra={"fields": {...}}`` preferred, otherwise every non-standard attribute."""
     fields = getattr(record, "fields", None)
     if isinstance(fields, Mapping):
         return fields
@@ -108,7 +109,7 @@ def _extra_fields(record: logging.LogRecord) -> Mapping[str, Any]:
 
 
 def setup_logging(level: str = "INFO", secrets: Iterable[str] = ()) -> None:
-    """Konfiguriert Root-Logging auf stdout. Mehrfachaufruf ist idempotent."""
+    """Configures root logging on stdout. Calling it repeatedly is idempotent."""
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(KeyValueFormatter(secrets))
 
@@ -118,13 +119,13 @@ def setup_logging(level: str = "INFO", secrets: Iterable[str] = ()) -> None:
     root.addHandler(handler)
     root.setLevel(level.upper())
 
-    # uvicorn bringt eigene Handler mit und wuerde sonst unredigiert doppelt loggen.
+    # uvicorn brings its own handlers and would otherwise log twice, unredacted.
     for name in ("uvicorn", "uvicorn.error", "uvicorn.access", "httpx", "httpcore"):
         noisy = logging.getLogger(name)
         noisy.handlers.clear()
         noisy.propagate = True
-    # httpx loggt jede Anfrage einzeln; der Sync-Worker fasst selbst zusammen.
-    # Auf DEBUG bleiben die Einzelanfragen sichtbar.
+    # httpx logs every request individually; the sync worker summarises on its
+    # own. At DEBUG the individual requests stay visible.
     if root.level > logging.DEBUG:
         logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)

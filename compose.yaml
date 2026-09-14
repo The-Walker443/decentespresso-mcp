@@ -7,15 +7,15 @@ services:
     environment:
       TZ: Europe/Berlin
     volumes:
-      - ./data:/data          # muss der UID 10001 gehoeren (siehe README)
+      - ./data:/data          # must be owned by UID 10001 (see the README)
     networks:
-      - cloudflared_net       # an das vorhandene Netz des Tunnels anpassen
+      - cloudflared_net       # adjust to the tunnel's existing network
     read_only: true
     tmpfs:
       - /tmp
     security_opt:
       - "no-new-privileges:true"
-    # Keine Host-Ports: erreichbar nur ueber das interne Docker-Netz (SPEC ss10.4).
+    # No host ports: reachable only over the internal Docker network (SPEC §10.4).
     healthcheck:
       test:
         - CMD

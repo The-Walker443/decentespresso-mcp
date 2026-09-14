@@ -1,25 +1,25 @@
-"""visualizer-mcp: MCP-Server fuer Espresso-Shot-Analyse."""
+"""decentespresso-mcp: MCP server for espresso shot analysis."""
 
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _package_version
 
-#: Kommt aus den Paketmetadaten, also aus pyproject.toml - eine zweite,
-#: handgepflegte Zahl im Code waere genau die, die man beim Release vergisst.
-#: Das ist einmal passiert: status() meldete "M6", waehrend M7-Code lief.
+#: Taken from the package metadata, and thus from pyproject.toml - a second,
+#: hand-maintained number in the code is exactly the one forgotten at release
+#: time. That happened once: status() reported "M6" while M7 code was running.
 try:
-    __version__ = _package_version("visualizer-mcp")
-except PackageNotFoundError:  # pragma: no cover - nur ohne Installation
-    # Direkt aus dem Quellbaum gestartet (kein pip install). Bewusst kein
-    # Rateversuch aus pyproject.toml: eine erfundene Zahl waere schlimmer als
-    # eine sichtbare Luecke.
-    __version__ = "0+unbekannt"
+    __version__ = _package_version("decentespresso-mcp")
+except PackageNotFoundError:  # pragma: no cover - only without an install
+    # Started straight from the source tree (no pip install). Deliberately no
+    # guess from pyproject.toml: an invented number would be worse than a
+    # visible gap.
+    __version__ = "0+unknown"
 
 
 def milestone() -> str | None:
-    """Ausbaustufe aus der Nebenversion (SPEC ss14): 0.7.x -> "M7".
+    """Milestone derived from the minor version (SPEC §14): 0.7.x -> "M7".
 
-    Nur waehrend der Hauptversion 0 - danach ist die Meilensteinzaehlung
-    vorbei und eine abgeleitete Angabe waere irrefuehrend.
+    Only while the major version is 0 - after that the milestone count is
+    over and a derived value would mislead.
     """
     try:
         major, minor, *_ = (int(part) for part in __version__.split(".")[:2])

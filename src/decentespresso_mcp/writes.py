@@ -1,22 +1,21 @@
-"""Whitelists und Validierung fuer schreibende Zugriffe (SPEC ss18, ss20.5).
+"""Whitelists and validation for write access (SPEC §18, §20.5).
 
-Bewusst ein eigenes Modul: die Regeln, *was* geschrieben werden darf, sollen
-ohne Server, ohne Netz und ohne Datenbank pruefbar sein.
+Deliberately its own module: the rules for *what* may be written should be
+testable without a server, without a network and without a database.
 
-Es gibt vier Regelwerke - Bezug, Bohne, Charge, Workflow -, je eines pro
-Endpunkt. Aufgenommen ist ausschliesslich, was gegen die echte API geschrieben
-und anschliessend wieder gelesen wurde (Verifikation 2026-08-01 und
-2026-09-14, SPEC ss20.2). Lieber ein Feld zu wenig als eines, das
-stillschweigend verworfen wird.
+There are four rulesets - shot, bean, batch, workflow - one per endpoint. A
+field is listed only if it was written against the real API and read back
+afterwards (verification 2026-08-01 and 2026-09-14, SPEC §20.2). Better one
+field too few than one that gets silently discarded.
 
-WARUM DIE BLOCKLISTE TRAEGT. Bei der Verifikation am 2026-09-14 hat sich
-gezeigt, dass Decaid ``id`` und ``createdAt`` zwar mit 400 abweist, **den
-Bezugszeitstempel aber annimmt**: ein ``PUT`` mit ``timestamp`` kam mit 200
-zurueck und der Wert stand danach wirklich so da. Fuer die Telemetriefelder ist
-die Whitelist hier also nicht die zweite Sicherung, sondern die einzige.
+WHY THE BLOCK LIST CARRIES WEIGHT. The verification on 2026-09-14 showed that
+Decaid rejects ``id`` and ``createdAt`` with 400 but **accepts the shot
+timestamp**: a ``PUT`` carrying ``timestamp`` came back 200 and the value really
+did stand afterwards. For the telemetry fields the whitelist here is not the
+second line of defence, it is the only one.
 
-Wertebereiche prueft die API ebenfalls nicht - was hier durchgeht, landet
-unkorrigiert im Archiv.
+The API does not check value ranges either - whatever passes through here lands
+in the archive uncorrected.
 """
 
 from __future__ import annotations
@@ -26,10 +25,10 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from typing import Any
 
-#: Maximale Laenge von Freitextfeldern.
+#: Maximum length of free-text fields.
 MAX_NOTE_CHARS = 5_000
 
-#: Grenzen fuer Gewichte. Alles ausserhalb ist ein Tippfehler, kein Bezug.
+#: Bounds for weights. Anything outside is a typo, not a shot.
 _WEIGHT_RANGES: dict[str, tuple[float, float]] = {
     "actualDoseWeight": (5.0, 30.0),
     "actualYield": (5.0, 150.0),
@@ -37,14 +36,14 @@ _WEIGHT_RANGES: dict[str, tuple[float, float]] = {
     "targetYield": (5.0, 150.0),
 }
 
-#: Wie weit ein Roestdatum zurueckliegen darf, bevor es ein Tippfehler ist.
+#: How far back a roast date may lie before it is a typo.
 _MAX_ROAST_AGE_DAYS = 3 * 365
 
 _UUID = re.compile(r"^[0-9a-fA-F-]{8,64}$")
 
 
 class ValidationError(ValueError):
-    """Eine oder mehrere Regelverletzungen - gesammelt, nicht einzeln."""
+    """One or more rule violations - collected, not raised one at a time."""
 
     def __init__(self, problems: list[str]) -> None:
         self.problems = problems
@@ -53,30 +52,30 @@ class ValidationError(ValueError):
 
 @dataclass(frozen=True, slots=True)
 class Ruleset:
-    """Was an einem Endpunkt geschrieben werden darf, und wie geprueft wird."""
+    """What may be written at one endpoint, and how it is checked."""
 
     name: str
-    #: Feldname -> Beschreibung fuer Fehlermeldungen und Docstrings.
+    #: Field name -> description, used in error messages and docstrings.
     allowed: dict[str, str]
-    #: Feldname -> Grund. Fuer eine Meldung, die erklaert statt nur abzuweisen.
+    #: Field name -> reason. For a message that explains instead of just refusing.
     blocked: dict[str, str] = field(default_factory=dict)
-    #: Feldname -> Pruefart. Fehlt ein Eintrag, gilt ``text``.
+    #: Field name -> kind of check. Missing entries default to ``text``.
     kinds: dict[str, str] = field(default_factory=dict)
 
     def help(self) -> str:
         return ", ".join(f"{n} ({label})" for n, label in self.allowed.items())
 
 
-# --------------------------------------------------------------- Bezug
+# ---------------------------------------------------------------- Shot
 
 
 SHOT = Ruleset(
-    name="Bezug",
+    name="shot",
     allowed={
-        "espressoNotes": "Notiz zum Bezug",
-        "enjoyment": "Bewertung 0-100 (0 ist eine Bewertung, kein Leerwert)",
-        "actualDoseWeight": "tatsaechliche Dosis in g",
-        "actualYield": "tatsaechliches Bezugsgewicht in g",
+        "espressoNotes": "note on the shot",
+        "enjoyment": "rating 0-100 (0 is a rating, not an empty value)",
+        "actualDoseWeight": "dose actually used, in g",
+        "actualYield": "yield actually pulled, in g",
     },
     kinds={
         "enjoyment": "enjoyment",
@@ -84,52 +83,52 @@ SHOT = Ruleset(
         "actualYield": "weight",
     },
     blocked={
-        # Diese drei nimmt Decaid teilweise an - siehe Modul-Docstring.
-        "id": "Die Kennung eines Bezugs ist unveraenderlich.",
-        "timestamp": "Zeitstempel kommen von der Maschine.",
-        "createdAt": "Setzt Decaid selbst.",
-        "updatedAt": "Setzt Decaid selbst.",
-        "stopReason": "Telemetrie der Maschine.",
-        "measurements": "Telemetrie der Maschine.",
-        "workflow": "Bohne, Muehle und Profil aendert set_workflow.",
-        "extras": "Herkunftsangaben von Decaid, keine Nutzereingabe.",
+        # Decaid accepts some of these - see the module docstring.
+        "id": "The identifier of a shot is immutable.",
+        "timestamp": "Timestamps come from the machine.",
+        "createdAt": "Decaid sets this itself.",
+        "updatedAt": "Decaid sets this itself.",
+        "stopReason": "Machine telemetry.",
+        "measurements": "Machine telemetry.",
+        "workflow": "Bean, grinder and profile are changed through set_workflow.",
+        "extras": "Provenance data written by Decaid, not user input.",
     },
 )
 
 
-# --------------------------------------------------------------- Bohne
+# ---------------------------------------------------------------- Bean
 
 
 BEAN = Ruleset(
-    name="Bohne",
+    name="bean",
     allowed={
-        "name": "Bezeichnung der Bohne",
-        "roaster": "Roesterei",
-        "species": "Art (z. B. arabica)",
-        "processing": "Aufbereitung (z. B. washed)",
-        "notes": "Beschreibung",
-        "decaf": "entkoffeiniert (true/false)",
+        "name": "name of the bean",
+        "roaster": "roastery",
+        "species": "species (arabica, for instance)",
+        "processing": "processing method (washed, for instance)",
+        "notes": "description",
+        "decaf": "decaffeinated (true/false)",
     },
     kinds={"decaf": "bool"},
     blocked={
-        "id": "Die Kennung einer Bohne ist unveraenderlich.",
-        "createdAt": "Setzt Decaid selbst.",
-        "updatedAt": "Setzt Decaid selbst.",
-        "archived": "Archivieren geschieht in Decaid, nicht von hier aus.",
+        "id": "The identifier of a bean is immutable.",
+        "createdAt": "Decaid sets this itself.",
+        "updatedAt": "Decaid sets this itself.",
+        "archived": "Archiving happens in Decaid, not from here.",
     },
 )
 
 
-# --------------------------------------------------------------- Charge
+# ---------------------------------------------------------------- Batch
 
 
 BATCH = Ruleset(
-    name="Charge",
+    name="batch",
     allowed={
-        "roastDate": "Roestdatum (ISO, YYYY-MM-DD)",
-        "buyDate": "Kaufdatum (ISO, YYYY-MM-DD)",
-        "freezeDate": "Einfrierdatum (ISO, YYYY-MM-DD)",
-        "frozen": "aktuell eingefroren (true/false)",
+        "roastDate": "roast date (ISO, YYYY-MM-DD)",
+        "buyDate": "purchase date (ISO, YYYY-MM-DD)",
+        "freezeDate": "date it went into the freezer (ISO, YYYY-MM-DD)",
+        "frozen": "currently frozen (true/false)",
     },
     kinds={
         "roastDate": "date",
@@ -138,31 +137,31 @@ BATCH = Ruleset(
         "frozen": "bool",
     },
     blocked={
-        "id": "Die Kennung einer Charge ist unveraenderlich.",
-        "beanId": "Die Zuordnung zur Bohne wird in Decaid gesetzt.",
-        "createdAt": "Setzt Decaid selbst.",
-        "updatedAt": "Setzt Decaid selbst.",
-        "archived": "Archivieren geschieht in Decaid, nicht von hier aus.",
-        # Am 2026-09-14 gegen die API geprueft: das Feld gibt es nicht.
+        "id": "The identifier of a batch is immutable.",
+        "beanId": "The link to the bean is set in Decaid.",
+        "createdAt": "Decaid sets this itself.",
+        "updatedAt": "Decaid sets this itself.",
+        "archived": "Archiving happens in Decaid, not from here.",
+        # Checked against the API on 2026-09-14: the field does not exist.
         "unfreezeDate": (
-            "Decaid fuehrt kein Auftaudatum. Zum Auftauen frozen auf false "
-            "setzen; das Bohnenalter rechnet dann ab diesem Zeitpunkt weiter."
+            "Decaid keeps no thaw date. To thaw, set frozen to false; bean age "
+            "then continues counting from that moment."
         ),
     },
 )
 
 
-# --------------------------------------------------------------- Workflow
+# ---------------------------------------------------------------- Workflow
 
 
 WORKFLOW = Ruleset(
-    name="Workflow",
+    name="workflow",
     allowed={
-        "grinderSetting": "Muehleneinstellung (Freitext, z. B. \"3.30\")",
-        "grinderModel": "Muehle",
-        "targetDoseWeight": "Zieldosis in g",
-        "targetYield": "Zielgewicht in g",
-        "beanBatchId": "Kennung der Charge, aus der bezogen wird",
+        "grinderSetting": 'grind setting (free text, e.g. "3.30")',
+        "grinderModel": "grinder",
+        "targetDoseWeight": "target dose in g",
+        "targetYield": "target yield in g",
+        "beanBatchId": "identifier of the batch being pulled from",
     },
     kinds={
         "targetDoseWeight": "weight",
@@ -171,41 +170,41 @@ WORKFLOW = Ruleset(
     },
     blocked={
         "profile": (
-            "Ein Profilwechsel aendert das Bruehverhalten grundlegend und "
-            "geschieht an der Maschine, nicht aus einem Gespraech heraus."
+            "Changing the profile changes brewing behaviour fundamentally and "
+            "belongs at the machine, not in a conversation."
         ),
-        "id": "Die Kennung des Workflows ist unveraenderlich.",
-        "steamSettings": "Dampf gehoert nicht zum Bezug.",
-        "rinseData": "Spuelen gehoert nicht zum Bezug.",
-        "hotWaterData": "Heisswasser gehoert nicht zum Bezug.",
+        "id": "The identifier of the workflow is immutable.",
+        "steamSettings": "Steam is not part of a shot.",
+        "rinseData": "Rinsing is not part of a shot.",
+        "hotWaterData": "Hot water is not part of a shot.",
     },
 )
 
 
 RULESETS = {r.name: r for r in (SHOT, BEAN, BATCH, WORKFLOW)}
 
-#: Rueckwaertskompatible Namen - bis M8 gab es nur das Bezugs-Regelwerk.
+#: Backwards-compatible names - until M8 there was only the shot ruleset.
 ALLOWED_FIELDS = SHOT.allowed
 BLOCKED_FIELDS = SHOT.blocked
 
 
 def allowed_field_help(ruleset: Ruleset = SHOT) -> str:
-    """Erlaubte Felder als eine Zeile - fuer Fehlermeldungen."""
+    """The permitted fields as a single line, for error messages."""
     return ruleset.help()
 
 
 def validate_fields(
     fields: dict[str, Any], ruleset: Ruleset = SHOT
 ) -> dict[str, Any]:
-    """Prueft Whitelist und Wertebereiche, bevor irgendetwas rausgeht.
+    """Check the whitelist and every value range before anything goes out.
 
-    Gibt die Felder in der Form zurueck, in der sie an die API gehen.
-    ``None`` bleibt ``None`` - das ist das Loeschen eines Feldes.
+    Returns the fields in the shape the API expects. ``None`` stays ``None`` -
+    that is how a field gets cleared.
     """
     if not isinstance(fields, dict) or not fields:
         raise ValidationError(
-            [f"fields ist leer - erwartet wird mindestens ein Feld. "
-             f"Erlaubt am {ruleset.name}: {ruleset.help()}"]
+            [f"fields is empty - at least one field is expected. "
+             f"Allowed on the {ruleset.name}: {ruleset.help()}"]
         )
 
     problems: list[str] = []
@@ -213,12 +212,12 @@ def validate_fields(
 
     for name, value in fields.items():
         if name in ruleset.blocked:
-            problems.append(f"{name}: nicht aenderbar - {ruleset.blocked[name]}")
+            problems.append(f"{name}: not writable - {ruleset.blocked[name]}")
             continue
         if name not in ruleset.allowed:
             problems.append(
-                f"{name}: unbekanntes Feld am {ruleset.name}. "
-                f"Erlaubt sind {ruleset.help()}"
+                f"{name}: unknown field on the {ruleset.name}. "
+                f"Allowed are {ruleset.help()}"
             )
             continue
 
@@ -252,52 +251,52 @@ def _coerce(ruleset: Ruleset, name: str, value: Any) -> Any:
 
 def _enjoyment(value: Any) -> int:
     if isinstance(value, bool) or not isinstance(value, int | float | str):
-        raise ValueError("erwartet wird eine Ganzzahl von 0 bis 100")
+        raise ValueError("a whole number from 0 to 100 is expected")
     try:
         number = float(value)
     except ValueError:
-        raise ValueError(f"{value!r} ist keine Zahl") from None
+        raise ValueError(f"{value!r} is not a number") from None
     if number != int(number):
-        raise ValueError(f"{value!r} ist keine Ganzzahl")
+        raise ValueError(f"{value!r} is not a whole number")
     number = int(number)
     if not 0 <= number <= 100:
-        raise ValueError(f"{number} liegt ausserhalb von 0 bis 100")
+        raise ValueError(f"{number} is outside the range 0 to 100")
     return number
 
 
 def _weight(name: str, value: Any) -> float:
     low, high = _WEIGHT_RANGES[name]
     if isinstance(value, bool) or not isinstance(value, int | float | str):
-        raise ValueError(f"erwartet wird eine Zahl von {low} bis {high} g")
+        raise ValueError(f"a number from {low} to {high} g is expected")
     try:
-        # Deutsche Tastatur, deutscher Nutzer.
+        # German keyboard, German user.
         number = float(str(value).replace(",", "."))
     except ValueError:
-        raise ValueError(f"{value!r} ist keine Zahl") from None
+        raise ValueError(f"{value!r} is not a number") from None
     if not low <= number <= high:
-        raise ValueError(f"{number} g liegt ausserhalb von {low} bis {high} g")
-    # Decaid nimmt und liefert diese Felder als Zahl, nicht als String.
+        raise ValueError(f"{number} g is outside the range {low} to {high} g")
+    # Decaid takes and returns these fields as numbers, not strings.
     return round(number, 2)
 
 
 def _iso_date(name: str, value: Any) -> str:
     if not isinstance(value, str):
-        raise ValueError("erwartet wird ein Datum als Text im Format YYYY-MM-DD")
+        raise ValueError("a date as text in the format YYYY-MM-DD is expected")
     text = value.strip()
     try:
         parsed = date.fromisoformat(text[:10])
     except ValueError:
         raise ValueError(
-            f"{text!r} ist kein ISO-Datum (YYYY-MM-DD). Die DE1-App schreibt "
-            "TT.MM.JJJJ; hier wird ISO erwartet und auch so gespeichert."
+            f"{text!r} is not an ISO date (YYYY-MM-DD). The DE1 app writes "
+            "DD.MM.YYYY; ISO is expected here and stored that way."
         ) from None
     today = datetime.now(UTC).date()
     if parsed > today:
-        raise ValueError(f"{text} liegt in der Zukunft (heute ist {today.isoformat()})")
+        raise ValueError(f"{text} lies in the future (today is {today.isoformat()})")
     if name == "roastDate" and (today - parsed).days > _MAX_ROAST_AGE_DAYS:
         raise ValueError(
-            f"{text} liegt mehr als {_MAX_ROAST_AGE_DAYS // 365} Jahre zurueck - "
-            "das ist eher ein Tippfehler als eine Roestung."
+            f"{text} lies more than {_MAX_ROAST_AGE_DAYS // 365} years back - "
+            "that is a typo rather than a roast."
         )
     return parsed.isoformat()
 
@@ -307,18 +306,18 @@ def _bool(value: Any) -> bool:
         return value
     if isinstance(value, str) and value.strip().lower() in ("true", "false"):
         return value.strip().lower() == "true"
-    raise ValueError("erwartet wird true oder false")
+    raise ValueError("true or false is expected")
 
 
 def _identifier(value: Any) -> str:
     if not isinstance(value, str) or not _UUID.match(value.strip()):
-        raise ValueError("erwartet wird eine Kennung, wie list_beans sie liefert")
+        raise ValueError("an identifier is expected, as list_beans returns them")
     return value.strip()
 
 
 def _text(value: Any) -> str:
     if not isinstance(value, str):
-        raise ValueError("erwartet wird Text")
+        raise ValueError("text is expected")
     if len(value) > MAX_NOTE_CHARS:
-        raise ValueError(f"{len(value)} Zeichen, erlaubt sind hoechstens {MAX_NOTE_CHARS}")
+        raise ValueError(f"{len(value)} characters, at most {MAX_NOTE_CHARS} allowed")
     return value

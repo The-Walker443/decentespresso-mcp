@@ -1,23 +1,23 @@
-"""Waechter ueber dem Archiv (SPEC ss20.7).
+"""Guards over the archive (SPEC §20.7).
 
-Vier Regeln, die nach jedem Bezug pruefen, ob etwas nicht zusammenpasst. Der
-Zweck ist nicht Vollstaendigkeit, sondern die kleine Zahl von Fehlern, die man
-beim Kaffeemachen tatsaechlich macht und erst Wochen spaeter bemerkt: eine neue
-Bohne im alten Mahlgrad gezogen, eine Charge, die laengst durch ist, eine Dosis
-danebengewogen, eine Bewertung nie nachgetragen.
+Four rules that check after every shot whether something does not add up. The
+aim is not completeness but the small set of mistakes one actually makes while
+making coffee and only notices weeks later: a new bean pulled at the old grind
+setting, a batch long past its prime, a dose weighed wrong, a rating never
+added.
 
-GRUNDSAETZE
+PRINCIPLES
 
-*Reine Funktionen.* Jede Regel bekommt Zeilen und gibt Befunde zurueck - kein
-Netz, keine Datenbank, keine Uhr ausser der uebergebenen. So sind sie ohne
-Aufbau pruefbar, und ein Befund laesst sich im Zweifel von Hand nachrechnen.
+*Pure functions.* Every rule takes rows and returns findings - no network, no
+database, no clock beyond the one handed in. That makes them testable without
+any setup, and a finding can be recomputed by hand when in doubt.
 
-*Keine Inhalte in Befunden.* Ein Befund nennt Kennung, Regel und Zahlen - nie
-den Text einer Notiz. Die Befunde gehen per ntfy aus dem Haus; was dort steht,
-liegt danach auf einem fremden Server.
+*No content in findings.* A finding names the identifier, the rule and the
+numbers - never the text of a note. Findings leave the house over ntfy; what
+is in them then sits on someone else's server.
 
-*Jede Regel einzeln abschaltbar.* Eine Regel, die zu oft anschlaegt, wird sonst
-im Ganzen ignoriert - und nimmt die anderen mit.
+*Every rule switchable on its own.* A rule that fires too often gets ignored
+wholesale otherwise - and takes the others down with it.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-#: Kennungen der Regeln. Ueber sie laeuft das Abschalten.
+#: Rule identifiers. Switching rules off works through these.
 RULE_GRIND = "grind_not_adjusted"
 RULE_BEAN_AGE = "bean_age"
 RULE_MISSING_RATING = "missing_rating"
@@ -39,49 +39,49 @@ RULE_DOSE_OUTLIER = "dose_outlier"
 
 ALL_RULES = (RULE_GRIND, RULE_BEAN_AGE, RULE_MISSING_RATING, RULE_DOSE_OUTLIER)
 
-#: Ab wann eine Bohne als ueber ihren Punkt hinaus gilt. Entkoffeinierte und
-#: helle Roestungen halten laenger, aber eine Zahl muss es sein; sie ist
-#: absichtlich grosszuegig, damit die Regel nicht staendig anschlaegt.
+#: When a bean counts as past its prime. Decaf and light roasts keep longer,
+#: but it has to be a single number; it is deliberately generous so the rule
+#: does not fire constantly.
 BEAN_AGE_WARN_DAYS = 42
 
-#: So lange nach dem Bezug ist eine fehlende Bewertung normal - man trinkt ja
-#: erst. Danach wird sie vermutlich nicht mehr kommen.
+#: For this long after a shot a missing rating is normal - one drinks it
+#: first. After that it probably is not coming.
 RATING_GRACE_HOURS = 36
 
-#: Und so lange danach hat es noch Zweck zu erinnern. Am Bestand gemessen
-#: (2026-09-14): 145 von 169 Bezuegen sind unbewertet - ohne Obergrenze
-#: meldete die Regel 83 Prozent des Archivs und waere damit wertlos. Wer
-#: einen Bezug von vorletzter Woche nicht bewertet hat, tut es nicht mehr.
+#: And for this long afterwards a reminder still has a point. Measured against
+#: the archive (2026-09-14): 145 of 169 shots are unrated - without an upper
+#: bound the rule reported 83 percent of the archive and would be worthless.
+#: Whoever has not rated a shot from the week before last will not do so now.
 RATING_WINDOW_HOURS = 7 * 24
 
-#: Abweichung vom Soll, ab der es kein Streuen mehr ist. Gilt fuer das
-#: Bezugsgewicht; die Dosis wird gesondert geprueft (siehe unten).
+#: Deviation from target beyond which it is no longer scatter. Applies to the
+#: yield; the dose is checked separately (see below).
 DOSE_TOLERANCE_G = 1.0
 
-#: Faktor auf die Toleranz fuer das Bezugsgewicht. Es schwankt von Natur aus
-#: staerker als die Dosis - am Bestand im Mittel 8,9 g -, weil Abbruch von
-#: Hand, Tropfen und Kanalbildung hineinspielen. Ohne den Faktor meldete die
-#: Regel fast jeden Bezug.
+#: Factor applied to the tolerance for yield. It varies more by nature than
+#: the dose - 8.9 g on average across the archive - because stopping by hand,
+#: dripping and channelling all play into it. Without the factor the rule
+#: reported nearly every shot.
 YIELD_TOLERANCE_FACTOR = 4.0
 
-#: Dosiswerte ausserhalb davon sind keine Abweichung, sondern ein Fehler -
-#: meist eine nicht tarierte oder gar nicht verbundene Waage.
+#: Dose values outside this are not a deviation but a fault - usually a scale
+#: that was not tared or not connected at all.
 DOSE_PLAUSIBLE_G = (5.0, 30.0)
 
-#: So viele Bezuege der gleichen Charge braucht es, bevor die Streuung selbst
-#: als Massstab taugt.
+#: How many shots from the same batch are needed before their own scatter
+#: makes a usable yardstick.
 DOSE_MIN_SAMPLES = 5
 
 
 @dataclass(frozen=True, slots=True)
 class Finding:
-    """Ein Befund. ``message`` ist fuer Menschen und enthaelt nie Freitext."""
+    """One finding. ``message`` is for humans and never carries free text."""
 
     rule: str
     shot_id: str
     started_at: str | None
     message: str
-    #: Zahlen, auf die sich die Meldung stuetzt - macht sie nachrechenbar.
+    #: The numbers the message rests on - they make it checkable.
     detail: dict[str, Any]
 
     def as_dict(self) -> dict[str, Any]:
@@ -94,19 +94,19 @@ class Finding:
         }
 
 
-# --------------------------------------------------------------- Regel 1
+# ---------------------------------------------------------------- Rule 1
 
 
 def grind_not_adjusted(
     shots: Sequence[Mapping[str, Any]], *, limit: int | None = None
 ) -> list[Finding]:
-    """Neue Bohne oder Charge, aber der Mahlgrad blieb stehen.
+    """New bean or batch, but the grind setting stayed put.
 
-    Jede Bohne mahlt anders; wer die Charge wechselt und die Muehle nicht
-    anfasst, zieht den ersten Bezug fast sicher daneben. Die Regel meldet
-    genau den einen Bezug, bei dem der Wechsel stattfand.
+    Every bean grinds differently; changing the batch without touching the
+    grinder almost certainly puts the first shot off. The rule reports exactly
+    the one shot at which the change happened.
 
-    ``shots`` muss nach ``started_at`` aufsteigend sortiert sein.
+    ``shots`` must be sorted ascending by ``started_at``.
     """
     findings: list[Finding] = []
     previous: Mapping[str, Any] | None = None
@@ -123,7 +123,7 @@ def grind_not_adjusted(
                     shot_id=str(shot["id"]),
                     started_at=shot.get("started_at"),
                     message=(
-                        f"Chargenwechsel ohne Mahlgradaenderung - weiterhin "
+                        f"Batch changed without adjusting the grind - still "
                         f"{grind!r}."
                     ),
                     detail={"grinder_setting": grind,
@@ -134,21 +134,20 @@ def grind_not_adjusted(
     return _cap(findings, limit)
 
 
-# --------------------------------------------------------------- Regel 2
+# ---------------------------------------------------------------- Rule 2
 
 
 def bean_age_days(
     batch: Mapping[str, Any], at: datetime, *, started: datetime | None = None
 ) -> tuple[int | None, bool]:
-    """Alter der Bohne in Tagen, ohne die Gefrierzeit. ``(tage, sicher)``.
+    """Age of the bean in days, excluding time spent frozen. ``(days, certain)``.
 
-    Eingefroren zaehlt nicht als Alterung, deshalb wird die Gefrierzeit
-    abgezogen. Decaid fuehrt allerdings **kein Auftaudatum** (am 2026-09-14
-    gegen die API geprueft): steht ``frozen`` auf false und ist trotzdem ein
-    ``freezeDate`` gesetzt, wurde die Charge irgendwann aufgetaut - wann, weiss
-    niemand. Dann ist das Alter nur nach oben begrenzt, und das zweite Element
-    der Rueckgabe ist ``False``. Eine Zahl, die man nicht belegen kann, wird
-    hier nicht als sicher ausgegeben.
+    Being frozen does not count as ageing, so frozen time is subtracted. Decaid
+    however keeps **no thaw date** (checked against the API on 2026-09-14): if
+    ``frozen`` is false and a ``freezeDate`` is set nonetheless, the batch was
+    thawed at some point - nobody knows when. The age is then an upper bound
+    only, and the second element of the return value is ``False``. A number
+    that cannot be substantiated is not reported here as certain.
     """
     roasted = _as_date(batch.get("roast_date"))
     if roasted is None:
@@ -167,14 +166,14 @@ def bean_age_days(
         return age, True
 
     if is_frozen:
-        # Seit dem Einfrieren altert sie nicht mehr.
+        # It stops ageing the moment it goes into the freezer.
         return max(0, (min(frozen_since, reference) - roasted).days), True
 
     if thawed is not None:
         return max(0, age - max(0, (thawed - frozen_since).days)), True
 
-    # Eingefroren gewesen, Auftaudatum unbekannt: das volle Alter ist die
-    # Obergrenze, mehr laesst sich nicht sagen.
+    # Was frozen, thaw date unknown: the full age is the upper bound, and
+    # nothing more can be said.
     return age, False
 
 
@@ -186,7 +185,7 @@ def stale_beans(
     warn_days: int = BEAN_AGE_WARN_DAYS,
     limit: int | None = None,
 ) -> list[Finding]:
-    """Bezuege aus einer Charge, die zum Bezugszeitpunkt zu alt war."""
+    """Shots from a batch that was too old at the time it was pulled."""
     findings: list[Finding] = []
     for shot in shots:
         batch = batches.get(str(shot.get("bean_batch_id") or ""))
@@ -197,14 +196,14 @@ def stale_beans(
         if age is None or age <= warn_days:
             continue
 
-        qualifier = "" if certain else " (mindestens; Auftaudatum unbekannt)"
+        qualifier = "" if certain else " (at least; thaw date unknown)"
         findings.append(Finding(
             rule=RULE_BEAN_AGE,
             shot_id=str(shot["id"]),
             started_at=shot.get("started_at"),
             message=(
-                f"Bohne war beim Bezug {age} Tage nach der Roestung{qualifier} - "
-                f"Schwelle {warn_days}."
+                f"Bean was {age} days past roasting when pulled{qualifier} - "
+                f"threshold {warn_days}."
             ),
             detail={"age_days": age, "certain": certain, "warn_days": warn_days,
                     "roast_date": batch.get("roast_date")},
@@ -212,7 +211,7 @@ def stale_beans(
     return _cap(findings, limit)
 
 
-# --------------------------------------------------------------- Regel 3
+# ---------------------------------------------------------------- Rule 3
 
 
 def missing_rating(
@@ -223,18 +222,17 @@ def missing_rating(
     window_hours: int = RATING_WINDOW_HOURS,
     limit: int | None = None,
 ) -> list[Finding]:
-    """Bezuege ohne Bewertung - aber nur die, bei denen Erinnern noch hilft.
+    """Shots without a rating - but only those where a reminder still helps.
 
-    Zwei Grenzen, keine offene Frist. Frueher als ``grace_hours`` ist eine
-    fehlende Bewertung normal, man trinkt ja erst. Aelter als
-    ``window_hours`` kommt sie nicht mehr: am Bestand sind 145 von 169
-    Bezuegen unbewertet, eine einseitige Frist meldete also 83 Prozent des
-    Archivs - und eine Regel, die fast immer anschlaegt, wird im Ganzen
-    ignoriert.
+    Two bounds, not an open-ended deadline. Earlier than ``grace_hours`` a
+    missing rating is normal, one drinks it first. Older than ``window_hours``
+    it is not coming: 145 of 169 shots in the archive are unrated, so a
+    one-sided deadline reported 83 percent of it - and a rule that fires almost
+    always gets ignored wholesale.
 
-    ``enjoyment IS NULL`` heisst "nicht bewertet" - dass die Ingestion die
-    Nullen der Import-Aera zu NULL macht, ist genau die Voraussetzung dafuer,
-    dass diese Regel etwas aussagt (SPEC ss20.4).
+    ``enjoyment IS NULL`` means "not rated" - that ingestion turns the zeros of
+    the import era into NULL is exactly what makes this rule say anything at
+    all (SPEC §20.4).
     """
     newest = at - timedelta(hours=grace_hours)
     oldest = at - timedelta(hours=window_hours)
@@ -250,15 +248,15 @@ def missing_rating(
             shot_id=str(shot["id"]),
             started_at=shot.get("started_at"),
             message=(
-                f"Seit {_hours_between(started, at)} h nicht bewertet "
-                f"(Frist {grace_hours} h)."
+                f"Not rated for {_hours_between(started, at)} h "
+                f"(grace period {grace_hours} h)."
             ),
             detail={"grace_hours": grace_hours, "window_hours": window_hours},
         ))
     return _cap(findings, limit)
 
 
-# --------------------------------------------------------------- Regel 4
+# ---------------------------------------------------------------- Rule 4
 
 
 def dose_outliers(
@@ -267,21 +265,21 @@ def dose_outliers(
     tolerance_g: float = DOSE_TOLERANCE_G,
     limit: int | None = None,
 ) -> list[Finding]:
-    """Gewichte, die nicht zum Soll des Workflows passen.
+    """Weights that do not match the workflow target.
 
-    **Warum das Bezugsgewicht und nicht die Dosis.** Der Auftrag nennt
-    Dosis-Ausreisser. Am Bestand gemessen (2026-09-14) ist das nicht
-    pruefbar: in allen 165 Faellen ist ``actualDoseWeight`` **exakt** gleich
-    ``targetDoseWeight``. Die DE1 wiegt die Dosis nicht; sie uebernimmt den
-    Sollwert. Ein Vergleich beider verglich eine Zahl mit sich selbst.
+    **Why yield and not dose.** The brief asks for dose outliers. Measured
+    against the archive (2026-09-14) that cannot be checked: in all 165 cases
+    ``actualDoseWeight`` is **exactly** equal to ``targetDoseWeight``. The DE1
+    does not weigh the dose; it adopts the target. Comparing the two compared a
+    number with itself.
 
-    Die Streuung steckt im Bezugsgewicht - dort misst die Waage wirklich,
-    im Mittel 8,9 g neben dem Soll, im Extremfall 497 g. Diese Regel prueft
-    deshalb beides mit dem, was es hergibt: das Bezugsgewicht gegen sein
-    Soll, und die Dosis nur noch auf Plausibilitaet.
+    The scatter sits in the yield - that is where the scale really measures,
+    8.9 g off target on average and 497 g in the extreme. This rule therefore
+    checks both with what they can give: the yield against its target, and the
+    dose for plausibility only.
 
-    Fehlt das Soll, dient der Median der Charge als Ersatz - aber erst ab
-    genug Bezuegen, sonst bestimmte ein einzelner Fehlgriff den Massstab.
+    Without a target the batch median stands in - but only once there are
+    enough shots, otherwise a single mishap would set the yardstick itself.
     """
     findings: list[Finding] = []
     medians = _median_per_batch(shots, "yield_g")
@@ -289,14 +287,14 @@ def dose_outliers(
     low, high = DOSE_PLAUSIBLE_G
 
     for shot in shots:
-        # Die Dosis ist der Sollwert - nur ein unmoeglicher Wert ist ein Befund.
+        # The dose is the target value - only an impossible one is a finding.
         dose = _as_float(shot.get("dose_g"))
         if dose is not None and not low <= dose <= high:
             findings.append(Finding(
                 rule=RULE_DOSE_OUTLIER,
                 shot_id=str(shot["id"]),
                 started_at=shot.get("started_at"),
-                message=f"Dosis {dose:g} g ist unmoeglich - Waage pruefen.",
+                message=f"Dose of {dose:g} g is impossible - check the scale.",
                 detail={"dose_g": dose, "plausible_g": list(DOSE_PLAUSIBLE_G)},
             ))
             continue
@@ -305,10 +303,10 @@ def dose_outliers(
         if yielded is None:
             continue
         target = _as_float(shot.get("target_yield_g"))
-        source = "Soll"
+        source = "target"
         if target is None:
             target = medians.get(str(shot.get("bean_batch_id") or ""))
-            source = "Median der Charge"
+            source = "batch median"
         if target is None:
             continue
 
@@ -320,8 +318,8 @@ def dose_outliers(
             shot_id=str(shot["id"]),
             started_at=shot.get("started_at"),
             message=(
-                f"Bezugsgewicht {yielded:g} g weicht um {delta:+g} g vom "
-                f"{source} ({target:g} g) ab."
+                f"Yield of {yielded:g} g is {delta:+g} g off the "
+                f"{source} ({target:g} g)."
             ),
             detail={"yield_g": yielded, "target_g": target, "delta_g": delta,
                     "basis": source, "tolerance_g": yield_tolerance},
@@ -329,7 +327,7 @@ def dose_outliers(
     return _cap(findings, limit)
 
 
-# --------------------------------------------------------------- Alle
+# ----------------------------------------------------------------- All
 
 
 def run_rules(
@@ -344,9 +342,9 @@ def run_rules(
     tolerance_g: float = DOSE_TOLERANCE_G,
     limit: int | None = None,
 ) -> list[Finding]:
-    """Alle eingeschalteten Regeln, Befunde nach Bezugszeit absteigend.
+    """Every enabled rule, findings sorted by shot time, newest first.
 
-    ``shots`` kommt aufsteigend sortiert herein - Regel 1 braucht die Reihenfolge.
+    ``shots`` comes in sorted ascending - rule 1 depends on that order.
     """
     active = set(enabled)
     findings: list[Finding] = []
@@ -365,7 +363,7 @@ def run_rules(
     return _cap(findings, limit)
 
 
-# ------------------------------------------------------------ Hilfsmittel
+# ------------------------------------------------------------------ Helpers
 
 
 def _median_per_batch(

@@ -22,16 +22,16 @@ def test_migrations_are_idempotent(tmp_path: pathlib.Path) -> None:
     first = Database(tmp_path / "m.db")
     applied = first.migrate()
     assert "001_decaid_init.sql" in applied
-    assert first.migrate() == []          # zweiter Lauf tut nichts
+    assert first.migrate() == []          # a second run does nothing
     first.close()
 
     reopened = Database(tmp_path / "m.db")
-    assert reopened.migrate() == []       # auch nach Neustart nichts
+    assert reopened.migrate() == []       # nothing after a restart either
     reopened.close()
 
 
 def test_a_visualizer_era_file_is_refused(tmp_path: pathlib.Path) -> None:
-    """Sonst liefen die CREATE-IF-NOT-EXISTS ins Leere und das alte Schema bliebe."""
+    """Otherwise the CREATE IF NOT EXISTS would do nothing and the old schema stay."""
     old = Database(tmp_path / "alt.db")
     old.migrate()
     old._conn.execute(
@@ -42,7 +42,7 @@ def test_a_visualizer_era_file_is_refused(tmp_path: pathlib.Path) -> None:
     old.close()
 
     reopened = Database(tmp_path / "alt.db")
-    with pytest.raises(RuntimeError, match="Visualizer-Aera"):
+    with pytest.raises(RuntimeError, match="Visualizer era"):
         reopened.migrate()
     reopened.close()
 
@@ -62,13 +62,13 @@ def test_insert_then_reinsert_does_not_duplicate(archive: Database, reference: d
     shot = shot_row_from_decaid(reference, SYNCED_AT)
     series = series_rows_from_decaid(reference)
 
-    assert archive.upsert_shot(shot, series) is True      # neu
+    assert archive.upsert_shot(shot, series) is True      # new
     assert archive.count_shots() == 1
     assert archive.count_series_points() == POINTS
 
-    assert archive.upsert_shot(shot, series) is False     # bekannt
+    assert archive.upsert_shot(shot, series) is False     # known
     assert archive.count_shots() == 1
-    assert archive.count_series_points() == POINTS, "Zeitreihe darf sich nicht verdoppeln"
+    assert archive.count_series_points() == POINTS, "the series must not double"
 
 
 def test_upsert_updates_mutable_fields(archive: Database, reference: dict) -> None:
@@ -99,13 +99,13 @@ def test_series_cascade_on_delete(archive: Database, reference: dict) -> None:
 
 
 def test_a_shot_survives_an_unknown_batch(archive: Database, reference: dict) -> None:
-    """Decaid ist die Quelle - eine geloeschte Charge darf keinen Bezug kosten."""
+    """Decaid is the source - a deleted batch must not cost us a shot."""
     detail = decaid_detail("de1app-1785525999", timestamp="2026-08-02T05:32:50")
-    detail["workflow"]["context"]["beanBatchId"] = "gibt-es-nicht"
+    detail["workflow"]["context"]["beanBatchId"] = "does-not-exist"
     store_shot(archive, detail, SYNCED_AT)
 
     row = archive.get_shot_row("de1app-1785525999")
-    assert row["bean_batch_id"] == "gibt-es-nicht"
+    assert row["bean_batch_id"] == "does-not-exist"
     assert row["bean_id"] is None
 
 
@@ -141,7 +141,7 @@ def test_shot_span_and_max_updated(archive: Database, reference: dict) -> None:
 
 
 def test_beans_come_from_decaids_list(archive: Database, reference: dict) -> None:
-    """Auch eine noch nie bezogene Bohne taucht auf."""
+    """A bean never pulled from shows up too."""
     archive.upsert_beans([{
         "id": "bean-1", "name": "Tugu Kawisari", "roaster": "Roesterei",
         "species": "arabica", "processing": "washed", "decaf": 0, "archived": 0,
@@ -155,7 +155,7 @@ def test_beans_come_from_decaids_list(archive: Database, reference: dict) -> Non
 
 
 def test_grinder_settings_keep_their_commas(archive: Database, reference: dict) -> None:
-    """"4,2" ist eine Einstellung, keine zwei - darum kein GROUP_CONCAT."""
+    """"4,2" is one setting, not two - hence no GROUP_CONCAT."""
     archive.upsert_beans([{
         "id": "bean-1", "name": "Tugu Kawisari", "roaster": None, "species": None,
         "processing": None, "decaf": None, "archived": None, "notes": None,

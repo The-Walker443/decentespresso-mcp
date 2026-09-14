@@ -1,4 +1,4 @@
-"""Entrypoint: Config laden, Logging aufsetzen, Server oder Sync starten."""
+"""Entry point: load config, set up logging, start server or sync."""
 
 from __future__ import annotations
 
@@ -24,9 +24,9 @@ def main(argv: list[str] | None = None) -> int:
         "--print-connector-url",
         action="store_true",
         help=(
-            "Gibt die vollstaendige Connector-URL inkl. Secret auf stdout aus und "
-            "beendet sich. Nur manuell aufrufen - die URL landet sonst dauerhaft "
-            "in 'docker logs'."
+            "Prints the full connector URL including the secret to stdout and "
+            "exits. Call this manually only - otherwise the URL ends up "
+            "permanently in 'docker logs'."
         ),
     )
     parser.add_argument(
@@ -45,8 +45,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         config = Config.from_env()
     except ConfigError as exc:
-        # Vor setup_logging: bewusst auf stderr, damit auch ein kaputtes
-        # LOG_LEVEL die Meldung nicht verschluckt.
+        # Before setup_logging: deliberately on stderr, so that even a broken
+        # LOG_LEVEL does not swallow the message.
         print(exc, file=sys.stderr)
         return 2
 
@@ -54,7 +54,7 @@ def main(argv: list[str] | None = None) -> int:
         url = config.connector_url
         if url is None:
             print(
-                "PUBLIC_BASE_URL ist nicht gesetzt - Pfad lautet: " + config.mcp_path,
+                "PUBLIC_BASE_URL is not set - the path is: " + config.mcp_path,
                 file=sys.stderr,
             )
             return 1
@@ -94,8 +94,8 @@ def main(argv: list[str] | None = None) -> int:
         build_app(config),
         host=config.host,
         port=config.port,
-        log_config=None,  # Logging kommt aus setup_logging (inkl. Redaction)
-        access_log=False,  # Access-Logs wuerden den Secret-Pfad protokollieren
+        log_config=None,  # logging comes from setup_logging (redaction included)
+        access_log=False,  # access logs would record the secret path
     )
     return 0
 
@@ -109,7 +109,7 @@ async def _run_sync_cli(config: Config, *, full: bool) -> int:
         log.info("decaid reached", extra={"fields": {"version": info.get("version")}})
         result = await run_sync(client, db, full=full)
     except DecaidUnreachable:
-        # Tablet aus - kein Fehler, nur nichts zu tun.
+        # Tablet is off - not an error, just nothing to do.
         log.info("decaid not reachable", extra={"fields": {"url": config.decaid_url}})
         return 0
     except DecaidError as exc:

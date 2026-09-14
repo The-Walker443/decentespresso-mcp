@@ -1,21 +1,22 @@
-"""Parser fuer DE1-Profile im Tcl-Format (SPEC ss7.1).
+"""Parser for DE1 profiles in Tcl format (SPEC §7.1).
 
-Kein Regex-Gefrickel: die Datei *ist* eine Tcl-Liste, also parst sie der
-Tcl-Interpreter aus der stdlib. Das ist der vorgesehene Weg; im Container
-liefert ``libtk8.6`` die noetige Laufzeitbibliothek (siehe Dockerfile).
+No regex fiddling: the file *is* a Tcl list, so the Tcl interpreter from the
+standard library parses it. That is the intended route; inside the container
+``libtk8.6`` provides the runtime library needed (see the Dockerfile).
 
-Faellt der Interpreter dennoch aus, greift ein eigener Listensplitter
-(``_split_tcl_list``) statt den Dienst zu beenden - ein Profilparser ist kein
-Grund, den ganzen Server nicht starten zu lassen. Beide Wege werden im Test
-gegeneinander geprueft, damit der Ersatz nicht unbemerkt abdriftet.
+Should the interpreter still be unavailable, a small list splitter of our own
+(``_split_tcl_list``) takes over rather than the service shutting down - a
+profile parser is no reason to stop the whole server from starting. Both routes
+are checked against each other in the tests, so the fallback does not drift
+unnoticed.
 
-Die Versionierung haengt am sha256 des **normalisierten** Roh-TCL (SPEC ss5);
-``raw_tcl`` wird unveraendert gespeichert. ``semantic_hash`` gruppiert daneben
-Versionen, die identisch bruehen.
+Versioning hangs on the sha256 of the **normalised** raw TCL (SPEC §5);
+``raw_tcl`` is stored unchanged. Alongside it ``semantic_hash`` groups versions
+that brew identically.
 
-ÜBERHOLT ab M8: Decaid liefert das Profil als JSON im Workflow mit, die
-Versionierung läuft über ``decaid_profile``. Dieses Modul bleibt lesbar für
-den Altbestand, wird aber nicht mehr aufgerufen (SPEC §20.4).
+SUPERSEDED as of M8: Decaid ships the profile as JSON inside the workflow, and
+versioning runs through ``decaid_profile``. This module stays readable for the
+archived era but is no longer called (SPEC §20.4).
 """
 
 from __future__ import annotations
@@ -28,34 +29,34 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-# Der Import ist bewusst weich. In python:*-slim ist _tkinter zwar einkompiliert,
-# die Tk-Laufzeitbibliotheken fehlen aber - ohne libtk8.6 scheitert schon
-# 'import tkinter' an "libtk8.6.so: cannot open shared object file". Das
-# Dockerfile installiert das Paket; faellt es weg, soll der Server trotzdem
-# starten und auf den eigenen Splitter zurueckfallen, statt beim Import zu
-# sterben. Genau dieser Fall ist einmal in Produktion aufgetreten.
-try:  # pragma: no cover - abhaengig von der Umgebung
+# The import is deliberately soft. In python:*-slim _tkinter is compiled in but
+# the Tk runtime libraries are missing - without libtk8.6 even 'import tkinter'
+# fails with "libtk8.6.so: cannot open shared object file". The Dockerfile
+# installs the package; if it ever falls away the server should still start and
+# fall back to our own splitter rather than dying at import. That exact case
+# happened once in production.
+try:  # pragma: no cover - depends on the environment
     from tkinter import Tcl, TclError
 
     TCL_INTERPRETER_AVAILABLE = True
-except Exception as exc:  # pragma: no cover - abhaengig von der Umgebung
+except Exception as exc:  # pragma: no cover - depends on the environment
     Tcl = None  # type: ignore[assignment]
     TCL_INTERPRETER_AVAILABLE = False
     TCL_IMPORT_ERROR = f"{type(exc).__name__}: {exc}"
 
     class TclError(Exception):  # type: ignore[no-redef]
-        """Platzhalter, damit die Fehlerbehandlung ohne tkinter gleich bleibt."""
-else:  # pragma: no cover - abhaengig von der Umgebung
+        """Placeholder so error handling stays the same without tkinter."""
+else:  # pragma: no cover - depends on the environment
     TCL_IMPORT_ERROR = None
 
-#: Steckt in ``parsed_json``. Hochzaehlen, sobald der Parser andere Felder
-#: liefert - beim naechsten Start werden alle Profile neu geparst und gehasht.
-#: 1 -> 2: legacy_settings fuer Nicht-Advanced-Profile.
+#: Stored inside ``parsed_json``. Bump it as soon as the parser returns
+#: different fields - on the next start every profile is reparsed and rehashed.
+#: 1 -> 2: legacy_settings for non-advanced profiles.
 PARSER_VERSION = 2
 
-#: settings_profile_type -> Profiltyp. Gegen die JSON-Ausgabe von Visualizer
+#: settings_profile_type -> profile type. Checked against Visualizer's own
 #: verifiziert: settings_2a -> "pressure", settings_2c -> "advanced".
-#: settings_2b -> "flow" folgt der DE1-Konvention, liegt aber (noch) nicht als
+#: settings_2b -> "flow" follows the DE1 convention but does not (yet) appear as
 #: Echtdatenbeleg vor.
 PROFILE_TYPE_BY_SETTINGS = {
     "settings_2a": "pressure",
@@ -63,7 +64,7 @@ PROFILE_TYPE_BY_SETTINGS = {
     "settings_2c": "advanced",
 }
 
-#: exit_type -> Feld, in dem der Schwellwert steht.
+#: exit_type -> the field holding the threshold.
 EXIT_VALUE_FIELD = {
     "pressure_over": "exit_pressure_over",
     "pressure_under": "exit_pressure_under",
@@ -71,16 +72,16 @@ EXIT_VALUE_FIELD = {
     "flow_under": "exit_flow_under",
 }
 
-# --- Kopf-Sollwerte von Legacy-Profilen ------------------------------------
+# --- Headline targets of legacy profiles ------------------------------------
 #
-# Profile ohne advanced_shot beschreiben ihren Verlauf ueber diese Felder. Sie
-# gehoeren in parsed_json und in den semantic_hash, sonst waeren zwei Versionen
-# mit unterschiedlichem Bruehdruck semantisch gleich.
+# Profiles without advanced_shot describe their curve through these fields.
+# They belong in parsed_json and in the semantic_hash, otherwise two versions
+# with different brew pressure would be semantically identical.
 #
-# Getrennt nach Typ, weil die DE1-App auch die jeweils *ungenutzten* Bloecke in
-# die Datei schreibt: ein Druckprofil traegt flow_profile_*-Werte, die es nie
-# auswertet. Sie mitzuhashen erzeugte dieselben Scheinversionen, die der Hash
-# gerade vermeiden soll - dieselbe Ueberlegung wie bei ``exit_if 0``.
+# Split by type, because the DE1 app writes the *unused* blocks into the file
+# as well: a pressure profile carries flow_profile_* values it never evaluates.
+# Hashing those along would create exactly the phantom versions the hash is
+# meant to avoid - the same reasoning as with ``exit_if 0``.
 
 LEGACY_SHARED_FIELDS = {
     "preinfusion_time_s": "preinfusion_time",
@@ -120,14 +121,14 @@ def _unescape(char: str) -> str:
 
 
 def _split_tcl_list(text: str) -> list[str]:
-    """Zerlegt eine Tcl-Liste ohne Interpreter.
+    """Splits a Tcl list without an interpreter.
 
-    Deckt ab, was in Profildateien vorkommt: blanke Woerter, ``{...}`` mit
-    beliebiger Verschachtelung und Zeilenumbruechen, ``"..."`` mit
-    Backslash-Ersetzungen. Innerhalb von Klammern findet - wie in Tcl - keine
-    Ersetzung statt; der Inhalt kommt woertlich zurueck.
+    Covers what occurs in profile files: bare words, ``{...}`` with arbitrary
+    nesting and newlines, ``"..."`` with backslash substitution. Inside braces
+    no substitution takes place - as in Tcl - and the content comes back
+    verbatim.
 
-    Ein Test vergleicht das Ergebnis auf allen Fixtures mit
+    A test compares the result across all fixtures with
     ``tkinter.Tcl().splitlist``.
     """
     items: list[str] = []
@@ -204,10 +205,10 @@ def split_list(text: str, *, prefer_tcl: bool = True) -> list[str]:
 
 
 def normalize_tcl(raw: str) -> str:
-    """Vereinheitlicht Zeilenenden und Randweissraum (SPEC ss6.4).
+    """Normalises line endings and surrounding whitespace (SPEC §6.4).
 
-    Zweck ist ein stabiler Hash: dieselbe Profilversion soll denselben Hash
-    liefern, egal ob sie mit CRLF oder LF durch die Leitung kam.
+    The point is a stable hash: the same profile version should produce the
+    same hash whether it arrived with CRLF or LF.
     """
     text = raw.replace("\r\n", "\n").replace("\r", "\n")
     lines = [line.rstrip() for line in text.split("\n")]
@@ -219,31 +220,31 @@ def normalize_tcl(raw: str) -> str:
 
 
 def version_hash(raw: str) -> str:
-    """sha256 des normalisierten TCL, hex. Das ist die *Identität* einer Version."""
+    """sha256 of the normalised TCL, hex. This is the *identity* of a version."""
     return hashlib.sha256(normalize_tcl(raw).encode("utf-8")).hexdigest()
 
 
 def semantic_hash(parsed: dict[str, Any]) -> str | None:
-    """sha256 über die brührelevanten Felder von ``parsed_json``.
+    """sha256 over the brewing-relevant fields of ``parsed_json``.
 
-    Zweck ist ausschliesslich **Gruppierung**: zwei Profilversionen mit gleichem
-    ``semantic_hash`` brühen identisch und unterscheiden sich nur kosmetisch
-    (Notiztext, Serialisierungsartefakte, leere Zusatzschlüssel). Die Identität
-    einer Version bleibt der ``version_hash``.
+    The purpose is **grouping** only: two profile versions with the same
+    ``semantic_hash`` brew identically and differ merely cosmetically (note text,
+    serialisation artefacts, empty extra keys). The identity of a version remains
+    the ``version_hash``.
 
-    Bewusst **nicht** enthalten:
+    Deliberately **not** included:
 
-    - ``title``, ``author``, ``notes`` — reine Beschriftung.
-    - Der Name eines Schrittes. Ihn umzubenennen ändert am Bezug nichts, genau
-      wie beim Profiltitel.
-    - Per ``exit_if 0`` deaktivierte Abbruchbedingungen und die Kopf-Sollwerte
-      des jeweils *anderen* Profiltyps — ``parse_profile`` liefert beides gar
-      nicht erst aus.
-    - ``settings_profile_type``: redundant, ``type`` wird daraus abgeleitet.
+    - ``title``, ``author``, ``notes`` - labelling, nothing more.
+    - The name of a step. Renaming it changes nothing about the shot, exactly as
+      with the profile title.
+    - Exit conditions disabled via ``exit_if 0`` and the headline targets of the
+      *other* profile type - ``parse_profile`` does not emit either in the first
+      place.
+    - ``settings_profile_type``: redundant, ``type`` is derived from it.
 
-    Gibt ``None`` zurück, wenn das Profil nicht parsebar war — ohne Parse gibt es
-    keine semantische Sicht, und ein Hash über Rohtext wäre nur der
-    ``version_hash`` unter anderem Namen.
+    Returns ``None`` when the profile could not be parsed - without a parse there
+    is no semantic view, and a hash over raw text would merely be the
+    ``version_hash`` under a different name.
     """
     if not parsed.get("parse_ok"):
         return None
@@ -253,7 +254,7 @@ def semantic_hash(parsed: dict[str, Any]) -> str | None:
         "beverage_type": parsed.get("beverage_type"),
         "target_weight_g": parsed.get("target_weight_g"),
         "target_temp_c": parsed.get("target_temp_c"),
-        # Kopf-Sollwerte der Legacy-Profile: ohne sie waeren zwei Versionen mit
+        # Headline targets of legacy profiles: without them two versions with
         # unterschiedlichem Bruehdruck semantisch gleich.
         "legacy_settings": parsed.get("legacy_settings"),
         "steps": [
@@ -278,8 +279,8 @@ def semantic_hash(parsed: dict[str, Any]) -> str | None:
 def parse_profile(raw: str, *, prefer_tcl: bool = True) -> dict[str, Any]:
     """TCL -> ``parsed_json`` (SPEC ss7.1).
 
-    Wirft nie: bei kaputtem TCL kommt ``parse_ok=False`` zurueck, dazu Titel und
-    Notizen aus einem toleranten Zeilenscan, damit der Shot trotzdem nutzbar
+    Never raises: on broken TCL it returns ``parse_ok=False`` along with title
+    and notes from a tolerant line scan, so the shot stays usable
     bleibt.
     """
     try:
@@ -297,8 +298,8 @@ def parse_profile(raw: str, *, prefer_tcl: bool = True) -> dict[str, Any]:
         log.warning("advanced_shot unparsable", extra={"fields": {"error": type(exc).__name__}})
         return _fallback(raw, f"advanced_shot: {type(exc).__name__}: {exc}")
 
-    # Advanced-Profile fuehren ihr Zielgewicht im _advanced-Feld, Legacy-Profile
-    # im Basisfeld - so macht es auch Visualizers eigener Serializer.
+    # Advanced profiles keep their target weight in the _advanced field, legacy
+    # profiles in the base field - Visualizer's own serializer does the same.
     weight_key = (
         "final_desired_shot_weight_advanced"
         if profile_type == "advanced"
@@ -322,11 +323,11 @@ def parse_profile(raw: str, *, prefer_tcl: bool = True) -> dict[str, Any]:
 
 
 def _legacy_settings(fields: dict[str, str], profile_type: str | None) -> dict[str, Any] | None:
-    """Kopf-Sollwerte fuer Profile ohne ``advanced_shot``.
+    """Headline targets for profiles without ``advanced_shot``.
 
-    ``None`` bei Advanced-Profilen: dort sind diese Felder Altlasten, die die
-    Maschine nicht auswertet. Bei unbekanntem Typ kommen beide Bloecke mit -
-    lieber eine Scheinversion zu viel als eine echte Aenderung uebersehen.
+    ``None`` for advanced profiles: there these fields are leftovers the machine
+    does not evaluate. For an unknown type both blocks come along - better one
+    phantom version too many than a real change missed.
     """
     if profile_type == "advanced":
         return None
@@ -345,8 +346,8 @@ def _legacy_settings(fields: dict[str, str], profile_type: str | None) -> dict[s
         if value is not None:
             settings[key] = value
 
-    # Temperaturstufen zaehlen nur, wenn sie eingeschaltet sind - sonst stehen
-    # die Werte zwar in der Datei, wirken aber nicht (wie bei exit_if 0).
+    # Temperature steps only count when they are switched on - otherwise the
+    # values do sit in the file but have no effect (as with exit_if 0).
     if _number(fields.get("espresso_temperature_steps_enabled")) == 1:
         steps = [_number(fields.get(f"espresso_temperature_{i}")) for i in range(4)]
         if any(step is not None for step in steps):
@@ -366,12 +367,12 @@ def _top_level_fields(raw: str, *, prefer_tcl: bool = True) -> dict[str, str]:
 
 
 def _parse_steps(advanced_shot: str, *, prefer_tcl: bool = True) -> list[dict[str, Any]]:
-    """``advanced_shot {{...} {...}}`` -> Liste von Schritten.
+    """``advanced_shot {{...} {...}}`` -> a list of steps.
 
-    Legacy-Profile (settings_2a/2b) haben hier ``{}``; sie bekommen eine leere
+    Legacy profiles (settings_2a/2b) have ``{}`` here; they get an empty
     Liste, ihre Sollwerte stehen in ``legacy_settings``. Visualizer
-    synthetisiert fuer solche Profile Schritte aus den flow_profile_*-Settings -
-    das bilden wir bewusst nicht nach, weil im TCL keine Schritte stehen (siehe
+    synthesises steps for such profiles from the flow_profile_* settings - we
+    deliberately do not reproduce that, because the TCL holds no steps (see
     Testkommentar in test_tcl_profile.py).
     """
     if not advanced_shot.strip():
@@ -383,7 +384,7 @@ def _parse_steps(advanced_shot: str, *, prefer_tcl: bool = True) -> list[dict[st
     steps: list[dict[str, Any]] = []
     for index, items in enumerate(parsed):
         if len(items) % 2:
-            raise ValueError(f"Schritt {index}: ungerade Anzahl Elemente")
+            raise ValueError(f"step {index}: odd number of elements")
         step = dict(zip(items[::2], items[1::2], strict=True))
         mode = _text(step.get("pump"))
         target = step.get("pressure") if mode == "pressure" else step.get("flow")
@@ -400,9 +401,9 @@ def _parse_steps(advanced_shot: str, *, prefer_tcl: bool = True) -> list[dict[st
 
 
 def _parse_exit(step: dict[str, str]) -> dict[str, Any] | None:
-    """``exit_if 0`` heisst: die exit_*-Felder stehen zwar da, gelten aber nicht.
+    """``exit_if 0`` means: the exit_* fields are present but do not apply.
 
-    Visualizer laesst den exit-Block in seiner JSON-Ausgabe dann ebenfalls weg.
+    Visualizer likewise omits the exit block from its JSON output in that case.
     """
     if _number(step.get("exit_if")) != 1:
         return None
@@ -417,7 +418,7 @@ def _parse_exit(step: dict[str, str]) -> dict[str, Any] | None:
 
 
 def _fallback(raw: str, error: str) -> dict[str, Any]:
-    """Toleranter Zeilenscan, wenn der Listensplit aussteigt (SPEC ss7.1)."""
+    """Tolerant line scan for when the list split gives up (SPEC §7.1)."""
     title = None
     notes = None
     for line in normalize_tcl(raw).split("\n"):

@@ -1,7 +1,7 @@
-"""Normalisierung der Decaid-Daten (SPEC ss20.4).
+"""Normalisation of the Decaid data (SPEC §20.4).
 
-Zwei Regeln stehen hier im Mittelpunkt, beide aus der Migration in M8 (2/n):
-die Null-Bewertung der Import-Aera und die durchgehende Umrechnung auf UTC.
+Two rules are at the centre here, both arising from the migration in M8
+(2/n): the zero rating of the import era and the wholesale conversion to UTC.
 """
 
 from __future__ import annotations
@@ -33,7 +33,7 @@ def load(name: str):
 
 
 def imported(stamp: str, *, enjoyment=None, epoch: int = 1785525360) -> dict:
-    """Ein Bezug aus dem de1app-Import: Kennung mit Unixzeit, Zeitstempel in UTC."""
+    """A shot from the de1app import: id with Unix time, timestamp in UTC."""
     return {
         "id": f"de1app-{epoch}",
         "timestamp": stamp,
@@ -43,7 +43,7 @@ def imported(stamp: str, *, enjoyment=None, epoch: int = 1785525360) -> dict:
 
 
 def native(stamp: str, *, enjoyment=None, created: str | None = None) -> dict:
-    """Ein von Decaid selbst aufgezeichneter Bezug: Zeitstempel in Ortszeit."""
+    """A shot Decaid recorded itself: timestamp in local time."""
     return {
         "id": "da289cfa-c60c-40ee-ab07-13b5c32b623c",
         "timestamp": stamp,
@@ -72,7 +72,7 @@ def test_time_source_follows_the_id() -> None:
 
 
 def test_crosscheck_against_created_at_warns(caplog) -> None:
-    """Aendert Decaid sein Verhalten, soll das auffallen statt still zu wirken."""
+    """If Decaid changes its behaviour that should be noticed, not act silently."""
     import logging
 
     caplog.set_level(logging.WARNING, logger="decentespresso_mcp.decaid_mapping")
@@ -88,7 +88,7 @@ def test_crosscheck_against_created_at_warns(caplog) -> None:
 
 
 def test_zero_from_the_import_era_is_not_a_rating() -> None:
-    # 75 der 88 importierten Bezuege stehen so da.
+    # 75 of the 88 imported shots sit like this.
     assert normalize_enjoyment(imported("2026-08-01T05:32:50", enjoyment=0.0)) is None
 
 
@@ -100,7 +100,7 @@ def test_real_ratings_from_the_import_era_survive() -> None:
 
 
 def test_zero_on_a_native_shot_is_kept() -> None:
-    # Dort ist 0.0 nie als Vorgabewert aufgetreten - waere also eine Eingabe.
+    # There 0.0 never occurred as a default - so it would be an input.
     assert normalize_enjoyment(native("2026-09-14T07:50:12", enjoyment=0.0)) == 0.0
 
 
@@ -115,11 +115,11 @@ def test_unreadable_rating_becomes_none() -> None:
 
 
 def test_the_real_distribution_never_yields_phantom_ratings() -> None:
-    """Gegen die echte Verteilung: 75 Nullen duerfen nicht als Bewertung ankommen."""
+    """Against the real distribution: 75 zeros must not arrive as ratings."""
     page = load("shots_page.json")
     shots = page["items"]
-    # Die Fixture-Seite allein ist klein; die Regel wird darum zusaetzlich
-    # gegen die gemessene Gesamtverteilung nachgestellt.
+    # The fixture page alone is small; the rule is therefore also replayed
+    # against the measured overall distribution.
     synthetic = (
         [imported("2026-08-01T05:32:50", enjoyment=0.0, epoch=1785525360 + i)
          for i in range(75)]
@@ -129,11 +129,11 @@ def test_the_real_distribution_never_yields_phantom_ratings() -> None:
         + [native("2026-09-14T07:50:12") for _ in range(69)]
     )
     ratings = [normalize_enjoyment(s) for s in synthetic]
-    assert ratings.count(None) == 75 + 69, "die Nullen der Import-Aera fehlen"
+    assert ratings.count(None) == 75 + 69, "the import-era zeros are missing"
     assert sum(1 for r in ratings if r is not None) == 13 + 11
     assert 0.0 not in [r for r in ratings if r is not None]
 
-    # Und die echten Bezuege aus der Fixture kippen die Regel nicht.
+    # And the real shots from the fixture do not upset the rule.
     for shot in shots:
         value = normalize_enjoyment(shot)
         assert value is None or value > 0
@@ -156,33 +156,33 @@ def test_native_timestamp_is_local_and_gets_converted() -> None:
 
 
 def test_dst_before_and_after_the_october_change() -> None:
-    """Die Umstellung 2026 faellt auf den 25. Oktober.
+    """In 2026 the clocks go back on 25 October.
 
-    Ein fester Versatz waere auf einer der beiden Seiten falsch - deshalb
-    Zeitzone statt Offset.
+    A fixed offset would be wrong on one of the two sides - hence a time zone
+    rather than an offset.
     """
     before, source = started_at_utc(native("2026-10-24T09:00:00"))
     assert source == SOURCE_LOCAL
-    assert before == "2026-10-24T07:00:00Z", "vor der Umstellung gilt CEST (+2)"
+    assert before == "2026-10-24T07:00:00Z", "before the change CEST (+2) applies"
 
     after, _ = started_at_utc(native("2026-10-26T09:00:00"))
-    assert after == "2026-10-26T08:00:00Z", "danach gilt CET (+1)"
+    assert after == "2026-10-26T08:00:00Z", "afterwards CET (+1) applies"
 
 
 def test_dst_gap_and_ambiguous_hour_are_handled() -> None:
-    # Ruecksprung: 02:30 gibt es am 25.10. zweimal. Genommen wird die erste
-    # Lesart (noch Sommerzeit).
+    # Going back: 02:30 exists twice on 25 October. The first reading is taken
+    # (still summer time).
     ambiguous, _ = started_at_utc(native("2026-10-25T02:30:00"))
     assert ambiguous == "2026-10-25T00:30:00Z"
 
-    # Vorsprung im Maerz: 02:30 gibt es nicht. Python rechnet trotzdem, und
-    # das Ergebnis muss wenigstens wohlgeformt sein.
+    # Going forward in March: 02:30 does not exist. Python computes anyway, and
+    # the result must at least be well formed.
     spring, _ = started_at_utc(native("2026-03-29T02:30:00"))
     assert spring.endswith("Z")
 
 
 def test_utc_and_local_of_the_same_wall_clock_differ() -> None:
-    """Der Kern der Regel: dieselbe Wanduhrzeit, zwei Herkuenfte."""
+    """The heart of the rule: the same wall-clock time, two origins."""
     utc_iso, _ = started_at_utc(imported("2026-08-01T05:32:50"))
     local_iso, _ = started_at_utc(native("2026-08-01T05:32:50"))
     assert utc_iso == "2026-08-01T05:32:50Z"
@@ -196,7 +196,7 @@ def test_unreadable_timestamp_yields_none_but_keeps_the_source() -> None:
 
 
 def test_machine_timezone_is_a_zone_not_an_offset() -> None:
-    # Ein fester Offset waere nach dem letzten Oktobersonntag falsch.
+    # A fixed offset would be wrong after the last Sunday in October.
     summer = datetime(2026, 8, 1, 12, tzinfo=MACHINE_TZ)
     winter = datetime(2026, 12, 1, 12, tzinfo=MACHINE_TZ)
     assert summer.utcoffset() != winter.utcoffset()
@@ -216,7 +216,7 @@ def test_shot_row_from_a_real_detail() -> None:
     assert row["duration_s"] > 0
     assert row["stop_reason"] == detail["stopReason"]
     stored = json.loads(row["raw_json"])
-    assert "measurements" not in stored, "die Messreihe steht in shot_series"
+    assert "measurements" not in stored, "the series lives in shot_series"
     assert stored == {k: v for k, v in detail.items() if k != "measurements"}
 
     context = detail["workflow"]["context"]
@@ -251,7 +251,7 @@ def test_series_rows_carry_targets_and_phase_markers() -> None:
     assert [r["elapsed"] for r in rows] == sorted(r["elapsed"] for r in rows)
 
     first = rows[0]
-    # Soll-Werte je Messpunkt - das gab es in der Visualizer-Aera nicht.
+    # Target values per data point - the Visualizer era had none of these.
     assert first["target_pressure"] is not None
     assert first["target_flow"] is not None
     assert first["state"] is not None
@@ -259,7 +259,7 @@ def test_series_rows_carry_targets_and_phase_markers() -> None:
 
 
 def test_series_maps_flow_channels_apart() -> None:
-    """flow_in ist die Pumpe, flow_out kommt aus der Waage - wie in SPEC ss8."""
+    """flow_in is the pump, flow_out comes from the scale - as in SPEC §8."""
     detail = load("shot_detail.json")
     rows = series_rows_from_decaid(detail)
     point = detail["measurements"][0]

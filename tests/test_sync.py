@@ -1,9 +1,8 @@
-"""Abgleich mit Decaid (SPEC ss20.4).
+"""Sync with Decaid (SPEC §20.4).
 
-Der Ersatzclient zaehlt mit, *wie oft* etwas geholt wurde - daran haengen die
-Aussagen, die dem Abgleich seinen Sinn geben: die Liste reicht fuer die
-Entscheidung, Details kosten Geld, und ein ausgeschaltetes Tablet ist kein
-Fehler.
+The stand-in client counts *how often* something was fetched - the statements
+that give the sync its point hang on that: the list suffices for the decision,
+details cost, and a tablet that is switched off is not an error.
 """
 
 from __future__ import annotations
@@ -32,12 +31,12 @@ def load(name: str):
 
 
 def listing(detail: dict) -> dict:
-    """Wie ein Bezug in der Liste erscheint: alles ausser der Messreihe."""
+    """How a shot appears in the list: everything except the measurements."""
     return {k: v for k, v in detail.items() if k != "measurements"}
 
 
 class FakeDecaid:
-    """Duck-typed Ersatz fuer DecaidClient - zaehlt Abrufe mit."""
+    """Duck-typed stand-in for DecaidClient - counts the requests."""
 
     def __init__(self, details: list[dict], *, unreachable: bool = False,
                  fail_on: set[str] | None = None, page_size: int = 100) -> None:
@@ -72,8 +71,8 @@ class FakeDecaid:
         self.detail_calls.append(shot_id)
         if shot_id in self.fail_on:
             raise DecaidError(f"kaputt: {shot_id}")
-        # Kopie: der echte Client liefert bei jedem Abruf frisches JSON, und
-        # write_shot vergleicht vorher gegen nachher.
+        # A copy: the real client returns fresh JSON on every request, and
+        # write_shot compares before against after.
         return json.loads(json.dumps(self.details[shot_id]))
 
     async def update_shot(self, shot_id, patch):
@@ -111,7 +110,7 @@ def three_shots() -> list[dict]:
     ]
 
 
-# ------------------------------------------------------------- Grundlauf
+# --------------------------------------------------------- A basic run
 
 
 async def test_backfill_stores_everything(db):
@@ -135,7 +134,7 @@ async def test_beans_and_batches_come_along(db):
 
 
 async def test_shots_get_their_bean_from_the_batch(db):
-    """Der Bezug nennt nur die Charge - die Bohne muss aufgeloest werden."""
+    """The shot names only its batch - the bean has to be resolved."""
     client = FakeDecaid(three_shots())
     await run_sync(client, db, full=True)
 
@@ -147,7 +146,7 @@ async def test_shots_get_their_bean_from_the_batch(db):
 
 
 async def test_second_run_fetches_no_details(db):
-    """Der Kern der Sparsamkeit: die Liste allein entscheidet."""
+    """The heart of the frugality: the list alone decides."""
     client = FakeDecaid(three_shots())
     await run_sync(client, db, full=True)
     assert len(client.detail_calls) == 3
@@ -178,11 +177,10 @@ async def test_changed_shot_is_refetched(db):
 
 
 async def test_late_edit_on_an_old_shot_is_found(db):
-    """Die Liste ist nach Bezugszeit sortiert, nicht nach Aenderungszeit.
+    """The list is sorted by shot time, not by modification time.
 
-    Ein frueh abbrechendes Blaettern wuerde eine heute ergaenzte Notiz an einem
-    Bezug vom August nie sehen - genau deshalb wird die Liste vollstaendig
-    gelesen.
+    Paging that stops early would never see a note added today to a shot from
+    August - which is exactly why the list is read in full.
     """
     client = FakeDecaid(three_shots())
     await run_sync(client, db, full=True)
@@ -196,7 +194,7 @@ async def test_late_edit_on_an_old_shot_is_found(db):
     assert result.updated == 1
 
 
-# ------------------------------------------------------- Tablet aus
+# ------------------------------------------------------- Tablet off
 
 
 async def test_unreachable_tablet_is_not_an_error(db):
@@ -216,7 +214,7 @@ async def test_unreachable_tablet_leaves_the_archive_untouched(db):
     result = await run_sync(client, db)
 
     assert result.waiting_for_tablet is True
-    assert db.count_shots() == 3, "der Bestand bleibt stehen"
+    assert db.count_shots() == 3, "the archive stays as it is"
 
 
 async def test_tablet_disappearing_mid_run_keeps_what_arrived(db):
@@ -230,8 +228,8 @@ async def test_tablet_disappearing_mid_run_keeps_what_arrived(db):
     result = await run_sync(client, db, full=True)
 
     assert result.waiting_for_tablet is True
-    assert db.count_shots() == 1, "der eine geholte Bezug bleibt"
-    assert not db.get_state(STATE_BACKFILL_DONE), "der Backfill gilt nicht als fertig"
+    assert db.count_shots() == 1, "the one fetched shot stays"
+    assert not db.get_state(STATE_BACKFILL_DONE), "the backfill does not count as done"
 
 
 async def test_reachable_run_records_the_time(db):
@@ -240,7 +238,7 @@ async def test_reachable_run_records_the_time(db):
     assert db.get_state(STATE_LAST_REACHABLE)
 
 
-# --------------------------------------------------- Einzelne Fehler
+# ------------------------------------------------- Individual failures
 
 
 async def test_one_broken_shot_does_not_stop_the_run(db):
@@ -259,15 +257,15 @@ async def test_errors_keep_the_backfill_open(db):
     assert not db.get_state(STATE_BACKFILL_DONE)
 
 
-# ------------------------------------------------------------ Profile
+# ----------------------------------------------------------- Profiles
 
 
 async def test_profile_comes_from_the_workflow(db):
-    """Kein zweiter Abruf, kein TCL - das Profil liegt dem Bezug bei."""
+    """No second request, no TCL - the profile ships with the shot."""
     client = FakeDecaid(three_shots())
     result = await run_sync(client, db, full=True)
 
-    assert result.new_profile_versions == 1, "dreimal dasselbe Profil, eine Version"
+    assert result.new_profile_versions == 1, "the same profile three times, one version"
     assert result.profiles_linked == 3
     assert db.count_profiles() == 1
 
@@ -294,12 +292,12 @@ async def test_a_shot_without_a_profile_only_warns(db):
     client = FakeDecaid(shots)
     result = await run_sync(client, db, full=True)
 
-    assert db.count_shots() == 3, "der Bezug wird trotzdem archiviert"
+    assert db.count_shots() == 3, "the shot is archived regardless"
     assert result.errors == []
-    assert any("kein Profil" in w for w in result.warnings)
+    assert any("no profile" in w for w in result.warnings)
 
 
-# ------------------------------------------------- Obergrenze je Lauf
+# -------------------------------------------------------- Cap per run
 
 
 async def test_a_large_backfill_is_split_across_runs(db):
@@ -314,7 +312,7 @@ async def test_a_large_backfill_is_split_across_runs(db):
 
     assert first.pending == 5
     assert db.count_shots() == MAX_DETAILS_PER_RUN
-    assert not db.get_state(STATE_BACKFILL_DONE), "solange etwas offen ist, nicht fertig"
+    assert not db.get_state(STATE_BACKFILL_DONE), "not done while anything is outstanding"
 
     second = await run_sync(client, db)
     assert second.pending == 0
@@ -331,11 +329,11 @@ async def test_pagination_covers_every_page(db):
     client = FakeDecaid(many, page_size=3)
     result = await run_sync(client, db, full=True)
 
-    assert client.page_calls == 3, "7 Bezuege zu je 3 pro Seite"
+    assert client.page_calls == 3, "7 shots at 3 per page"
     assert result.new_shots == 7
 
 
-# ------------------------------------------------------- Koordinator
+# ------------------------------------------------------- Coordinator
 
 
 async def test_coordinator_starts_with_a_backfill(db):
@@ -375,15 +373,15 @@ async def test_write_shot_reads_back(db):
     )
     assert after["espressoNotes"] == "schmeckt"
     assert before.get("espressoNotes") != "schmeckt"
-    # Der Read-back schreibt das Archiv mit fort.
+    # The read-back carries the archive forward too.
     assert db.get_shot_row("aaaa1111-0000-4000-8000-000000000002")["notes"] == "schmeckt"
 
 
-# ---------------------------------------------- Normalisierung im Bestand
+# ------------------------------------------ Normalisation in the archive
 
 
 async def test_import_era_zeros_never_reach_the_archive(db):
-    """Die bindende Regel aus M8 (3/n), hier am fertigen Bestand."""
+    """The binding rule from M8 (3/n), here against the finished archive."""
     shots = [
         decaid_detail("de1app-1785525360", timestamp="2026-08-01T05:32:50",
                       updated_at="2026-09-01T10:00:00Z", enjoyment=0.0),
@@ -420,7 +418,7 @@ async def test_both_time_sources_land_as_utc(db):
 
 
 async def test_store_shot_helper_matches_the_sync_path(db, tmp_path):
-    """Die Testhilfe muss dasselbe ablegen wie ein echter Lauf."""
+    """The test helper has to store the same thing a real run does."""
     detail = decaid_detail("de1app-1785525360", timestamp="2026-08-01T05:32:50")
     store_shot(db, detail)
     direct = dict(db.get_shot_row("de1app-1785525360"))

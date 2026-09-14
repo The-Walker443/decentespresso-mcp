@@ -27,7 +27,7 @@ def db(tmp_path: pathlib.Path) -> Iterator[Database]:
 
 
 def app_for(config: Config, db: Database):
-    # enable_sync=False: kein Hintergrund-Worker, kein Netzverkehr im Test.
+    # enable_sync=False: no background worker, no network traffic in the test.
     return build_app(config, db=db, enable_sync=False)
 
 
@@ -60,14 +60,14 @@ async def test_all_spec_tools_are_exposed(config: Config, db: Database) -> None:
     async with Client(build_mcp(config, db)) as client:
         tools = {tool.name: tool for tool in await client.list_tools()}
 
-    # SPEC ss9.2 plus audit_archive aus ss20.7. get_workflow und die
-    # Schreibtools haengen am Koordinator bzw. an WRITE_ENABLED und fehlen hier.
+    # SPEC §9.2 plus audit_archive from §20.7. get_workflow and the write tools
+    # depend on the coordinator and on WRITE_ENABLED, so they are absent here.
     assert set(tools) == {
         "list_beans", "list_shots", "get_shot", "get_shot_metrics",
         "compare_shots", "list_profiles", "get_profile", "sync_now", "status",
         "audit_archive",
     }
-    # Alles ausser sync_now ist read-only (SPEC ss9).
+    # Everything except sync_now is read-only (SPEC §9).
     for name, tool in tools.items():
         expected = name != "sync_now"
         assert tool.annotations.readOnlyHint is expected, name
@@ -80,8 +80,8 @@ async def test_status_reports_empty_archive(config: Config, db: Database) -> Non
     assert payload["server"] == SERVER_NAME
     assert payload["shots"] == 0
     assert payload["last_sync"] is None
-    assert any("Backfill" in w for w in payload["warnings"])
-    assert any("noch keinen Sync" in w for w in payload["warnings"])
+    assert any("backfill" in w for w in payload["warnings"])
+    assert any("not been a sync run" in w for w in payload["warnings"])
 
 
 async def test_status_reports_real_counts(config: Config, db: Database) -> None:
@@ -96,7 +96,7 @@ async def test_status_reports_real_counts(config: Config, db: Database) -> None:
     assert payload["shots"] == 1
     assert payload["oldest_shot"] == "2026-07-31T19:16:00Z"
     assert payload["last_sync"] == "2026-08-01T10:00:00Z"
-    assert not [w for w in payload["warnings"] if "Backfill" in w]
+    assert not [w for w in payload["warnings"] if "backfill" in w]
 
 
 async def test_status_warns_about_stale_sync(config: Config, db: Database) -> None:
@@ -106,7 +106,7 @@ async def test_status_warns_about_stale_sync(config: Config, db: Database) -> No
     async with Client(build_mcp(config, db)) as client:
         payload = (await client.call_tool("status", {})).data
 
-    assert any("Tablet war so lange nicht erreichbar" in w
+    assert any("has not been reachable for that long" in w
                for w in payload["warnings"])
 
 
@@ -118,4 +118,4 @@ async def test_no_secret_leaks_into_mcp_metadata(config: Config, db: Database) -
     assert TEST_SECRET not in blob
     assert config.visualizer_password not in blob
     assert config.decaid_url in json.dumps(result.data), (
-        "die LAN-Adresse ist kein Geheimnis und hilft beim Nachsehen")
+        "the LAN address is no secret and helps when looking things up")

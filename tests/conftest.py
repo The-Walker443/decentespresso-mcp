@@ -17,7 +17,7 @@ def valid_env() -> dict[str, str]:
         "VISUALIZER_PASSWORD": TEST_PASSWORD,
         "MCP_PATH_SECRET": TEST_SECRET,
         "PUBLIC_BASE_URL": "https://coffee-mcp.example.com",
-        # SPEC ss20: ab M8 Pflicht, und nur private Adressen.
+        # SPEC §20: mandatory from M8 on, and private addresses only.
         "DECAID_URL": "http://10.100.100.171:8080",
     }
 
@@ -29,7 +29,7 @@ def config(valid_env: dict[str, str]) -> Config:
 
 @pytest.fixture
 def archive(tmp_path):
-    """Frisches Archiv mit angewendeten Migrationen."""
+    """A fresh archive with the migrations applied."""
     db = Database(tmp_path / "shots.db")
     db.migrate()
     yield db

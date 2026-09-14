@@ -1,36 +1,35 @@
 #!/usr/bin/env python
-"""Einmalige Uebertragung der Visualizer-Annotationen nach Decaid (SPEC ss20.1).
+"""One-off transfer of the Visualizer annotations into Decaid (SPEC §20.1).
 
-Vor dem Historien-Reset: Notizen und Bewertungen, die waehrend der
-Visualizer-Aera entstanden sind (viele davon per Chat gesetzt), sollen nicht
-verloren gehen. Sie liegen in der alten SQLite-Datei; Decaid hat dieselben
-Bezuege, aber ohne diese Felder.
+Ahead of the history reset: notes and ratings that came about during the
+Visualizer era (many of them set through chat) must not be lost. They sit in the
+old SQLite file; Decaid holds the same shots but without these fields.
 
-Bewusst ein Skript und kein MCP-Tool: es laeuft genau einmal, schreibt in
-fremde Datensaetze und soll nicht versehentlich aus einem Gespraech heraus
-ausloesbar sein.
+Deliberately a script and not an MCP tool: it runs exactly once, writes into
+someone else's records and must not be triggerable by accident from a
+conversation.
 
     python scripts/migrate_visualizer_annotations.py --db /data/shots-visualizer-era.db
     python scripts/migrate_visualizer_annotations.py --db ... --apply
 
-Ohne ``--apply`` wird nichts geschrieben, nur berichtet.
+Without ``--apply`` nothing is written, only reported.
 
-ZUORDNUNG - drei Wege, in dieser Reihenfolge (am 2026-09-14 gegen die echten
-Daten geprueft, 29 von 29 eindeutig):
+MATCHING - three routes, in this order (checked against the real data on
+2026-09-14, 29 out of 29 unambiguous):
 
-1. ``annotations.extras.visualizerId`` - eindeutig, aber nur dort vorhanden, wo
-   **Decaid selbst** nach Visualizer hochgeladen hat. Das begann erst am
-   2026-08-30; fuer die davor liegenden Bezuege gibt es das Feld nicht, weil
-   damals die de1app hochgeladen hat. Allein damit waere 1 von 29 Annotationen
-   uebertragbar gewesen.
-2. ``de1app-<unix>``-Kennungen - aus der de1app importierte Bezuege tragen den
-   Startzeitpunkt als Unixzeit in der ID. Deterministisch und exakt.
-3. Zeitstempel mit Toleranz, und nur wenn genau ein Kandidat passt. Decaid legt
-   importierte Bezuege in UTC ab, selbst aufgezeichnete in Ortszeit - deshalb
-   werden beide Lesarten geprueft.
+1. ``annotations.extras.visualizerId`` - unambiguous, but only present where
+   **Decaid itself** uploaded to Visualizer. That only started on 2026-08-30;
+   for the shots before it the field does not exist, because back then the
+   de1app did the uploading. On its own that would have carried 1 of 29
+   annotations.
+2. ``de1app-<unix>`` identifiers - shots imported from the de1app carry their
+   start time as Unix time in the ID. Deterministic and exact.
+3. Timestamps with a tolerance, and only when exactly one candidate fits. Decaid
+   stores imported shots in UTC and natively recorded ones in local time, so
+   both readings are tried.
 
-GESCHRIEBEN WIRD NUR IN LEERE FELDER. Was in Decaid schon steht, gilt; die
-alte Datei ist die Ergaenzung, nicht die Wahrheit.
+ONLY EMPTY FIELDS ARE WRITTEN. Whatever already stands in Decaid holds; the old
+file is the supplement, not the truth.
 """
 
 from __future__ import annotations
@@ -48,12 +47,12 @@ from typing import Any
 
 import httpx
 
-#: Decaid legt aus der de1app importierte Bezuege in UTC ab, selbst
-#: aufgezeichnete in Ortszeit. Beide Lesarten werden geprueft.
+#: Decaid stores shots imported from the de1app in UTC and natively recorded
+#: ones in local time. Both readings are tried.
 LOCAL_OFFSETS_H = (0, 1, 2)
 
-#: Toleranz fuer die Zeitzuordnung. Bezuege liegen Minuten auseinander; 90 s
-#: sind eng genug fuer Eindeutigkeit und weit genug fuer Rundungen.
+#: Tolerance for the time-based matching. Shots are minutes apart; 90 s is
+#: tight enough to stay unambiguous and loose enough for rounding.
 MATCH_TOLERANCE = timedelta(seconds=90)
 
 _DE1APP_ID = re.compile(r"^de1app-(\d{9,13})$")
@@ -71,10 +70,10 @@ class Plan:
 
 
 def clean_note(raw: str) -> str:
-    """Visualizer hat Notizen als HTML abgelegt, Decaid nimmt Klartext.
+    """Visualizer stored notes as HTML, Decaid takes plain text.
 
-    ``<p>Cappuccino</p>`` wuerde in Decaid woertlich mit den Klammern
-    erscheinen - deshalb Tags entfernen und Entities aufloesen.
+    ``<p>Cappuccino</p>`` would show up in Decaid with the brackets intact -
+    hence strip the tags and resolve the entities.
     """
     text = raw.replace("<br>", "\n").replace("<br/>", "\n").replace("<br />", "\n")
     text = _TAG.sub("", text)
@@ -82,13 +81,13 @@ def clean_note(raw: str) -> str:
 
 
 def _unrated(value: Any) -> bool:
-    """Gilt eine Bewertung als leer?
+    """Does a rating count as empty?
 
-    Decaid legt importierte Bezuege mit enjoyment: 0.0 an, selbst
-    aufgezeichnete mit null. Ueber alle 168 Bezuege gemessen: 88-mal 0.0,
-    69-mal null, und echte Bewertungen liegen bei 40 bis 100. Eine Null ist
-    also "nicht bewertet", kein Urteil - dieselbe Lesart wie bei Visualizer
-    (SPEC ss5). Ohne diese Regel bliebe jede uebertragene Bewertung liegen.
+    Decaid creates imported shots with enjoyment: 0.0 and natively recorded
+    ones with null. Measured across all 168 shots: 88 times 0.0, 69 times null,
+    and real ratings run from 40 to 100. A zero there means "not rated", not a
+    judgement - the same reading as with Visualizer (SPEC §5). Without this
+    rule every transferred rating would stay behind.
     """
     return value is None or value == 0
 
@@ -129,7 +128,7 @@ def load_decaid(client: httpx.Client) -> list[dict[str, Any]]:
 
 
 def find_match(row: sqlite3.Row, shots: list[dict[str, Any]]) -> tuple[dict | None, str]:
-    """Die drei Wege aus dem Modul-Docstring, in ihrer Reihenfolge."""
+    """The three routes from the module docstring, in that order."""
     for shot in shots:
         extras = ((shot.get("annotations") or {}).get("extras") or {})
         if extras.get("visualizerId") == row["id"]:
@@ -137,15 +136,15 @@ def find_match(row: sqlite3.Row, shots: list[dict[str, Any]]) -> tuple[dict | No
 
     started = _naive(row["started_at"])
     if started is None:
-        return None, "unlesbarer Zeitstempel"
+        return None, "unreadable timestamp"
 
-    # UTC ausdruecklich setzen: .timestamp() deutet einen naiven Zeitstempel
-    # sonst als Ortszeit, und der Versatz sprengt jede Toleranz.
+    # Set UTC explicitly: .timestamp() otherwise reads a naive timestamp as
+    # local time, and the offset blows past any tolerance.
     epoch = int(started.replace(tzinfo=UTC).timestamp())
     for shot in shots:
         hit = _DE1APP_ID.match(str(shot.get("id", "")))
         if hit and abs(int(hit.group(1)) - epoch) <= MATCH_TOLERANCE.total_seconds():
-            return shot, "de1app-Kennung"
+            return shot, "de1app identifier"
 
     candidates = []
     for shot in shots:
@@ -156,10 +155,10 @@ def find_match(row: sqlite3.Row, shots: list[dict[str, Any]]) -> tuple[dict | No
                for h in LOCAL_OFFSETS_H):
             candidates.append(shot)
     if len(candidates) == 1:
-        return candidates[0], "Zeitstempel"
+        return candidates[0], "timestamp"
     if candidates:
-        return None, f"mehrdeutig ({len(candidates)} Kandidaten)"
-    return None, "kein Kandidat"
+        return None, f"ambiguous ({len(candidates)} candidates)"
+    return None, "no candidate"
 
 
 def build_plan(
@@ -178,15 +177,15 @@ def build_plan(
         note = clean_note(row["notes"] or "")
         if note:
             if str(ann.get("espressoNotes") or "").strip():
-                plan.skipped["espressoNotes"] = "in Decaid bereits belegt"
+                plan.skipped["espressoNotes"] = "already set in Decaid"
             else:
                 plan.fields["espressoNotes"] = note
 
         if row["enjoyment"] is not None:
             if not _unrated(ann.get("enjoyment")):
-                plan.skipped["enjoyment"] = "in Decaid bereits belegt"
+                plan.skipped["enjoyment"] = "already set in Decaid"
             else:
-                # T18: Decaid nutzt dieselbe Skala 0-100, kein Mapping noetig.
+                # T18: Decaid uses the same 0-100 scale, no mapping needed.
                 plan.fields["enjoyment"] = float(row["enjoyment"])
 
         plans.append(plan)
@@ -194,7 +193,7 @@ def build_plan(
 
 
 def apply_plan(client: httpx.Client, plan: Plan, pause: float) -> tuple[bool, str]:
-    """Schreiben und danach frisch nachlesen - der 200 allein belegt nichts."""
+    """Write, then read back fresh - a 200 on its own proves nothing."""
     client.put(f"/api/v1/shots/{plan.decaid_id}",
                json={"annotations": dict(plan.fields)})
     time.sleep(pause)
@@ -207,7 +206,7 @@ def apply_plan(client: httpx.Client, plan: Plan, pause: float) -> tuple[bool, st
         if ann.get(name) != value
     }
     if wrong:
-        return False, "; ".join(f"{k}: erwartet {v[0]!r}, gelesen {v[1]!r}"
+        return False, "; ".join(f"{k}: expected {v[0]!r}, read {v[1]!r}"
                                 for k, v in wrong.items())
     return True, "ok"
 
@@ -215,21 +214,21 @@ def apply_plan(client: httpx.Client, plan: Plan, pause: float) -> tuple[bool, st
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--db", required=True,
-                        help="alte SQLite-Datei, z. B. /data/shots-visualizer-era.db")
+                        help="the old SQLite file, e.g. /data/shots-visualizer-era.db")
     parser.add_argument("--decaid", default="http://10.100.100.171:8080")
     parser.add_argument("--apply", action="store_true",
-                        help="ohne diese Angabe wird nichts geschrieben")
+                        help="without this nothing is written")
     parser.add_argument("--pause", type=float, default=0.4,
-                        help="Wartezeit zwischen Schreiben und Nachlesen")
+                        help="wait between writing and reading back")
     args = parser.parse_args(argv)
 
     rows = load_old(args.db)
-    print(f"Alte Datei: {len(rows)} Bezuege mit Annotationen")
+    print(f"Old file:   {len(rows)} shots carrying annotations")
 
     with httpx.Client(base_url=args.decaid.rstrip("/"), timeout=90,
                       headers={"Accept": "application/json"}) as client:
         shots = load_decaid(client)
-        print(f"Decaid:     {len(shots)} Bezuege\n")
+        print(f"Decaid:     {len(shots)} shots\n")
 
         plans, unmatched = build_plan(rows, shots)
 
@@ -239,26 +238,27 @@ def main(argv: list[str] | None = None) -> int:
             by_how[plan.how] = by_how.get(plan.how, 0) + 1
             to_write += len(plan.fields)
 
-        print("Zuordnung:", ", ".join(f"{k}: {v}" for k, v in sorted(by_how.items())) or "keine")
+        print("Matched by:", ", ".join(f"{k}: {v}" for k, v in sorted(by_how.items()))
+          or "nothing")
         if unmatched:
-            print(f"Ohne Zuordnung ({len(unmatched)}):")
+            print(f"Unmatched ({len(unmatched)}):")
             for line in unmatched:
                 print(f"  {line}")
 
-        print(f"\nZu uebertragende Felder: {to_write}")
+        print(f"\nFields to transfer: {to_write}")
         for plan in plans:
             if not plan.fields and not plan.skipped:
                 continue
             marks = " ".join(f"{k}={_short(v)}" for k, v in plan.fields.items())
             skips = " ".join(f"{k}({v})" for k, v in plan.skipped.items())
             print(f"  {plan.old_id[:8]} -> {plan.decaid_id[:16]:16} [{plan.how}]"
-                  f"  {marks}{'  uebersprungen: ' + skips if skips else ''}")
+                  f"  {marks}{'  skipped: ' + skips if skips else ''}")
 
         if not args.apply:
-            print("\nProbelauf - nichts geschrieben. Mit --apply ausfuehren.")
+            print("\nDry run - nothing written. Use --apply to do it.")
             return 0
 
-        print("\nSchreiben:")
+        print("\nWriting:")
         ok = failed = 0
         for plan in plans:
             if not plan.fields:
@@ -274,7 +274,7 @@ def main(argv: list[str] | None = None) -> int:
                 failed += 1
                 print(f"  [!! ] {plan.decaid_id[:16]:16} {detail}")
 
-        print(f"\nUebertragen: {ok}, fehlgeschlagen: {failed}")
+        print(f"\nTransferred: {ok}, failed: {failed}")
         return 1 if failed else 0
 
 

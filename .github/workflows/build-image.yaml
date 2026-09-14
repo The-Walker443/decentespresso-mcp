@@ -1,6 +1,6 @@
 name: Build and push image
 
-# Baut bei jedem Push auf main ein Image und legt es in der GitHub Container
+# Builds an image on every push to main and puts it in the GitHub Container
 # Registry ab. Portainer zieht es von dort (SPEC ss16).
 
 on:
@@ -12,14 +12,14 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # Ein laufender Build je Branch reicht; ein neuer Push macht den alten obsolet.
+  # One running build per branch is enough; a new push makes the old one moot.
   group: build-image-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   test:
-    # Bewusst als Tor vor dem Push: ein Image mit roten Tests soll nicht in der
-    # Registry landen und schon gar nicht von Portainer gezogen werden.
+    # Deliberately a gate before the push: an image with failing tests should
+    # not land in the registry, let alone be pulled by Portainer.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -54,20 +54,20 @@ jobs:
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
-          # Vom Runner automatisch bereitgestellt - kein eigenes Secret noetig.
+          # Provided by the runner automatically - no secret of our own needed.
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          # Kleinschreibung erledigt die Action; ghcr.io verlangt sie.
+          # The action lowercases it; ghcr.io requires that.
           images: ghcr.io/${{ github.repository }}
           tags: |
             type=raw,value=latest
             type=sha,format=long
 
-      # Erst lokal laden, damit der Smoke-Test im *gebauten* Image laufen kann.
-      # Der zweite Build weiter unten trifft dank Cache nur noch den Push.
+      # Load locally first, so the smoke test can run inside the *built* image.
+      # Thanks to the cache the second build below only does the push.
       - name: Build (lokal laden)
         uses: docker/build-push-action@v6
         with:
@@ -76,19 +76,19 @@ jobs:
           tags: decentespresso-mcp:smoke
           build-args: |
             BUILD_REF=${{ github.sha }}
-          # Baucache zwischen Laeufen: der pip-Schritt dominiert die Laufzeit.
+          # Build cache between runs: the pip step dominates the runtime.
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Smoke-Test im gebauten Image
-        # Prueft genau das, was sich lokal nicht pruefen laesst: dass der
+        # Checks exactly what cannot be checked locally: that the
         # Profilparser im Container laeuft.
         #
-        # Der Interpreter wird hier *erzwungen*. In python:*-slim ist _tkinter
+        # The interpreter is *required* here. In python:*-slim _tkinter is
         # einkompiliert, aber ohne libtk8.6 scheitert 'import tkinter' an
-        # "libtk8.6.so: cannot open shared object file". Faellt die apt-Zeile im
-        # Dockerfile weg, soll der Build rot werden - nicht der Container beim
-        # Start. Genau dieser Absturz ist einmal in Produktion passiert.
+        # "libtk8.6.so: cannot open shared object file". If the apt line in the
+        # Dockerfile falls away the build should go red - not the container at
+        # startup. That exact crash happened once in production.
         run: |
           docker run --rm decentespresso-mcp:smoke python - <<'PY'
           import tkinter                     # bricht ohne libtk8.6 sofort ab
@@ -119,7 +119,7 @@ jobs:
           assert parsed["title"] == "Smoke Test", parsed["title"]
           assert parsed["type"] == "pressure", parsed["type"]
           assert parsed["legacy_settings"]["target_pressure_bar"] == 8.9
-          assert "\n" in parsed["notes"], "mehrzeilige Klammer nicht erkannt"
+          assert "\n" in parsed["notes"], "multi-line brace not recognised"
           assert semantic_hash(parsed)
 
           import os
@@ -127,10 +127,10 @@ jobs:
           from decentespresso_mcp import __version__, milestone
 
           assert __version__ != "0+unbekannt", "Paketmetadaten fehlen im Image"
-          assert os.environ.get("BUILD_REF"), "BUILD_REF wurde nicht durchgereicht"
+          assert os.environ.get("BUILD_REF"), "BUILD_REF was not passed through"
           print(f"Version {__version__} ({milestone()}), Build {os.environ['BUILD_REF'][:8]}")
 
-          import decentespresso_mcp.server  # noqa: F401  - App-Import muss tragen
+          import decentespresso_mcp.server  # noqa: F401  - the app import must hold
           print("Profilparser im Image: ok")
           PY
 

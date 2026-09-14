@@ -1,8 +1,8 @@
-"""Env-Parsing und Startup-Validierung (SPEC ss11.3).
+"""Env parsing and startup validation (SPEC §11.3).
 
-Grundsatz: Alles, was fehlen oder Unsinn sein kann, faellt beim Start auf - nicht
-erst beim ersten Sync um 3 Uhr nachts. ``Config.from_env`` sammelt daher *alle*
-Fehler und wirft sie gebuendelt.
+Principle: anything that can be missing or nonsense shows up at startup - not
+at the first sync at three in the morning. ``Config.from_env`` therefore
+collects *every* problem and raises them together.
 """
 
 from __future__ import annotations
@@ -24,14 +24,14 @@ from .guards import (
     RATING_GRACE_HOURS,
 )
 
-#: MCP_PATH_SECRET ersetzt die Authentifizierung (SPEC ss10.1) und muss daher
-#: nicht ratbar sein. ``openssl rand -hex 24`` liefert 48 Zeichen.
+#: MCP_PATH_SECRET stands in for authentication (SPEC §10.1) and must
+#: therefore not be guessable. ``openssl rand -hex 24`` yields 48 characters.
 MIN_SECRET_LEN = 32
 _SECRET_CHARSET = re.compile(r"^[A-Za-z0-9_-]+$")
 
 _LOG_LEVELS = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}
 
-#: Platzhalter aus .env.example - wer die uebernimmt, hat die Datei nicht gelesen.
+#: Placeholders from .env.example - anyone leaving them has not read the file.
 _PLACEHOLDERS = {"change-me", "you@example.com", "<openssl rand -hex 24>"}
 
 
@@ -57,76 +57,78 @@ class Config:
     display_tz: str
     host: str
     port: int
-    #: SPEC ss18.4. Ist er aus, existiert das Schreibtool gar nicht - es lehnt
-    #: nicht ab, es steht nicht in der Tool-Liste.
+    #: SPEC §18.4. When off, the write tools do not exist at all - they do not
+    #: refuse, they are absent from the tool list.
     write_enabled: bool
-    #: SPEC ss20: Decaid im LAN ist ab M8 die Quelle. Nur private Adressen.
+    #: SPEC §20: Decaid on the local network is the source from M8 on. Private
+    #: addresses only.
     decaid_url: str
-    #: Benachrichtigung der Waechter (SPEC ss20.7); leer = keine.
+    #: Guard notifications (SPEC §20.7); empty means none.
     ntfy_url: str | None
     ntfy_topic: str | None
     ntfy_token: str | None
-    #: Eingeschaltete Waechterregeln (SPEC ss20.7). Jede einzeln
-    #: abschaltbar - eine Regel, die zu oft anschlaegt, wuerde sonst im
-    #: Ganzen ignoriert und naehme die anderen mit.
+    #: Enabled guard rules (SPEC §20.7). Each can be switched off on its own -
+    #: a rule that fires too often would otherwise be ignored wholesale and
+    #: take the others with it.
     guard_rules: tuple[str, ...]
-    #: Schwellen der Regeln.
+    #: Thresholds of the rules.
     bean_age_warn_days: int
     rating_grace_hours: int
     dose_tolerance_g: float
 
     @property
     def mcp_path(self) -> str:
-        """Pfad, unter dem der MCP-Endpoint haengt - enthaelt das Secret."""
+        """Path the MCP endpoint hangs under - contains the secret."""
         return f"/{self.mcp_path_secret}/mcp"
 
     @property
     def connector_url(self) -> str | None:
-        """Volle URL fuer den Claude-Connector. Enthaelt das Secret - nicht loggen."""
+        """Full URL for the Claude connector. Contains the secret - do not log."""
         if not self.public_base_url:
             return None
         return f"{self.public_base_url.rstrip('/')}{self.mcp_path}"
 
     @property
     def user_agent(self) -> str:
-        """SPEC ss4: hoefliches Pollen mit identifizierbarem UA inkl. Kontaktadresse."""
+        """SPEC §4: polite polling with an identifiable UA including a contact address."""
         return f"decentespresso-mcp/{__version__} (privat, {self.visualizer_email})"
 
     @property
     def basic_auth_token(self) -> str:
-        """Der base64-Teil des ``Authorization: Basic``-Headers.
+        """The base64 part of the ``Authorization: Basic`` header.
 
-        Eine Redaction, die nur das Klartextpasswort kennt, laesst genau die
-        Form durch, in der das Passwort tatsaechlich ueber die Leitung geht.
+        A redaction that only knows the plaintext password lets through exactly
+        the form in which the password actually travels.
         """
         raw = f"{self.visualizer_email}:{self.visualizer_password}".encode()
         return base64.b64encode(raw).decode()
 
     def startup_warnings(self) -> list[str]:
-        """Nicht-fatale Befunde, die beim Start ins Log gehoeren.
+        """Non-fatal findings that belong in the log at startup.
 
-        Getrennt von ``ConfigError``: das hier verhindert keinen Start, sollte
+        Kept apart from ``ConfigError``: this does not prevent a start but
         aber auffallen.
         """
         from .logging_setup import MIN_REDACT_LEN
 
         warnings: list[str] = []
         if len(self.visualizer_password) < MIN_REDACT_LEN:
-            # Der Log-Filter laesst zu kurze Werte durch, weil er sonst jede
-            # zufaellige Uebereinstimmung im Text zerschiessen wuerde. Ein so
+            # The log filter lets short values through, because it would
+            # otherwise shred every incidental match in the text. A password
             # kurzes Passwort kann also in einer Logzeile stehenbleiben.
             warnings.append(
-                f"VISUALIZER_PASSWORD ist kuerzer als {MIN_REDACT_LEN} Zeichen und "
-                "wird deshalb NICHT aus Logs entfernt. Bitte ein laengeres setzen."
+                f"VISUALIZER_PASSWORD is shorter than {MIN_REDACT_LEN} characters "
+                "and is therefore NOT removed from logs. Please set a longer one."
             )
         return warnings
 
     def secret_values(self) -> tuple[str, ...]:
-        """Werte, die der Log-Filter (``logging_setup``) nie durchlassen darf.
+        """Values the log filter (``logging_setup``) must never let through.
 
-        Die E-Mail steht bewusst nicht drin: sie gehoert laut SPEC ss4 in den
-        User-Agent und waere sonst in genau der Zeile unkenntlich, die man beim
-        Debuggen eines 401 braucht. Kritisch ist das Passwort, nicht die Kennung.
+        The email is deliberately absent: per SPEC §4 it belongs in the
+        User-Agent and would otherwise be unreadable in exactly the line one
+        needs when debugging a 401. The password is what matters, not the
+        identity.
         """
         return (self.visualizer_password, self.mcp_path_secret, self.basic_auth_token)
 
@@ -144,7 +146,7 @@ class Config:
             f"host={self.host!r}, port={self.port}, "
             f"write_enabled={self.write_enabled}, "
             f"decaid_url={self.decaid_url!r}, "
-            f"ntfy={'an' if self.ntfy_url else 'aus'})"
+            f"ntfy={'on' if self.ntfy_url else 'off'})"
         )
 
     @classmethod
@@ -159,21 +161,21 @@ class Config:
         if secret is not None:
             if len(secret) < MIN_SECRET_LEN:
                 problems.append(
-                    f"MCP_PATH_SECRET ist {len(secret)} Zeichen lang, "
+                    f"MCP_PATH_SECRET is {len(secret)} characters long, "
                     f"mindestens {MIN_SECRET_LEN} noetig (openssl rand -hex 24)"
                 )
             if not _SECRET_CHARSET.match(secret):
                 problems.append(
-                    "MCP_PATH_SECRET darf nur [A-Za-z0-9_-] enthalten "
-                    "(es wird Teil der URL)"
+                    "MCP_PATH_SECRET may only contain [A-Za-z0-9_-] "
+                    "(it becomes part of the URL)"
                 )
 
-        # 0 schaltet die Hintergrundschleife ab (manueller Sync bleibt moeglich).
+        # 0 switches the background loop off (a manual sync stays possible).
         interval = _int_in_range(src, "SYNC_INTERVAL_MIN", 15, 0, 1440, problems)
         db_path = src.get("DB_PATH", "/data/shots.db").strip() or "/data/shots.db"
         if not _is_absolute_path(db_path):
-            # Relative Pfade zeigen im Container ins Nirgendwo.
-            problems.append(f"DB_PATH muss absolut sein, ist aber {db_path!r}")
+            # Relative paths point nowhere inside the container.
+            problems.append(f"DB_PATH must be absolute, but is {db_path!r}")
 
         log_level = src.get("LOG_LEVEL", "INFO").strip().upper() or "INFO"
         if log_level not in _LOG_LEVELS:
@@ -183,7 +185,7 @@ class Config:
 
         base_url = (src.get("PUBLIC_BASE_URL") or "").strip() or None
         if base_url and not base_url.startswith(("http://", "https://")):
-            problems.append("PUBLIC_BASE_URL muss mit http:// oder https:// beginnen")
+            problems.append("PUBLIC_BASE_URL must start with http:// or https://")
 
         tz = (src.get("TZ") or "Europe/Berlin").strip() or "Europe/Berlin"
         host = (src.get("HOST") or "0.0.0.0").strip() or "0.0.0.0"  # noqa: S104
@@ -193,7 +195,8 @@ class Config:
         decaid_url = (src.get("DECAID_URL") or "").strip()
         if not decaid_url:
             problems.append(
-                "DECAID_URL fehlt - ab M8 ist Decaid im LAN die Quelle "
+                "DECAID_URL is missing - from M8 on Decaid on the local "
+                "network is the source "
                 "(z. B. http://10.100.100.171:8080)"
             )
         else:
@@ -203,7 +206,7 @@ class Config:
         ntfy_topic = (src.get("NTFY_TOPIC") or "").strip() or None
         ntfy_token = (src.get("NTFY_TOKEN") or "").strip() or None
         if ntfy_url and not ntfy_topic:
-            problems.append("NTFY_URL ist gesetzt, aber NTFY_TOPIC fehlt")
+            problems.append("NTFY_URL is set but NTFY_TOPIC is missing")
 
         guard_rules = _rules(src, problems)
         bean_age_warn_days = _int_in_range(src, "BEAN_AGE_WARN_DAYS",
@@ -240,14 +243,15 @@ class Config:
 
 
 def _rules(src, problems: list[str]) -> tuple[str, ...]:
-    """``GUARD_RULES`` als Liste von Regelnamen; leer heisst: keine Waechter.
+    """``GUARD_RULES`` as a list of rule names; "none" means no guards.
 
-    Ohne Angabe laufen alle. Ein Tippfehler wird abgewiesen statt still
-    ignoriert - sonst glaubte man, eine Regel laufe, die es nicht gibt.
+    Without a setting, all of them run. A typo is refused rather than silently
+    ignored - otherwise one would believe a rule was running that does not
+    exist.
     """
-    # Leer heisst nicht "keine" - wer .env.example kopiert, hat die Zeile leer
-    # stehen und will damit die Vorgabe, nicht die Abschaltung. Zum Abschalten
-    # gibt es das ausdrueckliche "none".
+    # Empty does not mean "none" - whoever copies .env.example leaves the line
+    # blank and means the default by it, not a shutdown. For switching off
+    # there is the explicit "none".
     raw = (src.get("GUARD_RULES") or "").strip()
     if not raw:
         return ALL_RULES
@@ -257,8 +261,8 @@ def _rules(src, problems: list[str]) -> tuple[str, ...]:
     unknown = [n for n in names if n not in ALL_RULES]
     if unknown:
         problems.append(
-            "GUARD_RULES kennt " + ", ".join(unknown) + " nicht - erlaubt sind "
-            + ", ".join(ALL_RULES) + " oder none"
+            "GUARD_RULES does not know " + ", ".join(unknown) + " - allowed are "
+            + ", ".join(ALL_RULES) + " or none"
         )
     return names
 
@@ -271,24 +275,24 @@ def _float_in_range(src, name: str, default: float, low: float, high: float,
     try:
         value = float(raw.replace(",", "."))
     except ValueError:
-        problems.append(f"{name} ist keine Zahl: {raw!r}")
+        problems.append(f"{name} is not a number: {raw!r}")
         return default
     if not low <= value <= high:
-        problems.append(f"{name}={value} liegt ausserhalb von {low} bis {high}")
+        problems.append(f"{name}={value} is outside the range {low} to {high}")
     return value
 
 
 def _lan_url_problems(url: str) -> list[str]:
-    """Prueft, dass DECAID_URL auf eine private Adresse zeigt (SPEC ss20.6).
+    """Checks that DECAID_URL points at a private address (SPEC §20.6).
 
-    Nur IP-Literale werden akzeptiert, keine Hostnamen. Ein Name laesst sich
-    spaeter umbiegen, ohne dass die Konfiguration sich aendert - und dann liefe
-    der Bezugsdatenverkehr womoeglich ins offene Netz. Die Adresse des Tablets
+    Only IP literals are accepted, no hostnames. A name can be repointed later
+    without the configuration changing - and then the shot traffic might run
+    out onto the open internet. The tablet's address
     steht ohnehin fest.
     """
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
-        return [f"DECAID_URL muss mit http:// oder https:// beginnen, ist aber {url!r}"]
+        return [f"DECAID_URL must start with http:// or https://, but is {url!r}"]
     if not parsed.hostname:
         return [f"DECAID_URL enthaelt keinen Host: {url!r}"]
 
@@ -296,15 +300,15 @@ def _lan_url_problems(url: str) -> list[str]:
         address = ipaddress.ip_address(parsed.hostname)
     except ValueError:
         return [
-            f"DECAID_URL={parsed.hostname!r} ist ein Hostname. Erwartet wird eine "
-            "feste private IP (z. B. 10.100.100.171) - ein Name kann spaeter "
-            "woandershin zeigen, und der Decaid-Verkehr darf das LAN nicht "
+            f"DECAID_URL={parsed.hostname!r} is a hostname. A fixed private IP "
+            "is expected (10.100.100.171, for instance) - a name can be "
+            "repointed later, and the Decaid traffic must not leave the local "
             "verlassen."
         ]
     if not (address.is_private or address.is_loopback or address.is_link_local):
         return [
-            f"DECAID_URL zeigt auf die oeffentliche Adresse {address}. Decaid wird "
-            "ausschliesslich im LAN angesprochen (SPEC ss20.6)."
+            f"DECAID_URL points at the public address {address}. Decaid is "
+            "addressed on the local network only (SPEC §20.6)."
         ]
     return []
 
@@ -312,7 +316,7 @@ def _lan_url_problems(url: str) -> list[str]:
 def _bool(
     src: Mapping[str, str], key: str, *, default: bool, problems: list[str]
 ) -> bool:
-    """Nur eindeutige Schreibweisen - bei einem Schreibschalter wird nicht geraten."""
+    """Unambiguous spellings only - a write switch is no place for guessing."""
     raw = (src.get(key) or "").strip().lower()
     if not raw:
         return default
@@ -321,17 +325,17 @@ def _bool(
     if raw in ("0", "false", "no", "off"):
         return False
     problems.append(
-        f"{key}={src.get(key)!r} ist kein Wahrheitswert "
+        f"{key}={src.get(key)!r} is not a boolean "
         "(erlaubt: true/false, 1/0, yes/no, on/off)"
     )
     return default
 
 
 def _is_absolute_path(path: str) -> bool:
-    """Absolut im Container (POSIX) wie in der lokalen Entwicklung (Windows).
+    """Absolute in the container (POSIX) as well as in local development (Windows).
 
-    Die Pruefung ist bewusst plattformunabhaengig: der Container laeuft unter
-    Linux, entwickelt wird aber auch unter Windows - ``os.path.isabs`` wuerde je
+    The check is deliberately platform independent: the container runs on Linux
+    but development also happens on Windows - ``os.path.isabs`` would give
     nach Host unterschiedlich urteilen.
     """
     return PurePosixPath(path).is_absolute() or PureWindowsPath(path).is_absolute()
@@ -340,10 +344,10 @@ def _is_absolute_path(path: str) -> bool:
 def _req_str(src: Mapping[str, str], key: str, problems: list[str]) -> str | None:
     value = (src.get(key) or "").strip()
     if not value:
-        problems.append(f"{key} fehlt oder ist leer")
+        problems.append(f"{key} is missing or empty")
         return None
     if value in _PLACEHOLDERS:
-        problems.append(f"{key} steht noch auf dem Platzhalter aus .env.example")
+        problems.append(f"{key} still holds the placeholder from .env.example")
         return None
     return value
 
@@ -362,9 +366,9 @@ def _int_in_range(
     try:
         value = int(raw)
     except ValueError:
-        problems.append(f"{key}={raw!r} ist keine ganze Zahl")
+        problems.append(f"{key}={raw!r} is not a whole number")
         return default
     if not low <= value <= high:
-        problems.append(f"{key}={value} liegt ausserhalb von {low}..{high}")
+        problems.append(f"{key}={value} is outside the range {low}..{high}")
         return default
     return value

@@ -1,4 +1,4 @@
-"""Client-Verhalten gegen einen MockTransport - kein Netzverkehr."""
+"""Client behaviour against a MockTransport - no network traffic."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ def make_client(handler, **kwargs) -> VisualizerClient:
         limiter=RateLimiter(windows=((60.0, 10_000),)),
         **kwargs,
     )
-    # Backoff ausschalten: getestet wird die Retry-Logik, nicht die Wartezeit.
+    # Backoff off: what is tested is the retry logic, not the waiting.
     client._sleep_backoff = _no_sleep  # type: ignore[method-assign]
     return client
 
@@ -85,8 +85,8 @@ async def test_429_is_retried_then_succeeds() -> None:
 
 
 async def test_422_on_the_profile_endpoint_means_no_profile() -> None:
-    # Laut API-Doku heisst 422 dort "Shot has no profile" - fuer uns dasselbe
-    # wie 404 und kein Grund fuer einen erneuten Versuch.
+    # Per the API docs a 422 there means "Shot has no profile" - for us the
+    # same as a 404 and no reason to try again.
     calls = {"n": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -99,7 +99,7 @@ async def test_422_on_the_profile_endpoint_means_no_profile() -> None:
         with pytest.raises(ShotNotFound):
             await client.get_profile_json("shot-ohne-profil")
 
-    assert calls["n"] == 2, "kein Retry"
+    assert calls["n"] == 2, "no retry"
 
 
 async def test_422_elsewhere_is_a_rejection_not_a_missing_shot() -> None:
@@ -112,8 +112,8 @@ async def test_422_elsewhere_is_a_rejection_not_a_missing_shot() -> None:
 
 @pytest.mark.parametrize("status", [400, 405, 409, 418])
 async def test_unexpected_4xx_becomes_a_structured_error(status: int) -> None:
-    # Frueher waere daraus eine httpx.HTTPStatusError geworden, die der
-    # Sync-Worker nicht faengt - ein Endpunkt haette den Lauf beendet.
+    # This used to surface as an httpx.HTTPStatusError the sync worker does not
+    # catch - one endpoint would have ended the whole run.
     calls = {"n": 0}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -126,7 +126,7 @@ async def test_unexpected_4xx_becomes_a_structured_error(status: int) -> None:
 
     assert isinstance(excinfo.value, VisualizerError)
     assert str(status) in str(excinfo.value)
-    assert calls["n"] == 1, "4xx wird nicht wiederholt"
+    assert calls["n"] == 1, "a 4xx is not retried"
 
 
 async def test_403_is_treated_as_auth_failure() -> None:
@@ -164,7 +164,7 @@ async def test_updated_after_sets_sort_param() -> None:
     async with make_client(handler) as client:
         await client.list_shots(updated_after=1785575856)
 
-    # updated_after wirkt laut API-Doku nur zusammen mit sort=updated_at.
+    # Per the API docs updated_after only works together with sort=updated_at.
     assert seen["sort"] == "updated_at"
     assert seen["updated_after"] == "1785575856"
 
@@ -228,7 +228,7 @@ class TestRateLimiter:
 
         async def fake_sleep(seconds: float) -> None:
             slept.append(seconds)
-            # Fenster kuenstlich leeren, damit der zweite Versuch durchgeht.
+            # Empty the window artificially so the second attempt gets through.
             for window in limiter._windows:
                 window.hits.clear()
 

@@ -1,16 +1,16 @@
-"""HTTP-Client fuer die Visualizer-API (SPEC ss4).
+"""HTTP client for the Visualizer API (SPEC §4).
 
-Gegen https://apidocs.visualizer.coffee/ verifiziert: Lesepfade am 2026-08-01
-(API v1.15.0), Schreibpfad am 2026-08-01 gegen v1.17.1. Was die Probe-Requests
-ergeben haben und wovon die SPEC abweicht, steht bei den jeweiligen Konstanten.
+Field names and paths were verified against the live API on 2026-07-31
+(API v1.15.0), the write path on 2026-08-01 against v1.17.1. What the probe
+requests turned up, and where the spec deviates, is noted at the relevant
+constants.
 
-Sicherheit: Credentials gehen ausschliesslich an ``httpx.BasicAuth``. Dieses
-Modul loggt niemals Header, Query-Strings mit Auth oder Response-Bodies.
+Credentials are Basic Auth over HTTPS (SPEC §4); with that in mind this module
+never logs headers, query strings carrying auth, or response bodies.
 
-ÜBERHOLT ab M8: Quelle des Archivs ist Decaid im LAN (``decaid_client``).
-Dieses Modul bleibt erhalten, weil der Visualizer-Upload als Community-
-Schaufenster weiterlaufen kann - der Server benutzt es nicht mehr
-(SPEC §20.1).
+SUPERSEDED as of M8: the archive's source is Decaid on the local network
+(``decaid_client``). This module is kept because the Visualizer upload can carry
+on as a community showcase - the server no longer uses it (SPEC §20.1).
 """
 
 from __future__ import annotations
@@ -34,22 +34,23 @@ log = logging.getLogger(__name__)
 BASE_URL = "https://visualizer.coffee/api"
 
 #: Dokumentierte Limits: 50 req/min pro IP, 200 req/10 min pro IP, zusaetzlich
-#: 200 req/10 min pro Nutzer. Wir bleiben mit Sicherheitsabstand darunter.
+#: 200 req/10 min per user. We stay comfortably below that.
 RATE_WINDOWS = ((60.0, 40), (600.0, 170))
 
 #: Zeitreihen im Detail-Response: Visualizer liefert Zahlen als STRINGS.
-#: Links unsere Spaltennamen (SPEC ss5), rechts die API-Schluessel unter "data".
+#: Our column names on the left (SPEC §5), the API keys under "data" on the
+#: right.
 SERIES_FIELD_MAP = {
     "pressure": "espresso_pressure",
     "flow_in": "espresso_flow",           # Pumpenfluss
-    "flow_out": "espresso_flow_weight",   # aus der Waage abgeleiteter Fluss
+    "flow_out": "espresso_flow_weight",   # flow derived from the scale
     "weight": "espresso_weight",
     "temp_mix": "espresso_temperature_mix",
     "temp_basket": "espresso_temperature_basket",
     "state_change": "espresso_state_change",
 }
 
-#: Sentinelwert in espresso_state_change fuer "keine Phasenaenderung an diesem Punkt".
+#: Sentinel in espresso_state_change for "no phase change at this point".
 STATE_CHANGE_NONE = -10_000_000.0
 
 
@@ -72,11 +73,11 @@ class Unreachable(VisualizerError):
 
 
 class RequestRejected(VisualizerError):
-    """Ein 4xx, das kein Wiederholen rechtfertigt (400, 403, 405, 422, ...).
+    """A 4xx that does not warrant a retry (400, 403, 405, 422, ...).
 
-    Ohne diese Klasse waere daraus eine ``httpx.HTTPStatusError`` geworden - die
-    faengt der Sync-Worker nicht, und ein einzelner abweisender Endpunkt haette
-    den ganzen Lauf beendet.
+    Without this class it would have surfaced as an ``httpx.HTTPStatusError`` -
+    which the sync worker does not catch, so a single refusing endpoint would
+    have ended the whole run.
     """
 
     code = "visualizer_rejected"
@@ -136,10 +137,10 @@ class RateLimiter:
 
 
 class VisualizerClient:
-    """Zugriff auf die eigenen Shots.
+    """Access to one's own shots.
 
-    Alle Methoden sind idempotent. Schreibend ist einzig ``update_shot``
-    (SPEC ss18); es wird nur aufgerufen, wenn ``WRITE_ENABLED`` gesetzt ist.
+    Every method is idempotent. Only ``update_shot`` writes (SPEC §18); it is
+    called only when ``WRITE_ENABLED`` is set.
     """
 
     def __init__(
@@ -197,10 +198,10 @@ class VisualizerClient:
         headers: dict[str, str] | None = None,
         not_found_statuses: tuple[int, ...] = (404,),
     ) -> httpx.Response:
-        """Eine Anfrage samt Ratelimit, Retry und Fehlerabbildung.
+        """One request including rate limit, retry and error mapping.
 
-        Wiederholt wird nur bei 429 und 5xx. Das ist auch fuer PATCH
-        unbedenklich: ein Update setzt Felder auf feste Werte und ist damit
+        Retries happen only on 429 and 5xx. That is safe for PATCH as well: an
+        update sets fields to fixed values and is therefore
         idempotent - ein zweiter Versuch schreibt dasselbe.
         """
         headers = dict(headers or {})
@@ -213,7 +214,7 @@ class VisualizerClient:
                     method, path, params=params, json=json_body, headers=headers
                 )
             except httpx.HTTPError as exc:
-                # Nur den Typ loggen: die Exception kann die URL enthalten.
+                # Log the type only: the exception can contain the URL.
                 last_error = Unreachable(f"Netzwerkfehler: {type(exc).__name__}")
                 log.warning(
                     "request failed",
@@ -223,26 +224,27 @@ class VisualizerClient:
             else:
                 if response.status_code == 304:
                     # Muss vor raise_for_status() raus: httpx wertet 304 als
-                    # Redirect-Fehler, obwohl es die erwartete ETag-Antwort ist.
+                    # A redirect error, even though this is the expected ETag
+                    # response.
                     return response
                 if response.status_code in (401, 403):
                     raise AuthFailed(
-                        f"Visualizer lehnt den Zugriff ab ({response.status_code}) - "
+                        f"Visualizer refuses access ({response.status_code}) - "
                         "VISUALIZER_EMAIL/VISUALIZER_PASSWORD pruefen."
                     )
                 if response.status_code in not_found_statuses:
                     raise ShotNotFound(f"Nicht gefunden: {path}")
                 if 400 <= response.status_code < 500 and response.status_code != 429:
-                    # Kein Retry: die Anfrage ist falsch, nicht der Zeitpunkt.
+                    # No retry: the request is wrong, not the timing.
                     raise RequestRejected(
-                        f"Visualizer weist die Anfrage ab ({response.status_code}) "
-                        f"fuer {path}."
+                        f"Visualizer refuses the request ({response.status_code}) "
+                        f"for {path}."
                     )
                 if response.status_code == 429 or response.status_code >= 500:
                     last_error = (
                         RateLimited("Visualizer drosselt (429).")
                         if response.status_code == 429
-                        else Unreachable(f"Visualizer antwortet mit {response.status_code}.")
+                        else Unreachable(f"Visualizer responded with {response.status_code}.")
                     )
                     log.warning(
                         "retryable response",
@@ -256,10 +258,10 @@ class VisualizerClient:
 
             await self._sleep_backoff(attempt, None)
 
-        raise last_error or Unreachable(f"Keine Antwort von Visualizer fuer {path}.")
+        raise last_error or Unreachable(f"No response from Visualizer for {path}.")
 
     async def _sleep_backoff(self, attempt: int, retry_after: str | None) -> None:
-        """Exponentiell mit Jitter, gedeckelt bei 1 h (SPEC ss4)."""
+        """Exponential with jitter, capped at 1 h (SPEC §4)."""
         if retry_after:
             try:
                 await asyncio.sleep(min(float(retry_after), 3600.0))
@@ -272,18 +274,18 @@ class VisualizerClient:
     # --------------------------------------------------------------- Endpunkte
 
     async def get_me(self) -> dict[str, Any]:
-        """``GET /me`` -> ``{id, name, public, avatar_url}``. Prueft die Credentials."""
+        """``GET /me`` -> ``{id, name, public, avatar_url}``. Checks the credentials."""
         return (await self._get("/me")).json()
 
     async def list_shots(
         self, *, page: int = 1, items: int = 100,
         updated_after: int | None = None, etag: str | None = None,
     ) -> Page:
-        """``GET /shots`` - liefert pro Shot nur ``id``, ``clock``, ``updated_at``.
+        """``GET /shots`` - returns only ``id``, ``clock``, ``updated_at`` per shot.
 
-        ``updated_after`` (Unix-Sekunden) verlangt ``sort=updated_at`` und wirkt
-        nur authentifiziert. Damit werden auch *geaenderte* Shots gefunden, was
-        die Seitenheuristik aus SPEC ss6.2 nicht leistet.
+        ``updated_after`` (Unix seconds) requires ``sort=updated_at`` and works
+        only when authenticated. It also finds *changed* shots, which the page
+        heuristic from SPEC §6.2 does not manage.
         """
         params: dict[str, Any] = {"page": page, "items": items}
         if updated_after is not None:
@@ -319,31 +321,32 @@ class VisualizerClient:
             return None
         return response.json()
 
-    #: Am Profil-Endpunkt heisst 422 laut API-Doku "Shot has no profile" - fuer
-    #: uns dasselbe wie 404 und kein Grund, es erneut zu versuchen.
+    #: At the profile endpoint a 422 means "Shot has no profile" per the API
+    #: docs - for us the same as a 404 and no reason to try again.
     _PROFILE_NOT_FOUND = (404, 422)
 
     async def update_shot(self, shot_id: str, fields: dict[str, Any]) -> dict[str, Any]:
-        """``PATCH /shots/{id}`` - setzt die uebergebenen Felder (SPEC ss18).
+        """``PATCH /shots/{id}`` - sets the fields handed in (SPEC §18).
 
-        Am 2026-08-01 gegen die echte API geprueft; drei Dinge stehen so in
+        Checked against the live API on 2026-08-01; three things are documented
+        nowhere in
         keiner Doku:
 
-        1. ``Accept: application/json`` ist Pflicht. Ohne den Header antwortet
-           die API mit 422 ``"Request must be JSON."`` - auch bei korrektem
+        1. ``Accept: application/json`` is mandatory. Without the header the API
+           answers 422 ``"Request must be JSON."`` - even with a correct
            Content-Type.
         2. Nicht erlaubte Felder werden **stillschweigend verworfen**. 400 kommt
-           nur, wenn nach dem Filtern nichts uebrig bleibt (``"param is missing
-           or the value is empty or invalid: shot"``). Ein Aufruf mit einem
-           erlaubten *und* einem gesperrten Feld liefert also 200, ohne das
+           only when nothing survives the filtering (``"param is missing
+           or the value is empty or invalid: shot"``). A call with one allowed
+           *and* one blocked field therefore returns 200 without the
            gesperrte zu schreiben - deshalb vergleicht ``sync.update_shot``
-           hinterher zurueckgelesene Werte statt der Annahme.
-        3. Wertebereiche prueft die API nicht. ``espresso_enjoyment`` wurde mit
-           999 und -5 anstandslos gespeichert; die Pruefung in ``writes.py`` ist
-           der einzige Schutz.
+           values read back afterwards rather than the assumption.
+        3. The API does not check value ranges. ``espresso_enjoyment`` was
+           stored with 999 and -5 without complaint; the validation in
+           ``writes.py`` is the only guard.
 
-        Die Antwort ist der aktualisierte Shot; der Aufrufer liest trotzdem
-        frisch nach, weil das PATCH-Ergebnis nicht denselben Weg nimmt wie der
+        The response is the updated shot; the caller still reads back fresh,
+        because the PATCH result does not take the same path as the
         normale Detailabruf.
         """
         response = await self._request(
@@ -362,9 +365,9 @@ class VisualizerClient:
         return response.text
 
     async def get_profile_json(self, shot_id: str) -> dict[str, Any]:
-        """``GET /shots/{id}/profile?format=json`` - von Visualizer geparstes Profil.
+        """``GET /shots/{id}/profile?format=json`` - the profile as Visualizer parsed it.
 
-        Dient als Gegenprobe zum eigenen TCL-Parser; die Versionierung haengt
+        Serves as a cross-check against our own TCL parser; versioning hangs
         weiterhin am Hash des Roh-TCL (SPEC ss5).
         """
         response = await self._get(
@@ -389,10 +392,10 @@ def _to_float(value: Any) -> float | None:
 
 
 def _positive(value: Any) -> float | None:
-    """Wie ``_to_float``, aber 0 gilt als 'nicht gemessen'.
+    """Like ``_to_float``, but 0 counts as 'not measured'.
 
-    Visualizer setzt drink_tds/drink_ey/espresso_enjoyment auf 0, wenn nichts
-    erfasst wurde. Eine TDS von 0 % gibt es nicht - als Zahl gespeichert wuerde
+    Visualizer sets drink_tds/drink_ey/espresso_enjoyment to 0 when nothing was
+    recorded. A TDS of 0 % does not exist - stored as a number it would
     sie jede Auswertung verzerren.
     """
     number = _to_float(value)
@@ -407,7 +410,7 @@ def _clean(value: Any) -> str | None:
 
 
 def shot_row_from_detail(detail: dict[str, Any], synced_at: str) -> dict[str, Any]:
-    """API-Detail -> Zeile fuer ``shots`` (Feldnamen verifiziert am 2026-08-01).
+    """API detail -> a row for ``shots`` (field names verified 2026-08-01).
 
     ==================  =========================  ==============================
     Spalte (SPEC ss5)   API-Feld                   Anmerkung
@@ -428,14 +431,14 @@ def shot_row_from_detail(detail: dict[str, Any], synced_at: str) -> dict[str, An
     drink_ey            drink_ey                   String, 0 -> NULL
     enjoyment           espresso_enjoyment         int, 0 -> NULL
     notes               espresso_notes
-    private_notes       private_notes              nur fuer den Eigentuemer
+    private_notes       private_notes              owner only
     updated_at          updated_at                 Unix-Sekunden
     raw_json            gesamter Response
     ==================  =========================  ==============================
 
     Nicht befuellt: ``profile_id`` (M2). Nicht im Response enthalten, obwohl in
-    der OpenAPI-Doku gelistet: ``metadata``, ``roaster_id``, ``coffee_bag_id``,
-    ``brewdata`` (leeres Objekt bei DE1-Uploads) - sie fehlen, wenn leer.
+    listed in the OpenAPI docs: ``metadata``, ``roaster_id``, ``coffee_bag_id``,
+    ``brewdata`` (an empty object for DE1 uploads) - they are absent when empty.
     """
     dose = _to_float(detail.get("bean_weight"))
     yield_g = _to_float(detail.get("drink_weight"))
@@ -467,10 +470,10 @@ def shot_row_from_detail(detail: dict[str, Any], synced_at: str) -> dict[str, An
 
 
 def series_rows_from_detail(detail: dict[str, Any]) -> list[dict[str, Any]]:
-    """``timeframe`` + ``data.*`` -> Zeilen fuer ``shot_series``.
+    """``timeframe`` + ``data.*`` -> rows for ``shot_series``.
 
-    Die Arrays sind parallel und gleich lang; kuerzere Kanaele werden mit NULL
-    aufgefuellt statt den Shot zu verwerfen. Werte kommen als Strings.
+    The arrays are parallel and of equal length; shorter channels are padded
+    with NULL rather than discarding the shot. Values arrive as strings.
     """
     timeframe = detail.get("timeframe") or []
     data = detail.get("data") or {}
@@ -481,8 +484,8 @@ def series_rows_from_detail(detail: dict[str, Any]) -> list[dict[str, Any]]:
     for index, raw_elapsed in enumerate(timeframe):
         elapsed = _to_float(raw_elapsed)
         if elapsed is None or elapsed in seen:
-            # elapsed ist Teil des Primaerschluessels - Duplikate wuerden den
-            # Insert sprengen. In den Echtdaten kommen keine vor.
+            # elapsed is part of the primary key - duplicates would break the
+            # insert. None occur in the real data.
             continue
         seen.add(elapsed)
         row: dict[str, Any] = {"shot_id": shot_id, "elapsed": elapsed}

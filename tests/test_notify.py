@@ -1,8 +1,8 @@
-"""Benachrichtigung der Waechter (SPEC ss20.7).
+"""Guard notifications (SPEC §20.7).
 
-Die drei Zusagen aus dem Modul-Docstring von ``notify`` stehen hier unter Test:
-hoechstens eine Nachricht je Bezug, keine Inhalte, und ein Ausfall von ntfy
-kippt nichts.
+The three promises from the module docstring of ``notify`` are under test
+here: at most one message per shot, no content, and an ntfy outage topples
+nothing.
 """
 
 from __future__ import annotations
@@ -37,7 +37,7 @@ def notifying(valid_env: dict[str, str]) -> Config:
 
 def finding(rule: str, shot_id: str = "s1", message: str = "Befund",
             *, age_hours: int = 2) -> Finding:
-    """Ein Befund, standardmaessig frisch genug fuer eine Meldung."""
+    """One finding, by default recent enough to be reported."""
     when = datetime.now(UTC) - timedelta(hours=age_hours)
     return Finding(rule=rule, shot_id=shot_id,
                    started_at=when.isoformat(timespec="seconds").replace("+00:00", "Z"),
@@ -67,7 +67,7 @@ def ntfy(monkeypatch):
     return fake
 
 
-# ------------------------------------------------ Eine Nachricht je Bezug
+# ------------------------------------------------- One message per shot
 
 
 def test_several_findings_become_one_message(archive: Database, notifying, ntfy) -> None:
@@ -95,7 +95,7 @@ async def test_a_shot_is_never_reported_twice(archive: Database, notifying, ntfy
 async def test_the_memory_survives_a_restart(archive: Database, notifying, ntfy) -> None:
     await send(notifying, [finding("bean_age", "s1")], archive)
     assert archive.get_json_state(STATE_NOTIFIED) == ["s1"]
-    # Der Zustand liegt in der Datenbank, nicht im Prozess.
+    # The state lives in the database, not in the process.
     assert pending(archive, [finding("bean_age", "s1")]) == []
 
 
@@ -104,21 +104,21 @@ async def test_a_new_shot_is_still_reported(archive: Database, notifying, ntfy) 
     assert await send(notifying, [finding("bean_age", "s2")], archive) == 1
 
 
-# ------------------------------------------------------ Keine Inhalte
+# ---------------------------------------------------------- No content
 
 
 def test_the_message_carries_no_free_text() -> None:
-    title, body = compose([finding("bean_age", "s1", "Bohne war 75 Tage alt.")])
+    title, body = compose([finding("bean_age", "s1", "Bean was 75 days old.")])
     for text in (title, body):
-        assert "Notiz" not in text
-    assert "75 Tage" in body
+        assert "note" not in text.lower()
+    assert "75 days" in body
     assert "s1" in body
 
 
 def test_the_title_survives_ascii_headers(archive: Database, notifying, ntfy) -> None:
-    """ntfy-Header vertragen kein UTF-8 - der Titel darf daran nicht scheitern."""
-    title, _ = compose([finding("bean_age", "s1", "Bohne zu alt")])
-    assert title.startswith("Bezug 20")
+    """ntfy headers do not carry UTF-8 - the title must not fail on that."""
+    title, _ = compose([finding("bean_age", "s1", "Bean too old")])
+    assert title.startswith("Shot 20")
 
 
 async def test_the_body_is_capped(archive: Database, notifying, ntfy) -> None:
@@ -136,7 +136,7 @@ async def test_the_token_goes_in_the_header_not_the_body(
     assert b"tk_geheim" not in request.content
 
 
-# ------------------------------------------------------ Ausfall
+# ------------------------------------------------------------- Outage
 
 
 async def test_a_failing_ntfy_does_not_raise(
@@ -156,7 +156,7 @@ async def test_a_failing_ntfy_does_not_raise(
 async def test_a_failed_message_is_retried_next_time(
     archive: Database, notifying, monkeypatch
 ) -> None:
-    """Nur erfolgreich Gemeldetes gilt als gemeldet."""
+    """Only successfully delivered messages count as reported."""
     def refusing(request: httpx.Request) -> httpx.Response:
         return httpx.Response(503)
 
@@ -166,23 +166,23 @@ async def test_a_failed_message_is_retried_next_time(
         lambda *a, **k: original(*a, **{**k, "transport": httpx.MockTransport(refusing)}),
     )
     await send(notifying, [finding("bean_age", "s1")], archive)
-    assert pending(archive, [finding("bean_age", "s1")]), "darf nicht als erledigt gelten"
+    assert pending(archive, [finding("bean_age", "s1")]), "must not count as done"
 
 
 async def test_without_a_topic_nothing_is_sent(archive: Database, config: Config) -> None:
-    # Der Waechter laeuft trotzdem; seine Befunde stehen in audit_archive.
+    # The guards still run; their findings remain in audit_archive.
     assert await send(config, [finding("bean_age", "s1")], archive) == 0
 
 
-# ------------------------------------------------------ Fenster und Deckel
+# --------------------------------------------------- Window and caps
 
 
 async def test_old_findings_never_ring(archive: Database, notifying, ntfy) -> None:
-    """Eine Benachrichtigung sagt "eben ist etwas schiefgegangen".
+    """A notification says "something just went wrong".
 
-    Am Bestand stehen 63 Befunde ueber die ganze Historie - so viele
-    Nachrichten auf einmal liest niemand, und danach keine weitere mehr. Was
-    laenger her ist, steht in audit_archive.
+    The archive holds 63 findings across its whole history - nobody reads that
+    many messages at once, and none afterwards either. What is further back
+    sits in audit_archive.
     """
     assert await send(notifying, [finding("bean_age", "alt", age_hours=24 * 30)],
                       archive) == 0
@@ -190,7 +190,7 @@ async def test_old_findings_never_ring(archive: Database, notifying, ntfy) -> No
 
 
 async def test_a_flood_is_capped(archive: Database, notifying, ntfy) -> None:
-    """Auch im Fenster kann viel zusammenkommen - etwa nach einem Ausfall."""
+    """A lot can pile up inside the window too - after an outage, say."""
     findings = [finding("dose_outlier", f"s{i}", age_hours=i + 1) for i in range(20)]
     sent = await send(notifying, findings, archive)
     assert sent == MAX_MESSAGES_PER_RUN
@@ -203,7 +203,7 @@ async def test_the_newest_finding_gets_through_the_cap(
     findings = [finding("dose_outlier", f"s{i}", age_hours=i + 1) for i in range(20)]
     await send(notifying, findings, archive)
     reported = set(archive.get_json_state(STATE_NOTIFIED))
-    assert "s0" in reported, "der juengste Bezug muss durchkommen"
+    assert "s0" in reported, "the newest shot must get through"
     assert "s19" not in reported
 
 
@@ -212,5 +212,5 @@ async def test_the_rest_is_not_marked_as_done(
 ) -> None:
     findings = [finding("dose_outlier", f"s{i}", age_hours=i + 1) for i in range(8)]
     await send(notifying, findings, archive)
-    # Was der Deckel abgeschnitten hat, bleibt offen - solange es im Fenster ist.
+    # What the cap cut off stays open - as long as it is inside the window.
     assert pending(archive, findings)

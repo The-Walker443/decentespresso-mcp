@@ -1,8 +1,8 @@
 """Decaid-Client gegen Fixtures aus echten Antworten (SPEC ss20.2).
 
-Die Fixtures unter ``tests/fixtures/decaid/`` stammen von der laufenden Instanz
-(0.8.5+2624, abgerufen 2026-09-14) und sind anonymisiert. Jeder Test hier
-bildet einen der Befunde T1-T19 ab.
+The fixtures under ``tests/fixtures/decaid/`` come from the running instance
+(0.8.5+2624, fetched 2026-09-14) and are anonymised. Every test here mirrors
+one of the findings T1-T19.
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ async def _no_sleep(attempt: int) -> None:
 
 
 def route(request: httpx.Request) -> httpx.Response:
-    """Bildet die echten Endpunkte auf die Fixtures ab."""
+    """Maps the real endpoints onto the fixtures."""
     path = request.url.path
     mapping = {
         "/api/v1/info": "info.json",
@@ -87,7 +87,7 @@ async def test_list_shots_parses_the_envelope() -> None:
 
 
 async def test_limit_is_capped_before_sending() -> None:
-    """T4: Die API deckelt still bei 100 - der Client tut es sichtbar."""
+    """T4: the API caps silently at 100 - the client does so visibly."""
     seen: dict[str, str] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -112,7 +112,7 @@ async def test_order_and_offset_are_passed_through() -> None:
 
 
 async def test_no_time_filter_is_ever_sent() -> None:
-    """T8: Serverseitig gibt es keinen - wer einen mitschickt, taeuscht sich."""
+    """T8: there is none server-side - sending one would be self-deception."""
     seen: dict[str, str] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -139,14 +139,14 @@ async def test_shot_detail_carries_measurements() -> None:
     assert shot["measurements"]
     point = shot["measurements"][0]
     assert set(point) == {"machine", "scale", "volume"}
-    assert "time" not in point, "T12: es gibt kein time-Feld"
+    assert "time" not in point, "T12: there is no time field"
     assert "profileFrame" in point["machine"], "T12: profileFrame liegt unter machine"
     for key in ("targetFlow", "targetPressure"):
         assert key in point["machine"], "Sollwerte je Messpunkt (SPEC ss20.4)"
 
 
 async def test_beans_and_batches_use_the_real_paths() -> None:
-    """T16: /api/v1/bean-batches, nicht /api/v1/batches."""
+    """T16: /api/v1/bean-batches, not /api/v1/batches."""
     paths: list[str] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -172,13 +172,13 @@ async def test_batches_carry_the_freeze_fields() -> None:
 
 
 def test_measurement_times_are_derived_from_timestamps() -> None:
-    """T12: kein time-Feld, also aus machine.timestamp ableiten."""
+    """T12: no time field, so derive it from machine.timestamp."""
     shot = load("shot_detail.json")
     times = measurement_times(shot["measurements"])
 
     assert len(times) == len(shot["measurements"])
     assert times[0] == 0.0
-    assert times == sorted(times), "die Achse muss monoton sein"
+    assert times == sorted(times), "the axis must be monotonic"
     assert times[-1] > 10, "ein Bezug dauert laenger als zehn Sekunden"
 
 
@@ -199,7 +199,7 @@ def test_measurement_times_survive_a_broken_stamp() -> None:
 
 
 async def test_update_shot_sends_a_deep_merge_patch() -> None:
-    """T13: nur das Mitgeschickte aendert sich."""
+    """T13: only what is sent along changes."""
     sent: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -212,7 +212,7 @@ async def test_update_shot_sends_a_deep_merge_patch() -> None:
 
 
 async def test_protected_fields_come_back_as_a_rejection() -> None:
-    """T14: Decaid antwortet mit 400 statt still zu verwerfen."""
+    """T14: Decaid answers 400 instead of discarding silently."""
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(400, json={"error": "protected field"})
 
@@ -233,7 +233,7 @@ async def test_unreachable_tablet_is_not_an_error_state() -> None:
         with pytest.raises(DecaidUnreachable) as excinfo:
             await api.info()
 
-    # Der Code ist die Betriebsaussage, nicht "kaputt".
+    # The code states an operating condition, not "broken".
     assert excinfo.value.code == "waiting_for_tablet"
 
 
@@ -270,4 +270,4 @@ async def test_missing_shot_is_distinguishable_from_an_offline_tablet() -> None:
 
     async with client(handler) as api:
         with pytest.raises(ShotNotFound):
-            await api.get_shot("gibt-es-nicht")
+            await api.get_shot("does-not-exist")

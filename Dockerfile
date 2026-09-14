@@ -1,16 +1,16 @@
 FROM python:3.12-slim
 
-# libtk8.6 ist fuer den Profilparser noetig (SPEC ss7.1).
+# libtk8.6 is required by the profile parser (SPEC §7.1).
 #
-# Das Modul _tkinter IST in python:*-slim einkompiliert - was fehlt, sind die
-# Tk-Laufzeitbibliotheken, gegen die es linkt. Ohne sie scheitert schon
-# 'import tkinter' mit:
+# The _tkinter module IS compiled into python:*-slim - what is missing are the
+# Tk runtime libraries it links against. Without them even 'import tkinter'
+# fails with:
 #     ImportError: libtk8.6.so: cannot open shared object file
-# libtk8.6 zieht libtcl8.6 und die noetigen X11-Bibliotheken als Abhaengigkeiten
-# mit; das Metapaket 'tk' (mit wish und Werkzeugen) braucht es nicht.
+# libtk8.6 pulls in libtcl8.6 and the necessary X11 libraries as dependencies;
+# the 'tk' metapackage (with wish and its tools) is not needed.
 #
-# Der Smoke-Step im Build-Workflow prueft, dass der Interpreter im fertigen
-# Image wirklich laeuft - faellt diese Zeile weg, wird der Build rot statt der
+# The smoke step in the build workflow checks that the interpreter really runs
+# in the finished image - drop this line and the build goes red rather than the
 # Container.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends libtk8.6 \
@@ -30,12 +30,12 @@ RUN pip install --no-cache-dir .
 COPY migrations ./migrations
 
 # Welcher Commit steckt in diesem Image? Die Paketversion sagt, welcher
-# Meilenstein gebaut wurde - BUILD_REF sagt, welcher Stand. Zusammen ist beim
-# Deployment eindeutig, ob das neue Image laeuft oder noch das alte.
+# milestone was built - BUILD_REF says which commit. Together they make it
+# unambiguous at deployment time whether the new image runs or still the old.
 ARG BUILD_REF=""
 ENV BUILD_REF=$BUILD_REF
 
-# Non-root (SPEC ss10.4). /data wird vom Host gemountet und muss dieser UID
+# Non-root (SPEC §10.4). /data is mounted from the host and must belong to this
 # gehoeren: chown -R 10001:10001 ./data
 RUN useradd --uid 10001 --user-group --no-create-home --shell /usr/sbin/nologin app \
     && mkdir -p /data \

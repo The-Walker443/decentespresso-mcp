@@ -1,4 +1,4 @@
-"""MCP-Tools nach SPEC ss9.2, gegen einen mit Echtdaten gefuellten Bestand."""
+"""MCP tools per SPEC §9.2, against an archive filled with real data."""
 
 from __future__ import annotations
 
@@ -28,14 +28,14 @@ from decentespresso_mcp.sync import SyncCoordinator
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "decaid"
 
-REFERENCE = REFERENCE_ID   # D-Flow, aeltester, Tchibo
-RECENT = RECENT_ID         # Default, neuester, Bogatz
-BROKEN = BROKEN_ID         # Waage nicht tariert
+REFERENCE = REFERENCE_ID   # D-Flow, oldest, Tchibo
+RECENT = RECENT_ID         # Default, newest, Bogatz
+BROKEN = BROKEN_ID         # scale not tared
 
-#: SPEC ss9: Antwortbudget je Tool-Antwort.
+#: SPEC §9: response budget per tool response.
 BUDGET_BYTES = 15_000
 
-#: Dauer des Referenzbezugs - letzter Kurvenpunkt.
+#: Duration of the reference shot - the last curve point.
 DURATION_S = 45.6
 
 
@@ -44,7 +44,7 @@ def load(name: str) -> dict:
 
 
 def _add_test_beans(db: Database) -> None:
-    """Die zwei Bohnen des Bestands mitsamt ihren Chargen."""
+    """The archive's two beans together with their batches."""
     synced = "2026-09-14T12:00:00Z"
     db.upsert_beans([
         {"id": "bean-tchibo", "name": "Testsorte", "roaster": "Tchibo",
@@ -113,7 +113,7 @@ async def test_list_beans(mcp) -> None:
 
     bogatz = by_roaster["Bogatz"]
     assert bogatz["shot_count"] == 2
-    # Neueste Bohne zuerst.
+    # Newest bean first.
     assert beans[0]["roaster"] == "Bogatz"
 
 
@@ -124,14 +124,14 @@ async def test_list_shots_returns_compact_rows(mcp) -> None:
     result = await call(mcp, "list_shots")
     assert result["total_matching"] == 3
     assert result["next_cursor"] is None
-    assert [s["id"] for s in result["shots"]][0] == RECENT   # neueste zuerst
+    assert [s["id"] for s in result["shots"]][0] == RECENT   # newest first
 
     row = next(s for s in result["shots"] if s["id"] == REFERENCE)
     assert row["bean"] == "Tchibo Testsorte"
     assert row["profile"] == "D-Flow"
     assert row["dose_g"] == 18.0
     assert row["ratio"] == 2.311
-    assert row["peak_pressure_infusion"] == 6.6     # nicht das globale Maximum
+    assert row["peak_pressure_infusion"] == 6.6     # not the global maximum
     assert row["peak_pressure_infusion"] < row["duration_s"]
     assert row["warnings"] == 0
 
@@ -139,18 +139,18 @@ async def test_list_shots_returns_compact_rows(mcp) -> None:
 async def test_list_shots_flags_unreliable_metrics(mcp) -> None:
     result = await call(mcp, "list_shots")
     broken = next(s for s in result["shots"] if s["id"] == BROKEN)
-    assert broken["warnings"] >= 2, "der Shot mit kaputter Waage muss auffallen"
+    assert broken["warnings"] >= 2, "the shot with the broken scale must stand out"
 
 
 @pytest.mark.parametrize(
     ("filters", "expected"),
     [
-        ({"bean": "tchibo"}, {REFERENCE}),          # case-insensitiv
-        ({"bean": "Testsorte"}, {REFERENCE}),       # trifft auch den Namen
-        ({"roaster": "bogatz"}, {RECENT, BROKEN}),  # nur die Roesterei
-        ({"roaster": "Testsorte"}, set()),          # der Name zaehlt hier nicht
+        ({"bean": "tchibo"}, {REFERENCE}),          # case-insensitive
+        ({"bean": "Testsorte"}, {REFERENCE}),       # matches the name too
+        ({"roaster": "bogatz"}, {RECENT, BROKEN}),  # the roastery only
+        ({"roaster": "Testsorte"}, set()),          # the name does not count here
         ({"profile": "d-flow"}, {REFERENCE}),
-        ({"profile": "default"}, {RECENT, BROKEN}),  # Teilstring
+        ({"profile": "default"}, {RECENT, BROKEN}),  # substring
     ],
 )
 async def test_list_shots_filters(mcp, filters: dict, expected: set) -> None:
@@ -167,8 +167,8 @@ async def test_list_shots_date_filters(mcp) -> None:
 
 
 async def test_relative_date_shortcuts_are_accepted(mcp) -> None:
-    # Die Fixtures liegen in der Vergangenheit; ein enges Fenster trifft nichts,
-    # ein weites alles. Getestet wird das Parsen, nicht das Datum.
+    # The fixtures lie in the past; a narrow window matches nothing, a wide one
+    # everything. What is tested is the parsing, not the date.
     assert (await call(mcp, "list_shots", {"since": "1h"}))["total_matching"] == 0
     assert (await call(mcp, "list_shots", {"since": "50y"}))["total_matching"] == 3
     for shortcut in ("12h", "7d", "2w", "1m", "1y"):
@@ -191,7 +191,7 @@ async def test_pagination_walks_all_shots(mcp) -> None:
         if cursor is None:
             break
     assert len(seen) == 3
-    assert len(set(seen)) == 3, "keine Dubletten ueber Seiten hinweg"
+    assert len(set(seen)) == 3, "no duplicates across pages"
 
 
 async def test_bad_cursor_is_rejected(mcp) -> None:
@@ -210,18 +210,18 @@ async def test_get_shot_by_id(mcp) -> None:
     assert result["shot"]["time_source"] == "utc"
     assert result["shot"]["dose_g"] == 18.0
     assert result["metrics"]["pi_end"] == 21.1
-    # Decaid meldet die Phase im Klartext - abgelesen, nicht erschlossen.
+    # Decaid reports the phase in plain text - read off, not inferred.
     assert result["metrics"]["pi_end_source"] == "substate"
     assert result["metrics"]["peak_pressure_infusion"] == 6.6
     assert result["metrics"]["max_pressure_global"] == 9.0
     assert result["profile"]["title"] == "D-Flow"
     assert result["profile"]["steps"]
 
-    # SPEC ss17.1: Form immer, Punktarrays nur auf Anforderung.
+    # SPEC §17.1: shape always, point arrays only on request.
     assert result["curve_shape"]["segments"]
     assert "curve" not in result
 
-    # Cache-Interna gehoeren nicht in die Antwort.
+    # Cache internals do not belong in the response.
     assert "metrics_version" not in result["metrics"]
     assert "n_points" not in result["metrics"]
 
@@ -239,26 +239,26 @@ async def test_get_shot_latest_with_bean_filter(mcp) -> None:
 
 async def test_get_shot_unknown_id(mcp) -> None:
     with pytest.raises(ToolError) as excinfo:
-        await call(mcp, "get_shot", {"id": "gibt-es-nicht"})
+        await call(mcp, "get_shot", {"id": "does-not-exist"})
     assert "shot_not_found" in str(excinfo.value)
 
 
 async def test_shape_is_much_smaller_than_the_point_arrays(mcp) -> None:
-    """Die Begruendung fuer den Default-Wechsel in SPEC ss17.1."""
+    """The reasoning behind the default change in SPEC §17.1."""
     lean = await call(mcp, "get_shot", {"id": REFERENCE})
     full = await call(mcp, "get_shot", {"id": REFERENCE, "include_curve": True})
 
     assert "curve" not in lean
     assert "curve" in full
     assert size_of(lean) < size_of(full)
-    # Die Form allein kostet einen Bruchteil der Punktarrays.
+    # The shape alone costs a fraction of the point arrays.
     assert size_of(lean["curve_shape"]) * 3 < size_of(full["curve"])
 
 
 async def test_a_broken_scale_is_reported_not_guessed(mcp) -> None:
     result = await call(mcp, "get_shot", {"id": BROKEN})
     assert result["metrics"]["t_first_drops"] is None
-    assert any("tariert" in w for w in result["metrics"]["warnings"])
+    assert any("tared" in w for w in result["metrics"]["warnings"])
 
 
 async def test_shot_without_profile_reports_none(mcp, db) -> None:
@@ -291,7 +291,7 @@ async def test_curve_respects_max_points_and_keeps_the_peaks(mcp) -> None:
         ))["curve"]
         assert len(curve["t"]) <= max_points
 
-        # SPEC ss9.1: erster und letzter Punkt sowie beide Druckmaxima bleiben.
+        # SPEC §9.1: the first and last point and both pressure maxima remain.
         assert curve["t"][0] == 0.0
         assert curve["t"][-1] == pytest.approx(DURATION_S, abs=0.01)
         assert metrics["t_peak"] == pytest.approx(
@@ -309,10 +309,10 @@ async def test_max_points_is_capped_at_400(mcp) -> None:
 
 @pytest.mark.parametrize("max_points", [1, 2, 3])
 async def test_tiny_budget_still_keeps_the_mandatory_points(mcp, max_points: int) -> None:
-    """Pflichtpunkte haben Vorrang vor max_points.
+    """Mandatory points take precedence over max_points.
 
-    Sonst schnitte ein max_points=2 den Druckpeak weg, obwohl er als garantiert
-    beschrieben ist. Die Kurve wird dadurch hoechstens vier Punkte lang.
+    Otherwise a max_points=2 would cut away the pressure peak even though it is
+    described as guaranteed. That makes the curve at most four points long.
     """
     metrics = await call(mcp, "get_shot_metrics", {"id": REFERENCE})
     curve = (await call(
@@ -325,8 +325,8 @@ async def test_tiny_budget_still_keeps_the_mandatory_points(mcp, max_points: int
     assert curve["t"][0] == 0.0
     assert curve["t"][-1] == pytest.approx(DURATION_S, abs=0.01)
     for wanted in (metrics["t_peak"], metrics["t_max_pressure_global"]):
-        # Metrikzeiten sind auf 0.1 s gerundet, Kurvenzeiten auf 0.01 s - der
-        # naechstgelegene Punkt darf also bis zu 0.05 s daneben liegen.
+        # Metric times are rounded to 0.1 s, curve times to 0.01 s - the nearest
+        # point may therefore be up to 0.05 s off.
         assert min(abs(t - wanted) for t in curve["t"]) <= 0.051
 
 
@@ -357,7 +357,7 @@ async def test_get_shot_metrics(mcp) -> None:
 
 async def test_get_shot_metrics_unknown_id(mcp) -> None:
     with pytest.raises(ToolError) as excinfo:
-        await call(mcp, "get_shot_metrics", {"id": "gibt-es-nicht"})
+        await call(mcp, "get_shot_metrics", {"id": "does-not-exist"})
     assert "shot_not_found" in str(excinfo.value)
 
 
@@ -385,13 +385,13 @@ async def test_compare_shots(mcp) -> None:
 
 async def test_compare_skips_deltas_for_null_fields(mcp) -> None:
     result = await call(mcp, "compare_shots", {"ids": [REFERENCE, BROKEN]})
-    # t_first_drops ist beim kaputten Shot null - eine Differenz waere erfunden.
+    # t_first_drops is null on the broken shot - a delta would be invented.
     assert "t_first_drops" not in result["deltas"][0]["vs_reference"]
     assert "peak_pressure_infusion" in result["deltas"][0]["vs_reference"]
 
 
 async def test_compare_splits_the_point_budget_across_shots(mcp) -> None:
-    """Vier Shots mit je 60 Punkten sprengen das Antwortbudget (gemessen 18 kB)."""
+    """Four shots at 60 points each blow the response budget (measured 18 kB)."""
     two = await call(
         mcp, "compare_shots", {"ids": [REFERENCE, RECENT], "include_curves": True}
     )
@@ -415,7 +415,7 @@ async def test_compare_rejects_wrong_number_of_ids(mcp, count: int) -> None:
 
 async def test_compare_rejects_unknown_id(mcp) -> None:
     with pytest.raises(ToolError) as excinfo:
-        await call(mcp, "compare_shots", {"ids": [REFERENCE, "gibt-es-nicht"]})
+        await call(mcp, "compare_shots", {"ids": [REFERENCE, "does-not-exist"]})
     assert "shot_not_found" in str(excinfo.value)
 
 
@@ -478,7 +478,7 @@ async def test_get_profile_for_shot_without_one(mcp, db) -> None:
         ("get_profile", {"shot_id": REFERENCE}),
         ("compare_shots", {"ids": [REFERENCE, RECENT]}),
         ("compare_shots", {"ids": [REFERENCE, RECENT, BROKEN], "include_curves": True}),
-        # Schlimmster Fall: die Hoechstzahl an Shots mit allem dran.
+        # Worst case: the maximum number of shots with everything attached.
         ("compare_shots", {"ids": [REFERENCE, RECENT, BROKEN, REFERENCE],
                            "include_curves": True}),
     ],
@@ -486,16 +486,16 @@ async def test_get_profile_for_shot_without_one(mcp, db) -> None:
 async def test_response_budget(mcp, tool: str, args: dict) -> None:
     # SPEC ss9: Standardantwort <= ~15 kB.
     payload = await call(mcp, tool, args)
-    assert size_of(payload) <= BUDGET_BYTES, f"{tool} sprengt das Budget"
+    assert size_of(payload) <= BUDGET_BYTES, f"{tool} blows the budget"
 
 
 async def test_compact_arrays_beat_object_lists(mcp) -> None:
-    """SPEC ss9.1 begruendet die Arrays mit rund 60 % Ersparnis.
+    """SPEC §9.1 justifies the arrays with roughly 60 % savings.
 
-    An diesem Shot gemessen: gegen eine Objektliste mit denselben Kurz-
-    schluesseln sind es rund 49 %, gegen eine mit sprechenden Spaltennamen rund
-    70 %. Die 60 % der SPEC liegen dazwischen - je nachdem, womit man
-    vergleicht.
+    Measured on this shot: against a list of objects using the same short keys
+    it is about 49 %, against one with spelled-out column names about 70 %. The
+    60 % in the spec sits between the two - depending on what one compares
+    against.
     """
     curve = (await call(
         mcp, "get_shot", {"id": REFERENCE, "include_curve": True}
@@ -539,7 +539,7 @@ async def test_sync_now_runs_the_coordinator(config: Config, db: Database) -> No
     coordinator = FakeCoordinator()
     result = await call(build_mcp(config, db, coordinator), "sync_now")
 
-    assert coordinator.calls == [False], "sync_now laeuft inkrementell, nicht als Backfill"
+    assert coordinator.calls == [False], "sync_now runs incrementally, not as a backfill"
     assert result["new_shots"] == 1
 
 
@@ -570,7 +570,7 @@ async def test_latest_skips_sync_when_fresh(config: Config, db: Database) -> Non
 
     assert coordinator.runs == 0
     assert result["freshness"]["synced"] is False
-    assert "aktuell" in result["freshness"]["note"]
+    assert "current" in result["freshness"]["note"]
 
 
 async def test_latest_syncs_when_stale(config: Config, db: Database) -> None:
@@ -589,17 +589,17 @@ async def test_latest_survives_a_failing_sync(config: Config, db: Database) -> N
     class FailingCoordinator(RecordingCoordinator):
         async def run(self, *, full: bool | None = None):
             self.runs += 1
-            raise DecaidError("Decaid antwortet nicht.")
+            raise DecaidError("Decaid is not responding.")
 
     db.set_state("last_sync_at", "2020-01-01T00:00:00Z")
     coordinator = FailingCoordinator(db)
 
     result = await call(build_mcp(config, db, coordinator), "get_shot", {"id": "latest"})
 
-    # Archiv schlaegt Fehlermeldung: die Daten sind da, nur vielleicht alt.
+    # Archive beats error message: the data is there, just perhaps old.
     assert result["shot"]["id"] == RECENT
     assert result["freshness"]["synced"] is False
-    assert "Sync fehlgeschlagen" in result["freshness"]["note"]
+    assert "Sync failed" in result["freshness"]["note"]
 
 
 async def test_id_other_than_latest_never_syncs(config: Config, db: Database) -> None:
@@ -637,7 +637,7 @@ async def test_list_shots_first_page_skips_sync_when_fresh(
 async def test_list_shots_does_not_sync_while_paginating(
     config: Config, db: Database
 ) -> None:
-    # Ein Abgleich mitten in der Paginierung koennte die Treffermenge unter dem
+    # A sync mid-pagination could shift the result set under the
     # Cursor verschieben.
     db.set_state("last_sync_at", "2020-01-01T00:00:00Z")
     coordinator = RecordingCoordinator(db)

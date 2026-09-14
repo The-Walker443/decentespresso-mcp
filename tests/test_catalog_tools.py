@@ -1,4 +1,4 @@
-"""audit_archive, get_workflow und die Katalog-Schreibtools (SPEC ss20.5, ss20.7)."""
+"""audit_archive, get_workflow and the catalogue write tools (SPEC §20.5, §20.7)."""
 
 from __future__ import annotations
 
@@ -31,11 +31,10 @@ def load(name: str):
 
 
 class FakeDecaid:
-    """Haelt Bohne, Charge und Workflow im Speicher.
+    """Keeps bean, batch and workflow in memory.
 
-    Bildet nach, was am 2026-09-14 gemessen wurde: PUT nimmt die erlaubten
-    Felder an, geschuetzte weist es mit 400 ab, und Datumsangaben kommen mit
-    angehaengter Uhrzeit zurueck.
+    Reproduces what was measured on 2026-09-14: PUT takes the allowed fields,
+    refuses protected ones with 400, and returns dates with a time attached.
     """
 
     def __init__(self) -> None:
@@ -126,7 +125,7 @@ async def call(mcp, name: str, args: dict | None = None):
 
 
 def stocked(db: Database) -> None:
-    """Ein Bestand, an dem jede Waechterregel etwas zu melden hat."""
+    """An archive on which every guard rule has something to report."""
     db.upsert_beans([{
         "id": BEAN_ID, "name": "Testsorte", "roaster": "Tchibo", "species": None,
         "processing": None, "decaf": 0, "archived": 0, "notes": None,
@@ -139,8 +138,8 @@ def stocked(db: Database) -> None:
         "frozen": 0, "archived": 0, "created_at": None, "updated_at": None,
         "raw_json": "{}", "synced_at": "2026-09-14T12:00:00Z",
     }])
-    # Der Bezug liegt im Meldefenster der Bewertungsregel, die Charge weit
-    # ausserhalb der Altersschwelle - so hat jede Regel etwas zu sagen.
+    # The shot sits inside the rating rule's window and the batch well beyond
+    # the age threshold - so every rule has something to say.
     started = (datetime.now(UTC) - timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%S")
     detail = decaid_detail("de1app-1785525360", timestamp=started, enjoyment=None)
     detail["workflow"]["context"]["beanBatchId"] = BATCH_ID
@@ -163,7 +162,7 @@ async def test_audit_finds_the_old_bean(config: Config, db: Database) -> None:
 
 
 async def test_audit_reports_its_thresholds(config: Config, db: Database) -> None:
-    """Ein Befund ohne seinen Massstab laesst sich nicht einordnen."""
+    """A finding without its yardstick cannot be placed."""
     stocked(db)
     result = await call(build_mcp(config, db), "audit_archive")
     assert result["thresholds"]["bean_age_warn_days"] == 42
@@ -180,7 +179,7 @@ async def test_audit_rejects_an_unknown_rule(config: Config, db: Database) -> No
     with pytest.raises(ToolError) as excinfo:
         await call(build_mcp(config, db), "audit_archive", {"rule": "quatsch"})
     assert "invalid_argument" in str(excinfo.value)
-    assert "bean_age" in str(excinfo.value), "die Meldung nennt die gueltigen Regeln"
+    assert "bean_age" in str(excinfo.value), "the message names the valid rules"
 
 
 async def test_audit_respects_since(config: Config, db: Database) -> None:
@@ -200,7 +199,7 @@ async def test_switched_off_rules_report_nothing(
 
 
 async def test_findings_never_carry_notes(config: Config, db: Database) -> None:
-    """Befunde koennen per ntfy das Haus verlassen."""
+    """Findings can leave the house over ntfy."""
     stocked(db)
     detail = decaid_detail("de1app-1785525999", timestamp="2026-08-02T05:32:50",
                            notes="streng vertraulich", enjoyment=None)
@@ -230,7 +229,7 @@ async def test_get_workflow_is_absent_without_a_connection(
         assert "get_workflow" not in {t.name for t in await client.list_tools()}
 
 
-# ------------------------------------------------------- Sichtbarkeit
+# --------------------------------------------------------- Visibility
 
 
 async def test_catalog_writes_need_the_switch(
@@ -263,7 +262,7 @@ async def test_update_bean_writes_and_reads_back(
 
     assert fake.puts[0][1] == {"notes": "fruchtig", "decaf": False}
     assert result["changes"]["notes"] == {"before": "alt", "after": "fruchtig"}
-    # Lokal nachgezogen, damit list_beans sofort stimmt.
+    # Updated locally, so list_beans is correct straight away.
     assert db.list_beans()[0]["bean_name"] == "Testsorte"
 
 
@@ -282,7 +281,7 @@ async def test_update_bean_reports_an_unknown_id(
 ) -> None:
     with pytest.raises(ToolError) as excinfo:
         await call(build_mcp(writable, db, coordinator), "update_bean",
-                   {"id": "gibt-es-nicht", "fields": {"notes": "x"}})
+                   {"id": "does-not-exist", "fields": {"notes": "x"}})
     assert "not_found" in str(excinfo.value)
 
 
@@ -296,7 +295,7 @@ async def test_update_batch_writes_dates(
                         {"id": BATCH_ID, "fields": {"roastDate": "2026-09-05"}})
     assert fake.puts[0][1]["roastDate"].startswith("2026-09-05")
     assert result["changes"]["roastDate"]["after"].startswith("2026-09-05")
-    # Im Archiv steht das Datum ohne Uhrzeit.
+    # In the archive the date is stored without a time.
     assert db.batch_row(BATCH_ID)["roast_date"] == "2026-09-05"
 
 
@@ -316,7 +315,7 @@ async def test_a_thaw_date_is_refused_with_the_way_out(
     with pytest.raises(ToolError) as excinfo:
         await call(build_mcp(writable, db, coordinator), "update_batch",
                    {"id": BATCH_ID, "fields": {"unfreezeDate": "2026-09-12"}})
-    assert "kein Auftaudatum" in str(excinfo.value)
+    assert "no thaw date" in str(excinfo.value)
 
 
 # ---------------------------------------------------------- set_workflow
@@ -329,17 +328,17 @@ async def test_set_workflow_changes_the_grind(
                         {"fields": {"grinderSetting": "3.10"}})
     assert fake.puts[0][1] == {"context": {"grinderSetting": "3.10"}}
     assert result["changes"]["grinderSetting"] == {"before": "3.30", "after": "3.10"}
-    assert "id" not in result, "der Workflow ist einer, er braucht keine Kennung"
+    assert "id" not in result, "there is one workflow, it needs no identifier"
 
 
 async def test_a_profile_change_never_reaches_the_machine(
     writable: Config, db: Database, coordinator: SyncCoordinator, fake: FakeDecaid
 ) -> None:
-    """Die einzige Stelle, an der v1 ausdruecklich nein sagt."""
+    """The one place where v1 explicitly says no."""
     with pytest.raises(ToolError) as excinfo:
         await call(build_mcp(writable, db, coordinator), "set_workflow",
                    {"fields": {"profile": {"title": "anderes"}}})
-    assert "an der Maschine" in str(excinfo.value)
+    assert "at the machine" in str(excinfo.value)
     assert fake.puts == []
 
 
@@ -349,7 +348,7 @@ async def test_an_unchanged_value_is_reported_as_such(
     result = await call(build_mcp(writable, db, coordinator), "set_workflow",
                         {"fields": {"grinderSetting": "3.30"}})
     assert result["unchanged"] == ["grinderSetting"]
-    assert "nicht uebernommen" in result["note"]
+    assert "did not take" in result["note"]
 
 
 async def test_the_log_names_fields_but_never_values(

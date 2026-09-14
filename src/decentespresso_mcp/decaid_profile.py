@@ -1,21 +1,19 @@
-"""Profilversionen aus dem Workflow-JSON (SPEC ss20.5).
+"""Profile versions from the workflow JSON (SPEC §20.5).
 
-Decaid liefert das Bruehprofil als JSON mit dem Bezug mit - es muss nicht mehr
-getrennt geholt und aus TCL geparst werden. Damit entfaellt die haeufigste
-Fehlerquelle der Visualizer-Aera: ein Profil, das die API nicht herausgibt
-(422), oder eines, dessen TCL der Parser nicht versteht.
+Decaid ships the brewing profile as JSON alongside the shot - it no longer
+has to be fetched separately and parsed from TCL. That removes the most
+common source of failure in the Visualizer era: a profile the API would not
+hand out (422), or one whose TCL the parser did not understand.
 
-``tcl_profile.py`` bleibt fuer den Altbestand lesbar, wird aber nicht mehr
-benutzt.
+``tcl_profile.py`` stays readable for the archived era but is no longer used.
 
-Zwei Hashes wie bisher (SPEC ss5):
+Two hashes, as before (SPEC §5):
 
-``version_hash``  Identitaet einer Profilversion. Aendert sich, sobald sich
-                  irgendetwas am Profil aendert - auch Notizen.
-``semantic_hash`` Gruppiert Versionen, die gleich bruehen. Nur die Schritte und
-                  die Ziele gehen ein; Titel, Autor und Notizen nicht. Zwei
-                  Versionen, die sich allein in einer Notiz unterscheiden,
-                  landen damit in derselben Gruppe.
+``version_hash``  Identity of one profile version. Changes as soon as
+                  anything about the profile changes - notes included.
+``semantic_hash`` Groups versions that brew alike. Only the steps and the
+                  targets go in; title, author and notes do not. Two versions
+                  differing only in a note therefore land in the same group.
 """
 
 from __future__ import annotations
@@ -24,7 +22,7 @@ import hashlib
 import json
 from typing import Any
 
-#: Schluessel, die das Bruehverhalten bestimmen. Alles andere ist Beschriftung.
+#: Keys that determine brewing behaviour. Everything else is labelling.
 BREWING_KEYS = (
     "steps",
     "target_weight",
@@ -50,12 +48,12 @@ def semantic_hash(profile: dict[str, Any]) -> str:
 
 
 def profile_version(profile: dict[str, Any]) -> dict[str, Any]:
-    """``profile``-Objekt eines Workflows -> Angaben fuer ``db.upsert_profile``."""
+    """A workflow's ``profile`` object -> arguments for ``db.upsert_profile``."""
     steps = profile.get("steps") or []
-    #: Feldnamen wie bisher, damit die Tools unveraendert bleiben. Decaids
-    #: Profil-JSON traegt dieselben Angaben, nur anders benannt - und anders
-    #: als beim TCL-Parser kann es hier nicht scheitern, deshalb ist
-    #: ``parse_ok`` immer wahr.
+    #: Field names as before, so the tools stay unchanged. Decaid's profile
+    #: JSON carries the same information under different names - and unlike
+    #: the TCL parser this cannot fail, which is why ``parse_ok`` is always
+    #: true.
     parsed = {
         "title": profile.get("title"),
         "type": _kind(steps),
@@ -81,7 +79,7 @@ def profile_version(profile: dict[str, Any]) -> dict[str, Any]:
         ],
     }
     return {
-        "name": str(profile.get("title") or "ohne Titel"),
+        "name": str(profile.get("title") or "untitled"),
         "version_hash": version_hash(profile),
         "semantic_hash": semantic_hash(profile),
         "raw_json": json.dumps(profile, ensure_ascii=False, separators=(",", ":")),
@@ -91,7 +89,7 @@ def profile_version(profile: dict[str, Any]) -> dict[str, Any]:
 
 
 def _kind(steps: list[dict[str, Any]]) -> str:
-    """Grobe Einordnung wie bisher: mehr als ein Schritt heisst "advanced"."""
+    """Rough classification as before: more than one step means "advanced"."""
     modes = {step.get("pump") for step in steps}
     if len(steps) > 1 or len(modes) > 1:
         return "advanced"
@@ -99,7 +97,7 @@ def _kind(steps: list[dict[str, Any]]) -> str:
 
 
 def _headline_temperature(steps: list[dict[str, Any]]) -> float | None:
-    """Die Temperatur des ersten Schritts - was die Maschine anzeigt."""
+    """The temperature of the first step - what the machine displays."""
     for step in steps:
         temperature = step.get("temperature")
         if temperature is not None:
@@ -108,10 +106,10 @@ def _headline_temperature(steps: list[dict[str, Any]]) -> float | None:
 
 
 def _exit(exit_condition: Any) -> dict[str, Any] | None:
-    """``{type, condition, value}`` -> ``{type: "<was>_<wann>", value: <wert>}``.
+    """``{type, condition, value}`` -> ``{type: "<what>_<when>", value: <value>}``.
 
-    Dieselbe Form, die der TCL-Parser geliefert hat, damit die Tool-Antworten
-    gleich bleiben. Ohne Bedingung ``None`` statt eines leeren Objekts.
+    The same shape the TCL parser produced, so tool responses stay identical.
+    Without a condition it is ``None`` rather than an empty object.
     """
     if not isinstance(exit_condition, dict) or not exit_condition.get("type"):
         return None

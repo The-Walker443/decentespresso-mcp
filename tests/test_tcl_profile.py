@@ -1,4 +1,5 @@
-"""TCL-Parser gegen echte Profile, mit Visualizers format=json als Gegenprobe."""
+"""The TCL parser against real profiles, cross-checked with Visualizer's
+format=json output."""
 
 from __future__ import annotations
 
@@ -38,7 +39,7 @@ def advanced() -> dict:
 
 @pytest.fixture
 def legacy() -> dict:
-    """Decent Default - settings_2a, advanced_shot ist leer."""
+    """Decent Default - settings_2a, advanced_shot is empty."""
     return parse_profile(tcl("profile_recent.tcl"))
 
 
@@ -53,7 +54,7 @@ def test_advanced_profile_header(advanced: dict) -> None:
     assert advanced["settings_profile_type"] == "settings_2c"
     assert advanced["beverage_type"] == "espresso"
     assert advanced["target_temp_c"] == 88
-    # Advanced-Profile fuehren das Ziel im _advanced-Feld (36), nicht in
+    # Advanced profiles keep the target in the _advanced field (36), not in
     # final_desired_shot_weight (50).
     assert advanced["target_weight_g"] == 36
 
@@ -64,17 +65,17 @@ def test_advanced_steps(advanced: dict) -> None:
 
     filling, infusing, pouring = steps
     assert filling["mode"] == "pressure"
-    assert filling["target"] == 3.0          # pressure, weil pump=pressure
+    assert filling["target"] == 3.0          # pressure, because pump=pressure
     assert filling["temp_c"] == 88
     assert filling["duration_s"] == 25
     assert filling["transition"] == "fast"
     assert filling["exit"] == {"type": "pressure_over", "value": 2.1}
 
-    # exit_if 0 -> die exit_*-Felder stehen zwar im TCL, gelten aber nicht.
+    # exit_if 0 -> the exit_* fields are in the TCL but do not apply.
     assert infusing["exit"] is None
     assert pouring["exit"] is None
     assert pouring["mode"] == "flow"
-    assert pouring["target"] == 1.7          # flow, weil pump=flow
+    assert pouring["target"] == 1.7          # flow, because pump=flow
 
 
 def test_legacy_profile_has_no_steps(legacy: dict) -> None:
@@ -83,7 +84,7 @@ def test_legacy_profile_has_no_steps(legacy: dict) -> None:
     assert legacy["type"] == "pressure"
     assert legacy["settings_profile_type"] == "settings_2a"
     assert legacy["steps"] == []
-    # Legacy-Profile fuehren das Ziel im Basisfeld (40.0), nicht im _advanced (36).
+    # Legacy profiles keep the target in the base field (40.0), not in _advanced (36).
     assert legacy["target_weight_g"] == 40.0
 
 
@@ -91,7 +92,7 @@ def test_legacy_profile_has_no_steps(legacy: dict) -> None:
 
 
 def test_legacy_settings_capture_the_head_values(legacy: dict) -> None:
-    """Ohne Schritte stecken die Sollwerte eines Legacy-Profils hier."""
+    """Without steps, a legacy profile's targets sit here."""
     settings = legacy["legacy_settings"]
     assert settings["target_pressure_bar"] == 8.9
     assert settings["hold_time_s"] == 4
@@ -100,13 +101,13 @@ def test_legacy_settings_capture_the_head_values(legacy: dict) -> None:
     assert settings["preinfusion_time_s"] == 20
     assert settings["preinfusion_stop_pressure_bar"] == 4
     assert settings["preinfusion_flow_rate_mls"] == 8
-    # espresso_temperature_steps_enabled ist 1 -> die Stufen zaehlen.
+    # espresso_temperature_steps_enabled is 1 -> the steps count.
     assert settings["temperature_steps_c"] == [88, 86, 86, 86]
 
 
 def test_pressure_profile_omits_the_unused_flow_block(legacy: dict) -> None:
     # Die DE1-App schreibt flow_profile_* auch in ein Druckprofil, wertet sie
-    # dort aber nicht aus - mitgehasht ergaeben sie Scheinversionen.
+    # evaluate them - hashed along they would produce phantom versions.
     assert "flow_profile_hold" in tcl("profile_recent.tcl")
     assert not any(k.startswith("flow_") for k in legacy["legacy_settings"])
 
@@ -166,10 +167,10 @@ def test_normalize_strips_trailing_whitespace() -> None:
 
 # ------------------------------------------------------------- semantic_hash
 #
-# Die drei Fixtures sind echte Versionen des Decent-Default-Profils aus dem
-# Archiv. a und a_cosmetic unterscheiden sich nur durch zwei leere
-# Zusatzschluessel und ein doppeltes Leerzeichen in den Notizen; b aendert
-# Druck (8.6 -> 8.9) und Temperatur (90 -> 88).
+# The three fixtures are real versions of the Decent Default profile from the
+# archive. a and a_cosmetic differ only in two empty extra keys and a double
+# space in the notes; b changes pressure (8.6 -> 8.9) and temperature
+# (90 -> 88).
 
 
 def sem(name: str) -> str | None:
@@ -181,7 +182,7 @@ def test_cosmetic_change_keeps_the_semantic_hash() -> None:
     cosmetic = "profile_default_a_cosmetic.tcl"
 
     assert version_hash(tcl(base)) != version_hash(tcl(cosmetic)), (
-        "die Versionen sind unterschiedliche Dateien - version_hash muss das zeigen"
+        "the versions are different files - version_hash must show that"
     )
     assert sem(base) == sem(cosmetic)
 
@@ -191,12 +192,12 @@ def test_brewing_change_changes_the_semantic_hash() -> None:
 
 
 def test_pressure_only_change_changes_the_semantic_hash() -> None:
-    """Der Fall, der den legacy_settings-Block noetig gemacht hat.
+    """The case that made the legacy_settings block necessary.
 
-    Die Fixture unterscheidet sich von profile_default_a.tcl in genau einer
-    Zeile: espresso_pressure 8.6 -> 8.9, Temperatur unveraendert. Ohne die
-    Kopf-Sollwerte im Hash waeren beide Versionen semantisch gleich gewesen -
-    obwohl mit einem Bar mehr gebrueht wird.
+    The fixture differs from profile_default_a.tcl in exactly one line:
+    espresso_pressure 8.6 -> 8.9, temperature unchanged. Without the headline
+    targets in the hash both versions would have been semantically equal even
+    though one brews at a bar more.
     """
     base = tcl("profile_default_a.tcl")
     louder = tcl("profile_default_a_pressure_only.tcl")
@@ -228,7 +229,7 @@ def test_every_legacy_head_value_moves_the_hash(original: str, replacement: str)
 
 
 def test_unused_flow_block_does_not_move_the_hash() -> None:
-    # Gegenprobe: an einem Druckprofil ist flow_profile_hold wirkungslos.
+    # Cross-check: on a pressure profile flow_profile_hold has no effect.
     raw = tcl("profile_recent.tcl")
     changed = raw.replace("flow_profile_hold 2", "flow_profile_hold 7")
     assert version_hash(raw) != version_hash(changed)
@@ -238,7 +239,7 @@ def test_unused_flow_block_does_not_move_the_hash() -> None:
 def test_semantic_hash_ignores_title_author_and_notes() -> None:
     raw = tcl("profile_reference.tcl")
     edited = (
-        # Geklammert, sonst waeren es zwei Tcl-Listenelemente.
+        # Braced, otherwise these would be two Tcl list elements.
         raw.replace("author Damian", "author {Jemand Anders}")
         .replace("profile_title {D-Flow / default}", "profile_title {Anderer Name}")
         .replace("A simple to use profiling system", "Voellig andere Notiz")
@@ -248,8 +249,8 @@ def test_semantic_hash_ignores_title_author_and_notes() -> None:
 
 
 def test_semantic_hash_ignores_step_names() -> None:
-    # Einen Schritt umzubenennen aendert am Bezug nichts - sonst erzeugte die
-    # Umbenennung genau die Scheinversion, die der Hash vermeiden soll.
+    # Renaming a step changes nothing about the shot - otherwise the rename
+    # would create exactly the phantom version the hash is meant to avoid.
     raw = tcl("profile_reference.tcl")
     renamed = raw.replace("name Pouring", "name Ausschenken")
     assert semantic_hash(parse_profile(raw)) == semantic_hash(parse_profile(renamed))
@@ -266,14 +267,14 @@ def test_semantic_hash_reacts_to_step_target_and_temperature() -> None:
 def test_semantic_hash_reacts_to_an_active_exit_condition() -> None:
     raw = tcl("profile_reference.tcl")
     base = semantic_hash(parse_profile(raw))
-    # exit_pressure_over 2.1 gehoert zum Schritt mit exit_if 1 -> zaehlt.
+    # exit_pressure_over 2.1 belongs to the step with exit_if 1 -> it counts.
     assert semantic_hash(parse_profile(raw.replace("exit_pressure_over 2.1",
                                                    "exit_pressure_over 3.3"))) != base
 
 
 def test_semantic_hash_ignores_disabled_exit_fields() -> None:
-    # exit_pressure_over 3.0 steht im Schritt "Infusing" mit exit_if 0 - der
-    # Wert ist tot und darf keine neue Version vortaeuschen.
+    # exit_pressure_over 3.0 sits in the step "Infusing" with exit_if 0 - the
+    # value is dead and must not feign a new version.
     raw = tcl("profile_reference.tcl")
     dead = raw.replace("exit_pressure_over 3.0", "exit_pressure_over 9.9")
     assert version_hash(raw) != version_hash(dead)
@@ -290,17 +291,17 @@ def test_semantic_hash_differs_between_unrelated_profiles() -> None:
 
 # ------------------------------------------------- Parser ohne Tcl-Interpreter
 #
-# Der Interpreter ist der vorgesehene Weg; libtk8.6 im Dockerfile sorgt dafuer,
-# dass er auch im Container laeuft. Faellt er trotzdem aus, darf der Server
-# nicht sterben - der eigene Listensplitter muss dann dasselbe liefern wie der
-# Interpreter. Hier auf allen Fixtures gegengeprueft.
+# The interpreter is the intended route; libtk8.6 in the Dockerfile ensures it
+# also runs inside the container. Should it fail anyway, the server must not
+# die - our own list splitter then has to return the same thing the
+# interpreter would. Hier auf allen Fixtures gegengeprueft.
 
 
 def test_module_import_survives_a_broken_tkinter(monkeypatch) -> None:
-    """Der Produktionsfall: _tkinter da, libtk8.6.so nicht.
+    """The production case: _tkinter present, libtk8.6.so not.
 
-    Damals starb der Container beim Import. Das Modul muss stattdessen laden,
-    ``TCL_INTERPRETER_AVAILABLE`` auf False setzen, den Grund festhalten und
+    Back then the container died at import. Instead the module has to load, set
+    ``TCL_INTERPRETER_AVAILABLE`` to False, record the reason and
     weiterparsen.
     """
     import builtins
@@ -329,7 +330,7 @@ def test_module_import_survives_a_broken_tkinter(monkeypatch) -> None:
         assert parsed["legacy_settings"]["target_pressure_bar"] == 8.9
         assert crippled.semantic_hash(parsed)
     finally:
-        # Zustand wiederherstellen, sonst sehen alle folgenden Tests das
+        # Restore the state, otherwise every following test sees the
         # verkrueppelte Modul.
         monkeypatch.undo()
         importlib.reload(module)
@@ -385,12 +386,12 @@ def test_fallback_split_matches_tcl_semantics(raw: str, expected: list[str]) -> 
         assert split_list(raw, prefer_tcl=True) == expected
 
 
-#: Kaputte Listen. Tcl wirft TclError, der Fallback ValueError - parse_profile
-#: faengt beides. Entscheidend ist, dass beide *dieselben* Eingaben ablehnen.
+#: Broken lists. Tcl raises TclError, the fallback ValueError - parse_profile
+#: catches both. What matters is that both reject the *same* inputs.
 BROKEN_LISTS = ["{unbalanciert", 'a "offen', "a {b}c"]
 
-#: Sieht kaputt aus, ist es aber nicht: eine schliessende Klammer im blanken
-#: Wort ist in Tcl ein normales Zeichen.
+#: Looks broken but is not: a closing brace inside a bare word is an ordinary
+#: character in Tcl.
 ODD_BUT_VALID = {
     "a {b} c}": ["a", "b", "c}"],
     "a }b": ["a", "}b"],
@@ -430,7 +431,7 @@ def test_parse_without_tcl_survives_broken_input() -> None:
 
 
 def test_broken_tcl_does_not_raise() -> None:
-    # Unbalancierte Klammer - der Interpreter steigt aus.
+    # Unbalanced brace - the interpreter gives up.
     broken = "profile_title {Kaputt\nauthor Niemand\n"
     parsed = parse_profile(broken)
     assert parsed["parse_ok"] is False
@@ -457,7 +458,7 @@ def test_odd_number_of_top_level_items_is_caught() -> None:
 
 def test_empty_input_does_not_raise() -> None:
     parsed = parse_profile("")
-    assert parsed["parse_ok"] is True     # leere Liste ist gueltiges Tcl
+    assert parsed["parse_ok"] is True     # an empty list is valid Tcl
     assert parsed["steps"] == []
     assert parsed["title"] is None
 
@@ -489,8 +490,8 @@ def test_parsing_works_from_a_worker_thread() -> None:
 def test_crosscheck_advanced_against_visualizer(advanced: dict) -> None:
     """Eigener Parser vs. Visualizers format=json - Advanced-Profil.
 
-    Der eigene Parser ist die Referenz (er liest das TCL, an dem auch der
-    Versionshash haengt). Diese Gegenprobe faellt aus, sobald eine der beiden
+    Our own parser is the reference (it reads the TCL the version hash hangs
+    on too). This cross-check falls away as soon as one of the two
     Seiten etwas anderes versteht.
     """
     ref = vis_json("profile_reference.json")
@@ -514,7 +515,7 @@ def test_crosscheck_advanced_against_visualizer(advanced: dict) -> None:
         assert mine["target"] == float(expected_target)
 
         if mine["exit"] is None:
-            assert "exit" not in theirs, "Visualizer sieht hier ein exit, wir nicht"
+            assert "exit" not in theirs, "Visualizer sees an exit here, we do not"
         else:
             # Visualizer teilt exit_type in type+condition, wir behalten
             # "pressure_over" am Stueck (SPEC ss7.1).
@@ -535,11 +536,11 @@ def test_crosscheck_legacy_against_visualizer(legacy: dict) -> None:
 
     # DOKUMENTIERTE ABWEICHUNG 1
     # Im TCL steht "advanced_shot {}" - es gibt keine Schritte. Visualizer
-    # synthetisiert fuer Legacy-Profile sechs Schritte aus den
-    # flow_profile_*- und preinfusion_*-Settings ("preinfusion temp boost",
+    # synthesises six steps for legacy profiles from the flow_profile_* and
+    # preinfusion_* settings ("preinfusion temp boost",
     # "preinfusion", "forced rise without limit", "rise and hold", ...).
-    # Das ist eine Rekonstruktion, keine Information aus der Datei; wir bilden
-    # sie nicht nach. Die Sollwerte stehen als Kopffelder in parsed_json.
+    # That is a reconstruction, not information from the file; we do not
+    # reproduce it. The targets sit as headline fields in parsed_json.
     assert legacy["steps"] == []
     assert len(ref["steps"]) == 6
     assert ref["steps"][0]["name"] == "preinfusion temp boost"
@@ -548,15 +549,15 @@ def test_crosscheck_legacy_against_visualizer(legacy: dict) -> None:
 def test_documented_difference_in_notes_whitespace(advanced: dict) -> None:
     """DOKUMENTIERTE ABWEICHUNG 2: Notizen-Weissraum.
 
-    Visualizers JSON enthaelt an einer Stelle die zwei Zeichen \\n gefolgt von
+    At one point Visualizer's JSON contains the two characters \\n followed by
     acht Leerzeichen, wo im TCL ein einzelnes Leerzeichen steht. Die Ursache
-    liegt in Visualizers Serializer, nicht bei uns - unsere Notiz ist die des
-    TCL, und der Versionshash haengt ohnehin am TCL.
+    lies in Visualizer's serializer, not with us - our note is the one from the
+    TCL, and the version hash hangs on the TCL anyway.
     """
     ref = vis_json("profile_reference.json")
     assert "\\n        " in ref["notes"]
     assert "\\n        " not in advanced["notes"]
     assert "Brakel D-Flow" in advanced["notes"]
 
-    # Abgesehen davon ist der Text identisch.
+    # Apart from that the text is identical.
     assert advanced["notes"] == ref["notes"].replace("\\n        ", " ")

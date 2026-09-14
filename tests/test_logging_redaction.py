@@ -1,4 +1,4 @@
-"""Deckt Abnahmekriterium 6 ab: kein Secret in Logs (SPEC ss13)."""
+"""Covers acceptance criterion 6: no secret in the logs (SPEC §13)."""
 
 from __future__ import annotations
 
@@ -60,7 +60,7 @@ def test_secret_in_extra_field_is_redacted() -> None:
 
 
 def test_short_values_are_not_redacted() -> None:
-    # Sonst zerschiesst ein kurzes Passwort jede Logzeile, die zufaellig
+    # Otherwise a short password shreds every log line that happens to
     # dieselbe Zeichenfolge enthaelt.
     out = KeyValueFormatter(["abc"]).format(_record("abcdef"))
     assert "abcdef" in out

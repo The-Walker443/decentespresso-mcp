@@ -53,14 +53,14 @@ def test_placeholder_from_env_example_is_rejected(valid_env: dict[str, str]) -> 
     valid_env["MCP_PATH_SECRET"] = "<openssl rand -hex 24>"
     with pytest.raises(ConfigError) as excinfo:
         Config.from_env(valid_env)
-    assert sum("Platzhalter" in p for p in excinfo.value.problems) == 2
+    assert sum("placeholder" in p for p in excinfo.value.problems) == 2
 
 
 def test_short_secret_is_rejected(valid_env: dict[str, str]) -> None:
     valid_env["MCP_PATH_SECRET"] = "a" * 31
     with pytest.raises(ConfigError) as excinfo:
         Config.from_env(valid_env)
-    assert any("31 Zeichen" in p for p in excinfo.value.problems)
+    assert any("31 characters" in p for p in excinfo.value.problems)
 
 
 def test_secret_must_be_url_safe(valid_env: dict[str, str]) -> None:
@@ -103,7 +103,7 @@ def test_relative_db_path_is_rejected(valid_env: dict[str, str], raw: str) -> No
 @pytest.mark.parametrize("raw", ["/data/shots.db", "D:/dev/data/shots.db",
                                  r"C:\dev\data\shots.db"])
 def test_absolute_db_paths_are_accepted(valid_env: dict[str, str], raw: str) -> None:
-    # Container laeuft unter Linux, entwickelt wird auch unter Windows.
+    # The container runs on Linux, development also happens on Windows.
     valid_env["DB_PATH"] = raw
     assert Config.from_env(valid_env).db_path == raw
 
@@ -115,7 +115,7 @@ def test_base_url_needs_scheme(valid_env: dict[str, str]) -> None:
 
 
 def test_all_problems_are_reported_at_once(valid_env: dict[str, str]) -> None:
-    # Ein Start soll alle Fehler zeigen, nicht einen pro Neustart.
+    # One start should show every problem, not one per restart.
     del valid_env["VISUALIZER_EMAIL"]
     valid_env["MCP_PATH_SECRET"] = "short"
     valid_env["LOG_LEVEL"] = "CHATTY"
@@ -125,15 +125,15 @@ def test_all_problems_are_reported_at_once(valid_env: dict[str, str]) -> None:
 
 
 def test_short_password_triggers_a_startup_warning(valid_env: dict[str, str]) -> None:
-    # Der Log-Filter laesst zu kurze Werte durch - das muss auffallen, darf den
-    # Start aber nicht verhindern.
-    valid_env["VISUALIZER_PASSWORD"] = "kurz123"      # 7 Zeichen
+    # The log filter lets short values through - that must be noticed but must
+    # not prevent a start.
+    valid_env["VISUALIZER_PASSWORD"] = "short12"      # 7 characters
     config = Config.from_env(valid_env)
 
     warnings = config.startup_warnings()
     assert len(warnings) == 1
     assert "VISUALIZER_PASSWORD" in warnings[0]
-    assert "NICHT aus Logs entfernt" in warnings[0]
+    assert "NOT removed from logs" in warnings[0]
 
 
 def test_long_enough_password_warns_about_nothing(config: Config) -> None:
@@ -150,7 +150,8 @@ def test_repr_hides_password_and_secret(config: Config) -> None:
 
 
 def test_secret_values_cover_password_path_secret_and_wire_token(config: Config) -> None:
-    # Der base64-Token gehoert dazu: so geht das Passwort tatsaechlich raus.
+    # The base64 token belongs in there: that is how the password actually
+    # travels.
     assert set(config.secret_values()) == {
         TEST_PASSWORD, TEST_SECRET, config.basic_auth_token
     }
@@ -164,7 +165,7 @@ def test_decaid_url_is_required(valid_env: dict[str, str]) -> None:
     del valid_env["DECAID_URL"]
     with pytest.raises(ConfigError) as excinfo:
         Config.from_env(valid_env)
-    assert any("DECAID_URL fehlt" in p for p in excinfo.value.problems)
+    assert any("DECAID_URL is missing" in p for p in excinfo.value.problems)
 
 
 @pytest.mark.parametrize("url", [
@@ -181,15 +182,15 @@ def test_private_addresses_are_accepted(valid_env: dict[str, str], url: str) -> 
 def test_public_address_is_refused(valid_env: dict[str, str]) -> None:
     with pytest.raises(ConfigError) as excinfo:
         Config.from_env({**valid_env, "DECAID_URL": "http://8.8.8.8:8080"})
-    assert "oeffentliche Adresse" in excinfo.value.problems[0]
+    assert "public address" in excinfo.value.problems[0]
 
 
 def test_hostname_is_refused(valid_env: dict[str, str]) -> None:
-    # Ein Name laesst sich spaeter umbiegen, ohne dass die Konfiguration sich
-    # aendert - dann liefe der Bezugsdatenverkehr womoeglich ins offene Netz.
+    # A name can be repointed later without the configuration changing - the
+    # shot traffic might then run out onto the open internet.
     with pytest.raises(ConfigError) as excinfo:
         Config.from_env({**valid_env, "DECAID_URL": "http://tablet.local:8080"})
-    assert "Hostname" in excinfo.value.problems[0]
+    assert "hostname" in excinfo.value.problems[0]
 
 
 def test_wrong_scheme_is_refused(valid_env: dict[str, str]) -> None:
@@ -215,10 +216,10 @@ def test_guard_rules_default_to_all(valid_env: dict[str, str]) -> None:
 
 
 def test_an_empty_setting_is_not_an_off_switch(valid_env: dict[str, str]) -> None:
-    """Wer .env.example kopiert, laesst die Zeile leer stehen.
+    """Whoever copies .env.example leaves the line blank.
 
     Das als "keine Waechter" zu lesen haette sie stillschweigend abgeschaltet -
-    zum Abschalten gibt es das ausdrueckliche "none".
+    for switching off there is the explicit "none".
     """
     assert Config.from_env({**valid_env, "GUARD_RULES": ""}).guard_rules == ALL_RULES
     assert Config.from_env({**valid_env, "GUARD_RULES": "  "}).guard_rules == ALL_RULES
@@ -234,11 +235,11 @@ def test_a_selection_is_kept(valid_env: dict[str, str]) -> None:
 
 
 def test_a_typo_in_a_rule_name_is_refused(valid_env: dict[str, str]) -> None:
-    """Sonst glaubte man, eine Regel laufe, die es nicht gibt."""
+    """Otherwise one would believe a rule was running that does not exist."""
     with pytest.raises(ConfigError) as excinfo:
         Config.from_env({**valid_env, "GUARD_RULES": "bean_age,bohnenalter"})
     assert "bohnenalter" in str(excinfo.value)
-    assert "bean_age" in str(excinfo.value), "die Meldung nennt die gueltigen Namen"
+    assert "bean_age" in str(excinfo.value), "the message names the valid names"
 
 
 def test_thresholds_have_sensible_defaults(valid_env: dict[str, str]) -> None:

@@ -1,7 +1,8 @@
-"""Gemeinsame Testdaten fuer die Decaid-Aera (SPEC ss20).
+"""Shared test data for the Decaid era (SPEC §20).
 
-Eigenes Modul statt conftest: die Tests importieren die Helfer per Namen, und
-conftest laedt pytest gesondert - von dort laesst sich nichts importieren.
+A module of its own rather than conftest: the tests import the helpers by
+name, and pytest loads conftest separately - nothing can be imported from
+there.
 """
 
 from __future__ import annotations
@@ -19,14 +20,14 @@ from decentespresso_mcp.decaid_mapping import (
 )
 from decentespresso_mcp.decaid_profile import profile_version
 
-#: Unterscheidet "nicht angegeben" von "ausdruecklich None".
+#: Distinguishes "not given" from "explicitly None".
 _KEEP = object()
 
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "decaid"
 
-#: Der Bezug, gegen den die Kette geprueft wird - eine anonymisierte echte
-#: Antwort von Decaid 0.8.5 mit 184 Messpunkten.
+#: The shot the whole chain is checked against - an anonymised real response
+#: from Decaid 0.8.5 with 184 data points.
 DETAIL_FILE = "shot_detail.json"
 
 
@@ -38,19 +39,18 @@ def decaid_detail(
     enjoyment: Any = _KEEP,
     notes: Any = _KEEP,
 ) -> dict[str, Any]:
-    """Ein Bezugsdetail, wahlweise mit abgewandelten Kopfdaten.
+    """One shot detail, optionally with altered header fields.
 
-    Tiefe Kopie: die Aufrufer aendern daran herum, und die Fixture wird von
-    allen Tests geteilt.
+    A deep copy: callers modify it, and the fixture is shared by every test.
     """
     detail = json.loads((FIXTURES / DETAIL_FILE).read_text(encoding="utf-8"))
     if shot_id is not None:
         detail["id"] = shot_id
     if timestamp is not None:
         detail["timestamp"] = timestamp
-        # Wie in den Echtdaten: bei importierten Bezuegen deckt sich createdAt
-        # mit dem Zeitstempel, bei nativen liegt es zwei Stunden davor. Sonst
-        # schlaegt die Gegenprobe in time_source_of an.
+        # As in the real data: for imported shots createdAt matches the
+        # timestamp, for native ones it sits two hours earlier. Otherwise the
+        # cross-check in time_source_of fires.
         detail["createdAt"] = (
             f"{timestamp}Z" if str(detail["id"]).startswith("de1app-")
             else _two_hours_earlier(timestamp)
@@ -65,7 +65,7 @@ def decaid_detail(
 
 
 def store_shot(db, detail: dict[str, Any], synced_at: str = "2026-09-14T12:00:00Z") -> str:
-    """Legt einen Bezug samt Messreihe ins Archiv und gibt die Kennung zurueck."""
+    """Puts a shot and its series into the archive and returns the identifier."""
     db.upsert_shot(
         shot_row_from_decaid(detail, synced_at),
         series_rows_from_decaid(detail),
@@ -76,10 +76,10 @@ def store_shot(db, detail: dict[str, Any], synced_at: str = "2026-09-14T12:00:00
 def store_shot_with_profile(
     db, detail: dict[str, Any], synced_at: str = "2026-09-14T12:00:00Z"
 ) -> str:
-    """Wie ``store_shot``, aber mit Profilversion und Verknuepfung.
+    """Like ``store_shot``, but with a profile version and the link.
 
-    Das Profil kommt aus dem Workflow des Bezugs - denselben Weg geht der
-    Abgleich auch.
+    The profile comes from the shot's workflow - the same route the sync
+    takes.
     """
     shot_id = store_shot(db, detail, synced_at)
     profile = ((detail.get("workflow") or {}).get("profile")) or {}
@@ -92,7 +92,7 @@ def store_shot_with_profile(
 
 
 def store_beans(db, synced_at: str = "2026-09-14T12:00:00Z") -> None:
-    """Bohnen und Chargen aus den Fixtures, damit bean_id aufloesbar wird."""
+    """Beans and batches from the fixtures, so bean_id becomes resolvable."""
     beans = json.loads((FIXTURES / "beans.json").read_text(encoding="utf-8"))
     batches = json.loads((FIXTURES / "bean_batches.json").read_text(encoding="utf-8"))
     db.upsert_beans([bean_row_from_decaid(b, synced_at) for b in beans])
@@ -100,9 +100,8 @@ def store_beans(db, synced_at: str = "2026-09-14T12:00:00Z") -> None:
     db.link_shots_to_beans()
 
 
-#: Ein kleiner, aber unterscheidbarer Bestand: zwei Bohnen, zwei Profile, eine
-#: kaputte Waage. Aus einer echten Antwort abgewandelt, damit die Zahlen
-#: plausibel bleiben.
+#: A small but distinguishable archive: two beans, two profiles, one broken
+#: scale. Derived from a real response so the numbers stay plausible.
 REFERENCE_ID = "de1app-1785525360"
 RECENT_ID = "aaaa1111-0000-4000-8000-000000000001"
 BROKEN_ID = "aaaa1111-0000-4000-8000-000000000002"
@@ -121,7 +120,7 @@ def corpus() -> list[dict[str, Any]]:
     recent["workflow"]["profile"]["title"] = "Default"
     recent["workflow"]["profile"]["steps"][0]["temperature"] = 93.0
 
-    # Aelter als RECENT, damit "neuester Bezug" eindeutig bleibt.
+    # Older than RECENT, so "newest shot" stays unambiguous.
     broken = decaid_detail(BROKEN_ID, timestamp="2026-09-12T07:50:12",
                            updated_at="2026-09-12T08:00:00Z", enjoyment=None,
                            notes=None)
@@ -140,10 +139,10 @@ def _set_bean(detail: dict[str, Any], roaster: str, name: str, batch: str) -> No
 
 
 def break_the_scale(detail: dict[str, Any]) -> dict[str, Any]:
-    """Waage nicht tariert: sie startet weit ueber null und bleibt stehen.
+    """Scale not tared: it starts well above zero and stays there.
 
-    Das ist der haeufigste Datenfehler in der Praxis, und die Metriken muessen
-    ihn als Warnung melden statt eine Zahl zu erfinden.
+    That is the most common data fault in practice, and the metrics must
+    report it as a warning rather than invent a number.
     """
     for point in detail["measurements"]:
         scale = point.setdefault("scale", {})

@@ -1,24 +1,24 @@
-"""Abgleich mit Decaid: Bohnen, Chargen, Bezuege, Profile (SPEC ss20.4).
+"""Sync with Decaid: beans, batches, shots, profiles (SPEC §20.4).
 
-ABLAUF. Ein Lauf blaettert zuerst die komplette Bezugsliste durch. Die Liste
-liefert alles ausser der Messreihe, insbesondere ``updatedAt`` - damit steht
-ohne einen einzigen Detailabruf fest, welche Bezuege sich geaendert haben.
-Geholt werden dann nur diese.
+HOW A RUN WORKS. It first pages through the complete shot list. That list
+carries everything except the measurements, ``updatedAt`` in particular - so
+without a single detail request it is known which shots have changed. Only
+those are then fetched.
 
-WARUM DIE GANZE LISTE. Decaid kennt keinen serverseitigen Zeitfilter (T8), und
-die Liste ist nach Bezugszeit sortiert, nicht nach Aenderungszeit. Ein im Juni
-gezogener Bezug, dessen Notiz heute ergaenzt wurde, steht also weiterhin hinten.
-Ein Blaettern, das beim ersten alten Eintrag abbricht, wuerde ihn nie sehen.
-Die vollstaendige Liste kostet bei 168 Bezuegen zwei Anfragen im LAN - dafuer
-findet der Abgleich auch nachtraegliche Aenderungen.
+WHY THE WHOLE LIST. Decaid has no server-side time filter (T8), and the list
+is sorted by shot time, not by modification time. A shot pulled in June whose
+note was added today therefore still sits at the back. Paging that stops at
+the first old entry would never see it. The full list costs two requests on
+the local network for 168 shots - and in exchange the sync also finds changes
+made after the fact.
 
-Backfill und inkrementeller Lauf sind damit derselbe Algorithmus; ``full=True``
-erzwingt lediglich, dass jeder Bezug neu geholt wird.
+Backfill and incremental run are thus the same algorithm; ``full=True`` merely
+forces every shot to be fetched again.
 
-TABLET AUS. Das Tablet ist nicht immer an. Ist es nicht erreichbar, ist das
-kein Fehlerzustand, sondern der Normalfall zwischen zwei Kaffees: der Lauf
-endet mit ``waiting_for_tablet``, laesst den Bestand unberuehrt und traegt
-nichts in die Fehlerliste ein.
+TABLET OFF. The tablet is not always on. If it cannot be reached that is not
+an error state but the normal case between two coffees: the run ends with
+``waiting_for_tablet``, leaves the archive untouched and writes nothing to the
+error list.
 """
 
 from __future__ import annotations
@@ -58,9 +58,9 @@ STATE_BACKFILL_DONE = "backfill_completed_at"
 STATE_LAST_REACHABLE = "decaid_last_reachable_at"
 STATE_DECAID_VERSION = "decaid_version"
 
-#: Obergrenze fuer Detailabrufe pro Lauf. Ein Detail wiegt rund 140 kB; beim
-#: ersten Backfill sind das bei 168 Bezuegen gut 23 MB, die sonst in einem Zug
-#: ueber das WLAN des Tablets muessten. Der naechste Lauf macht weiter.
+#: Cap on detail requests per run. A detail weighs about 140 kB; for the first
+#: backfill of 168 shots that is a good 23 MB which would otherwise have to go
+#: over the tablet's Wi-Fi in one go. The next run carries on.
 MAX_DETAILS_PER_RUN = 60
 
 
@@ -75,20 +75,19 @@ class SyncResult:
     metrics_computed: int = 0
     beans: int = 0
     bean_batches: int = 0
-    #: Befunde der Waechter (SPEC ss20.7) und davon versandte Nachrichten.
+    #: Guard findings (SPEC §20.7) and the messages sent for them.
     findings: int = 0
     notified: int = 0
     duration_ms: int = 0
     mode: str = "incremental"
-    #: Tablet nicht erreichbar. Kein Fehler - siehe Modul-Docstring.
+    #: Tablet not reachable. Not an error - see the module docstring.
     waiting_for_tablet: bool = False
-    #: Noch offene Detailabrufe, wenn die Obergrenze gegriffen hat.
+    #: Detail requests still outstanding when the cap kicked in.
     pending: int = 0
-    #: Blockierend: vorübergehende Probleme, bei denen ein spaeterer Versuch
-    #: helfen kann.
+    #: Blocking: transient problems where a later attempt can help.
     errors: list[str] = field(default_factory=list)
-    #: Nicht blockierend: deterministische Befunde. Ein Retry aendert daran
-    #: nichts.
+    #: Non-blocking: deterministic findings. A retry changes nothing about
+    #: them.
     warnings: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
@@ -96,10 +95,10 @@ class SyncResult:
 
 
 def open_database(db_path: str) -> Database:
-    """Datenbank oeffnen, migrieren und Metrik-Cache waermen.
+    """Open the database, migrate it and warm the metrics cache.
 
-    Einziger Einstiegspunkt fuer Server wie CLI, damit beide denselben Zustand
-    herstellen.
+    The single entry point for both server and CLI, so both establish the same
+    state.
     """
     db = Database(db_path)
     db.migrate()
@@ -114,10 +113,10 @@ async def run_sync(
     full: bool = False,
     config: Config | None = None,
 ) -> SyncResult:
-    """Ein Abgleichlauf. ``full=True`` holt jeden Bezug neu.
+    """One sync run. ``full=True`` fetches every shot again.
 
-    ``config`` schaltet die Waechter frei; ohne sie laeuft nur der Abgleich.
-    Das haelt die Tests der Ingestion frei von Waechterlogik und umgekehrt.
+    ``config`` enables the guards; without it only the sync runs. That keeps
+    the ingestion tests free of guard logic and vice versa.
     """
     started = time.monotonic()
     result = SyncResult(mode="backfill" if full else "incremental")
@@ -147,8 +146,8 @@ async def run_sync(
     result.unchanged = len(listed) - len(stale)
 
     if len(stale) > MAX_DETAILS_PER_RUN:
-        # Die aeltesten zuerst: so waechst das Archiv von hinten zusammen und
-        # ein abgebrochener Backfill hinterlaesst keine Luecke in der Mitte.
+        # Oldest first: that way the archive fills in from the back and an
+        # aborted backfill leaves no gap in the middle.
         stale.sort(key=lambda i: str(i.get("timestamp") or ""))
         result.pending = len(stale) - MAX_DETAILS_PER_RUN
         stale = stale[:MAX_DETAILS_PER_RUN]
@@ -185,10 +184,10 @@ async def run_sync(
 
 
 async def _run_guards(db: Database, config: Config, result: SyncResult) -> None:
-    """Waechter laufen lassen und melden, was neu ist (SPEC ss20.7).
+    """Run the guards and report what is new (SPEC §20.7).
 
-    Ein Fehler hier darf den Abgleich nicht kippen: die Bezuege sind dann
-    schon archiviert, und ein nicht gemeldeter Befund ist kein Datenverlust.
+    A failure here must not topple the sync: the shots are already archived by
+    then, and an unreported finding is not data loss.
     """
     if not config.guard_rules:
         return
@@ -204,7 +203,7 @@ async def _run_guards(db: Database, config: Config, result: SyncResult) -> None:
         )
         result.findings = len(findings)
         result.notified = await notify(config, findings, db)
-    except Exception as exc:  # noqa: BLE001 - Waechter kippen den Lauf nicht
+    except Exception as exc:  # noqa: BLE001 - guards do not topple the run
         result.warnings.append(f"guards_failed: {type(exc).__name__}: {exc}")
         log.warning("guards failed", extra={"fields": {"error": type(exc).__name__}})
 
@@ -212,16 +211,16 @@ async def _run_guards(db: Database, config: Config, result: SyncResult) -> None:
 async def _ingest_shot(
     client: DecaidClient, db: Database, shot_id: str, result: SyncResult
 ) -> bool:
-    """Einen Bezug holen und ablegen. ``False`` heisst: Tablet weg, Lauf beenden."""
+    """Fetch and store one shot. ``False`` means: tablet gone, end the run."""
     try:
         detail = await client.get_shot(shot_id)
     except DecaidUnreachable:
-        # Mitten im Lauf verschwunden. Was schon da ist, bleibt; der Rest
-        # kommt beim naechsten Mal.
+        # Vanished mid-run. What is already there stays; the rest follows next
+        # time.
         result.waiting_for_tablet = True
         return False
     except DecaidError as exc:
-        # Ein kaputter Bezug bricht den Lauf nicht ab (SPEC ss6.5).
+        # One broken shot does not abort the run (SPEC §6.5).
         result.errors.append(f"{shot_id}: {exc.code}: {exc}")
         log.warning("shot failed", extra={"fields": {"shot": shot_id, "error": exc.code}})
         return True
@@ -231,7 +230,7 @@ async def _ingest_shot(
         shot = shot_row_from_decaid(detail, synced_at)
         series = series_rows_from_decaid(detail)
         is_new = await asyncio.to_thread(db.upsert_shot, shot, series)
-    except Exception as exc:  # noqa: BLE001 - Einzelfehler darf den Lauf nicht killen
+    except Exception as exc:  # noqa: BLE001 - a single failure must not kill the run
         result.errors.append(f"{shot_id}: store_failed: {type(exc).__name__}: {exc}")
         log.warning("shot store failed", extra={"fields": {"shot": shot_id}})
         return True
@@ -249,14 +248,14 @@ async def _ingest_shot(
 async def _link_profile(
     db: Database, shot_id: str, detail: dict[str, Any], result: SyncResult
 ) -> None:
-    """Profilversion aus dem eingebetteten Workflow ableiten und verknuepfen.
+    """Derive the profile version from the embedded workflow and link it.
 
-    Anders als in der Visualizer-Aera braucht es dafuer keinen zweiten Abruf und
-    keinen TCL-Parser - das Profil liegt dem Bezug bei.
+    Unlike in the Visualizer era this needs no second request and no TCL parser
+    - the profile ships with the shot.
     """
     profile = ((detail.get("workflow") or {}).get("profile")) or {}
     if not profile.get("steps"):
-        result.warnings.append(f"{shot_id}: kein Profil im Workflow")
+        result.warnings.append(f"{shot_id}: no profile in the workflow")
         return
 
     version = profile_version(profile)
@@ -270,10 +269,10 @@ async def _link_profile(
 
 
 async def _sync_beans(client: DecaidClient, db: Database, result: SyncResult) -> None:
-    """Bohnen und Chargen. Beide Listen sind klein und kommen unpaginiert.
+    """Beans and batches. Both lists are small and come unpaginated.
 
-    Nebenbei wird Decaids Version notiert: ``status()`` arbeitet nur auf der
-    Datenbank und kann selbst nicht nachfragen.
+    Decaid's version is noted along the way: ``status()`` works on the database
+    only and cannot ask for itself.
     """
     info = await client.info()
     await asyncio.to_thread(
@@ -289,7 +288,7 @@ async def _sync_beans(client: DecaidClient, db: Database, result: SyncResult) ->
 
 
 async def _list_all_shots(client: DecaidClient) -> list[dict[str, Any]]:
-    """Die vollstaendige Bezugsliste, ueber alle Seiten. Ohne Messreihen."""
+    """The complete shot list, across all pages. Without measurements."""
     items: list[dict[str, Any]] = []
     offset = 0
     while True:
@@ -304,7 +303,7 @@ async def _list_all_shots(client: DecaidClient) -> list[dict[str, Any]]:
 
 
 def _stamp(value: Any) -> str | None:
-    """``updatedAt`` so normalisieren, wie es auch in der DB steht."""
+    """Normalise ``updatedAt`` the same way it is stored in the database."""
     if not isinstance(value, str) or not value:
         return None
     try:
@@ -322,20 +321,21 @@ def _persist(db: Database, result: SyncResult, *, complete: bool = False) -> Non
     db.record_errors(result.errors + [f"warn: {w}" for w in result.warnings])
     if not result.waiting_for_tablet:
         db.set_state(STATE_LAST_REACHABLE, utc_now_iso())
-    # Der Backfill gilt erst als fertig, wenn nichts mehr offen ist und nichts
-    # schiefging - sonst begaenne der naechste Lauf inkrementell und liesse die
-    # Luecke stehen.
+    # The backfill only counts as done once nothing is outstanding and nothing
+    # went wrong - otherwise the next run would start incrementally and leave
+    # the gap standing.
     if complete and not result.errors and not result.waiting_for_tablet:
         if result.mode == "backfill" or not db.get_state(STATE_BACKFILL_DONE):
             db.set_state(STATE_BACKFILL_DONE, utc_now_iso())
 
 
 async def refresh_shot(client: DecaidClient, db: Database, shot_id: str) -> dict:
-    """Laedt einen einzelnen Bezug neu und schreibt ihn lokal fort (SPEC ss18.3).
+    """Reload one shot and carry it forward locally (SPEC §18.3).
 
-    Derselbe Weg wie im Abgleich - Detail holen, upserten, Metriken neu rechnen.
-    Der Upsert verwirft den Metrik-Cache des Bezugs ohnehin; der Warmlauf danach
-    fuellt ihn wieder. Wichtig nach einer Dosisaenderung: die Ratio haengt daran.
+    The same path as in a sync run - fetch the detail, upsert, recompute the
+    metrics. The upsert discards the shot's metrics cache anyway; the warm-up
+    afterwards fills it again. Important after a dose change: the ratio depends
+    on it.
     """
     detail = await client.get_shot(shot_id)
     synced_at = utc_now_iso()
@@ -348,18 +348,17 @@ async def refresh_shot(client: DecaidClient, db: Database, shot_id: str) -> dict
     return detail
 
 
-#: SPEC ss9.2: get_shot("latest") prueft vorher auf Frische. Zwei Minuten sind
-#: kurz genug, dass ein eben gezogener Bezug auftaucht, und lang genug, dass
-#: eine Gespraechsfolge nicht bei jeder Frage synchronisiert.
+#: SPEC §9.2: get_shot("latest") checks freshness first. Two minutes is short
+#: enough for a just-pulled shot to appear, and long enough that a run of
+#: questions does not sync on every one of them.
 QUICK_SYNC_MAX_AGE_S = 120
 
 
 class SyncCoordinator:
-    """Serialisiert Abgleichlaeufe und haelt den Client.
+    """Serialises sync runs and holds the client.
 
-    Ein Schloss statt eines Schedulers: der Dienst hat einen Nutzer, und zwei
-    gleichzeitige Laeufe wuerden sich nur gegenseitig die Detailabrufe
-    wegnehmen.
+    A lock rather than a scheduler: the service has one user, and two
+    concurrent runs would only take detail requests away from each other.
     """
 
     def __init__(self, client: DecaidClient, db: Database,
@@ -379,7 +378,7 @@ class SyncCoordinator:
                                   config=self._config)
 
     async def ensure_fresh(self, max_age_s: int = QUICK_SYNC_MAX_AGE_S) -> SyncResult | None:
-        """Gleicht ab, wenn der letzte Lauf zu lange her ist. Sonst ``None``."""
+        """Syncs if the last run is too long ago. Otherwise ``None``."""
         age = await asyncio.to_thread(self._age_seconds)
         if age is not None and age < max_age_s:
             return None
@@ -398,10 +397,10 @@ class SyncCoordinator:
     async def write_shot(
         self, shot_id: str, fields: dict[str, Any]
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """Schreibt Annotationen und liefert ``(vorher, nachher)`` (SPEC ss18.3).
+        """Writes annotations and returns ``(before, after)`` (SPEC §18.3).
 
-        Beide Staende kommen aus einem echten Abruf, nicht aus dem, was
-        gesendet wurde - nur so faellt auf, wenn Decaid ein Feld verwirft.
+        Both states come from a real request rather than from what was sent -
+        that is the only way a field discarded by Decaid becomes visible.
         """
         async with self._lock:
             before = await self._client.get_shot(shot_id)
@@ -412,7 +411,7 @@ class SyncCoordinator:
     async def write_bean(
         self, bean_id: str, fields: dict[str, Any]
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """Bohne aendern, mit Read-back. Der Bestand wird danach mitgezogen."""
+        """Change a bean, with read-back. The archive is updated afterwards."""
         async with self._lock:
             before = await self._find(self._client.beans(), bean_id)
             await self._client.update_bean(bean_id, dict(fields))
@@ -425,7 +424,7 @@ class SyncCoordinator:
     async def write_batch(
         self, batch_id: str, fields: dict[str, Any]
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """Charge aendern, mit Read-back."""
+        """Change a batch, with read-back."""
         async with self._lock:
             before = await self._find(self._client.bean_batches(), batch_id)
             await self._client.update_bean_batch(batch_id, dict(fields))
@@ -440,11 +439,11 @@ class SyncCoordinator:
     async def write_workflow(
         self, fields: dict[str, Any]
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """Workflow-Kontext aendern, mit Read-back.
+        """Change the workflow context, with read-back.
 
-        Der Workflow ist die Einstellung fuer den *naechsten* Bezug; im Archiv
-        steht er erst, wenn danach wirklich bezogen wurde. Es gibt hier also
-        nichts lokal nachzuziehen.
+        The workflow is the setting for the *next* shot; it only reaches the
+        archive once a shot has actually been pulled with it. So there is
+        nothing to update locally here.
         """
         async with self._lock:
             before = (await self._client.workflow()).get("context") or {}
@@ -457,32 +456,32 @@ class SyncCoordinator:
 
     @staticmethod
     async def _find(pending: Any, wanted: str) -> dict[str, Any]:
-        """Einen Eintrag aus einer Listenantwort holen.
+        """Pick one entry out of a list response.
 
-        Decaid hat fuer Bohnen und Chargen keinen Einzelabruf (T16) - die Liste
-        ist die einzige Quelle, auch fuer den Read-back.
+        Decaid has no single-item endpoint for beans and batches (T16) - the
+        list is the only source, for the read-back as well.
         """
         for item in await pending:
             if str(item.get("id")) == wanted:
                 return item
-        raise ShotNotFound(f"Kein Eintrag mit der Kennung {wanted!r}")
+        raise ShotNotFound(f"No entry with the identifier {wanted!r}")
 
     async def aclose(self) -> None:
         await self._client.aclose()
 
 
-#: Rueckzug, wenn das Tablet aus ist. Es laeuft nur, waehrend Kaffee gemacht
-#: wird; im Minutentakt dagegen anzurennen brachte nichts und fuellte das Log.
+#: Back off when the tablet is off. It only runs while coffee is being made;
+#: hammering at it every minute achieved nothing and filled the log.
 IDLE_BACKOFF_MULTIPLIER = 4
 
 
 async def periodic_sync(
     coordinator: SyncCoordinator, interval_min: int, *, stop: asyncio.Event
 ) -> None:
-    """Hintergrundschleife. Endet, sobald ``stop`` gesetzt wird.
+    """Background loop. Ends as soon as ``stop`` is set.
 
-    Ist das Tablet aus, wird das Intervall gestreckt statt eine Fehlerlawine zu
-    erzeugen - das ist der erwartete Zustand zwischen zwei Kaffees.
+    When the tablet is off the interval is stretched rather than producing an
+    avalanche of errors - that is the expected state between two coffees.
     """
     if interval_min <= 0:
         return
@@ -493,9 +492,9 @@ async def periodic_sync(
             if result.waiting_for_tablet:
                 delay *= IDLE_BACKOFF_MULTIPLIER
             elif result.pending:
-                # Backfill laeuft noch - zuegig weitermachen.
+                # Backfill still running - keep going promptly.
                 delay = min(delay, 30)
-        except Exception:  # noqa: BLE001 - die Schleife darf nie sterben
+        except Exception:  # noqa: BLE001 - the loop must never die
             log.exception("sync loop failed")
         try:
             await asyncio.wait_for(stop.wait(), timeout=delay)

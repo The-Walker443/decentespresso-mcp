@@ -1,22 +1,22 @@
-"""Decaid-Antworten -> Archivzeilen (SPEC ss20.4).
+"""Decaid responses -> archive rows (SPEC §20.4).
 
-Zwei Normalisierungen sind hier bindend, beide aus der Migration in M8 (2/n)
-hervorgegangen und an den echten 168 Bezuegen nachgemessen:
+Two normalisations are binding here, both arising from the migration in M8
+(2/n) and measured against the real 168 shots:
 
-**Zeit.** Das Archiv fuehrt durchgehend UTC. Decaid tut das nicht einheitlich:
-aus der de1app importierte Bezuege tragen ihren Zeitstempel bereits in UTC,
-selbst aufgezeichnete in Ortszeit ohne Zeitzonenangabe. Gemessen ueber alle
-Bezuege: 88 importierte mit ``timestamp == createdAt``, 80 native mit genau
-zwei Stunden Versatz. Umgerechnet wird deshalb ueber ``Europe/Berlin`` mit
-voller Sommerzeitbehandlung - ein fester Versatz waere Ende Oktober falsch.
-Woher ein Zeitstempel kam, steht je Bezug in ``time_source``.
+**Time.** The archive keeps UTC throughout. Decaid does not do so uniformly:
+shots imported from the de1app already carry their timestamp in UTC, natively
+recorded ones carry local time without a zone. Measured across all shots: 88
+imported with ``timestamp == createdAt``, 80 native with exactly two hours of
+offset. Conversion therefore runs through ``Europe/Berlin`` with full daylight
+saving handling - a fixed offset would be wrong at the end of October. Where a
+timestamp came from is recorded per shot in ``time_source``.
 
-**Bewertung.** Decaid legt importierte Bezuege mit ``enjoyment: 0.0`` an. Das
-ist kein Urteil, sondern "nicht bewertet": 75 der 88 importierten stehen so da,
-waehrend echte Bewertungen bei 40 bis 100 liegen und **kein einziger** nativ
-aufgezeichneter Bezug je 0.0 traegt. Eine 0 aus der Import-Aera wird deshalb als
-``NULL`` archiviert. Ohne diese Regel kaemen 75 Scheinbewertungen ins Archiv,
-und Waechter wie ``audit_archive`` wuerden sie fuer bare Muenze nehmen.
+**Rating.** Decaid creates imported shots with ``enjoyment: 0.0``. That is not
+a judgement but "not rated": 75 of the 88 imported ones sit like that, while
+real ratings run from 40 to 100 and **not a single** natively recorded shot
+ever carries 0.0. A 0 from the import era is therefore archived as ``NULL``.
+Without this rule 75 phantom ratings would enter the archive, and guards such
+as ``audit_archive`` would take them at face value.
 """
 
 from __future__ import annotations
@@ -32,30 +32,31 @@ from .decaid_client import measurement_times
 
 log = logging.getLogger(__name__)
 
-#: Ortszeit der Maschine. Als Zeitzone, nicht als Versatz - sonst laege jeder
-#: Bezug nach dem letzten Oktobersonntag eine Stunde daneben. Scheitert die
-#: Zeile beim Start, fehlt die Zeitzonendatenbank; dafuer haengt tzdata in den
-#: Abhaengigkeiten.
+#: Local time of the machine. As a zone, not an offset - otherwise every shot
+#: after the last Sunday in October would be an hour out. If this line fails at
+#: startup the time zone database is missing; that is what tzdata is in the
+#: dependencies for.
 MACHINE_TZ = ZoneInfo("Europe/Berlin")
 
-#: Aus der de1app importierte Bezuege. Die Zahl ist der Startzeitpunkt als
-#: Unixzeit; daran haengt auch die Zuordnung im Migrationsskript.
+#: Shots imported from the de1app. The number is the start time as Unix time;
+#: the matching in the migration script hangs on it too.
 DE1APP_ID = re.compile(r"^de1app-(\d{9,13})$")
 
-#: Werte von ``time_source`` in der Datenbank.
+#: Values of ``time_source`` in the database.
 SOURCE_UTC = "utc"
 SOURCE_LOCAL = "local_berlin"
 
-#: Toleranz fuer die Gegenprobe ``timestamp`` gegen ``createdAt``.
+#: Tolerance for the cross-check of ``timestamp`` against ``createdAt``.
 _CROSSCHECK_TOLERANCE_S = 120
 
-#: Zeitreihe: links die Archivspalte, rechts der Pfad in ``measurements``.
+#: Time series: archive column on the left, path inside ``measurements`` on
+#: the right.
 MACHINE_FIELDS = {
     "pressure": "pressure",
-    "flow_in": "flow",                          # Pumpenfluss
+    "flow_in": "flow",                          # pump flow
     "temp_mix": "mixTemperature",
     "temp_basket": "groupTemperature",
-    "target_pressure": "targetPressure",        # neu ab M8: Soll je Messpunkt
+    "target_pressure": "targetPressure",        # new in M8: target per data point
     "target_flow": "targetFlow",
     "target_temp_mix": "targetMixTemperature",
     "target_temp_basket": "targetGroupTemperature",
@@ -64,22 +65,22 @@ MACHINE_FIELDS = {
 
 SCALE_FIELDS = {
     "weight": "weight",
-    "flow_out": "weightFlow",                   # aus der Waage abgeleitet
+    "flow_out": "weightFlow",                   # derived from the scale
 }
 
 
 def is_import_era(shot_id: str) -> bool:
-    """Stammt der Bezug aus dem de1app-Import statt aus Decaids Aufzeichnung?"""
+    """Did this shot come from the de1app import rather than Decaid's own recording?"""
     return bool(DE1APP_ID.match(str(shot_id or "")))
 
 
 def time_source_of(shot: dict[str, Any]) -> str:
-    """Ob der Zeitstempel eines Bezugs UTC oder Ortszeit ist.
+    """Whether a shot's timestamp is UTC or local time.
 
-    Entschieden wird an der Kennung, weil die eine stabile Konvention ist.
-    ``createdAt`` dient als Gegenprobe: weichen beide voneinander ab, hat Decaid
-    sein Verhalten geaendert, und das soll auffallen statt still falsch zu
-    laufen.
+    The decision rests on the identifier, because that is a stable convention.
+    ``createdAt`` serves as a cross-check: if the two disagree, Decaid has
+    changed its behaviour, and that should be noticed rather than run quietly
+    wrong.
     """
     source = SOURCE_UTC if is_import_era(shot.get("id", "")) else SOURCE_LOCAL
 
@@ -98,11 +99,11 @@ def time_source_of(shot: dict[str, Any]) -> str:
 
 
 def started_at_utc(shot: dict[str, Any]) -> tuple[str | None, str]:
-    """``(ISO8601 in UTC, time_source)`` fuer einen Bezug.
+    """``(ISO8601 in UTC, time_source)`` for one shot.
 
-    Bei Ortszeit in der mehrdeutigen Stunde der Rueckstellung wird die erste
-    Lesart genommen (``fold=0``, also noch Sommerzeit). Eine Entscheidung muss
-    fallen; die fruehere ist die, die zum uebrigen Tagesverlauf passt.
+    For local time inside the ambiguous hour when the clocks go back, the first
+    reading is taken (``fold=0``, so still summer time). A decision has to be
+    made; the earlier one is the one that fits the rest of the day.
     """
     source = time_source_of(shot)
     naive = _naive(shot.get("timestamp"))
@@ -117,7 +118,7 @@ def started_at_utc(shot: dict[str, Any]) -> tuple[str | None, str]:
 
 
 def normalize_enjoyment(shot: dict[str, Any]) -> float | None:
-    """Bewertung, mit der Null-Regel aus dem Modul-Docstring."""
+    """Rating, with the zero rule from the module docstring applied."""
     annotations = shot.get("annotations") or {}
     value = annotations.get("enjoyment")
     if value is None:
@@ -127,14 +128,14 @@ def normalize_enjoyment(shot: dict[str, Any]) -> float | None:
     except (TypeError, ValueError):
         return None
     if rating == 0 and is_import_era(shot.get("id", "")):
-        # 75 von 88 importierten Bezuegen stehen so da - das ist der
-        # Vorgabewert des Imports, keine Bewertung.
+        # 75 of 88 imported shots sit like this - it is the import default,
+        # not a rating.
         return None
     return rating
 
 
 def shot_row_from_decaid(detail: dict[str, Any], synced_at: str) -> dict[str, Any]:
-    """Detail-Antwort -> Zeile fuer ``shots``."""
+    """Detail response -> a row for ``shots``."""
     annotations = detail.get("annotations") or {}
     workflow = detail.get("workflow") or {}
     context = workflow.get("context") or {}
@@ -156,10 +157,10 @@ def shot_row_from_decaid(detail: dict[str, Any], synced_at: str) -> dict[str, An
         "stop_reason": _text(detail.get("stopReason")),
         "workflow_id": _text(workflow.get("id")),
         "profile_name": _text((workflow.get("profile") or {}).get("title")),
-        # Der Bezug kennt nur die Charge; welche Bohne das ist, steht an der
-        # Charge. bean_id traegt die Ingestion nach.
+        # The shot only knows its batch; which bean that is sits on the batch.
+        # Ingestion fills bean_id in afterwards.
         "bean_batch_id": _text(context.get("beanBatchId")),
-        "bean_id": None,                       # loest die Ingestion ueber die Charge auf
+        "bean_id": None,                       # ingestion resolves this via the batch
         "bean_name": _text(context.get("coffeeName")),
         "bean_roaster": _text(context.get("coffeeRoaster")),
         "basket_name": _text(extras.get("basketName")),
@@ -172,9 +173,9 @@ def shot_row_from_decaid(detail: dict[str, Any], synced_at: str) -> dict[str, An
         "ratio": round(yielded / dose, 3) if dose and yielded else None,
         "enjoyment": normalize_enjoyment(detail),
         "notes": _text(annotations.get("espressoNotes")) or _text(detail.get("shotNotes")),
-        # Ohne die Messreihe: die steht in shot_series, und eine Detailantwort
-        # wiegt mit ihr rund 140 kB - ueber alle Bezuege waere das ein
-        # Vielfaches des uebrigen Archivs, doppelt abgelegt.
+        # Without the measurements: those live in shot_series, and a detail
+        # response weighs about 140 kB with them - across all shots that would
+        # be a multiple of the rest of the archive, stored twice.
         "raw_json": json.dumps(
             {k: v for k, v in detail.items() if k != "measurements"},
             ensure_ascii=False, separators=(",", ":"),
@@ -184,11 +185,12 @@ def shot_row_from_decaid(detail: dict[str, Any], synced_at: str) -> dict[str, An
 
 
 def series_rows_from_decaid(detail: dict[str, Any]) -> list[dict[str, Any]]:
-    """``measurements`` -> Zeilen fuer ``shot_series``.
+    """``measurements`` -> rows for ``shot_series``.
 
-    ``elapsed`` entsteht aus den Zeitstempeln der Messpunkte, weil Decaid kein
-    ``time``-Feld liefert (T12). ``state``/``substate`` und ``profile_frame``
-    kommen mit - aus ihnen leitet ``metrics`` das Ende der Praeinfusion ab.
+    ``elapsed`` is derived from the data points' own timestamps, because Decaid
+    provides no ``time`` field (T12). ``state``/``substate`` and
+    ``profile_frame`` come along - ``metrics`` derives the end of preinfusion
+    from them.
     """
     measurements = detail.get("measurements") or []
     times = measurement_times(measurements)
@@ -199,7 +201,7 @@ def series_rows_from_decaid(detail: dict[str, Any]) -> list[dict[str, Any]]:
     for elapsed, point in zip(times, measurements, strict=True):
         key = round(elapsed, 3)
         if key in seen:
-            # elapsed ist Teil des Primaerschluessels.
+            # elapsed is part of the primary key.
             continue
         seen.add(key)
 
@@ -220,7 +222,7 @@ def series_rows_from_decaid(detail: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def bean_row_from_decaid(bean: dict[str, Any], synced_at: str) -> dict[str, Any]:
-    """Bohne -> Zeile fuer ``beans``."""
+    """Bean -> a row for ``beans``."""
     return {
         "id": bean.get("id"),
         "name": _text(bean.get("name")),
@@ -238,11 +240,11 @@ def bean_row_from_decaid(bean: dict[str, Any], synced_at: str) -> dict[str, Any]
 
 
 def batch_row_from_decaid(batch: dict[str, Any], synced_at: str) -> dict[str, Any]:
-    """Charge -> Zeile fuer ``bean_batches``.
+    """Batch -> a row for ``bean_batches``.
 
-    ``unfreezeDate`` fuehrt Decaid nicht als eigenes Feld; es steht, wenn
-    ueberhaupt, in den Zusatzangaben. Die Gefrierzeit zaehlt beim Bohnenalter
-    nicht mit, deshalb wird beides mitgenommen.
+    Decaid keeps no ``unfreezeDate`` field of its own; it appears, if at all,
+    in the extras. Frozen time does not count towards bean age, which is why
+    both are carried along.
     """
     extras = batch.get("extras") or {}
     return {
@@ -261,7 +263,7 @@ def batch_row_from_decaid(batch: dict[str, Any], synced_at: str) -> dict[str, An
     }
 
 
-# ------------------------------------------------------------------ Hilfsmittel
+# ------------------------------------------------------------------ Helpers
 
 
 def _naive(value: Any) -> datetime | None:
@@ -278,7 +280,7 @@ def _iso(moment: datetime) -> str:
 
 
 def _iso_or_none(value: Any) -> str | None:
-    """``createdAt``/``updatedAt`` tragen ein Z und sind damit bereits UTC."""
+    """``createdAt``/``updatedAt`` carry a Z and are therefore already UTC."""
     if not isinstance(value, str) or not value:
         return None
     try:
@@ -307,17 +309,17 @@ def _number(value: Any) -> float | None:
 
 
 def _flag(value: Any) -> int | None:
-    """Wahrheitswerte als 0/1 - SQLite kennt kein BOOLEAN."""
+    """Booleans as 0/1 - SQLite has no BOOLEAN type."""
     if value is None:
         return None
     return 1 if value else 0
 
 
 def _date(value: Any) -> str | None:
-    """Datumsangaben bleiben Datum.
+    """Dates stay dates.
 
-    Roest- und Gefrierdatum sind Tagesangaben. Sie in eine Zeitzone zu zwingen
-    verschoebe sie um einen Tag, ohne dass die Uhrzeit je erfasst worden waere.
+    Roast and freeze dates are day-level. Forcing them into a time zone would
+    shift them by a day without a time of day ever having been recorded.
     """
     if not isinstance(value, str) or not value:
         return None

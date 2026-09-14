@@ -1,15 +1,18 @@
-# Spezifikation: `decentespresso-mcp` — MCP-Server für Espresso-Shot-Analyse
+# Specification: `decentespresso-mcp` — MCP server for espresso shot analysis
 
-**Version:** 1.5 · **Stand:** 2026-09-14 · **Zielgruppe:** Claude Code (Implementierung) + Betreiber (Matthias)
+**Version:** 1.5 · **Date:** 2026-09-14 · **Audience:** Claude Code (implementation) + operator (Matthias)
 
-> **Änderungen 1.5 (2026-09-14):**
-> - Projekt umbenannt: `visualizer-mcp` → `decentespresso-mcp`. Der Name folgt
->   der **Maschine**, nicht der Quelle. Seit §20 ist visualizer.coffee weder
->   Quelle noch Ziel der Archivkette; ein Name, der auf sie zeigt, beschriebe
->   das Projekt falsch. Betroffen sind Paketname, Modulverzeichnis,
->   Konsolen-Entrypoint, FastMCP-Servername, User-Agent, Image-Pfad, Container-
->   und Volumename. `visualizer_client.py` behält seinen Dateinamen — das Modul
->   spricht wirklich mit Visualizer, der Name ist historisch korrekt.
+> **Changes 1.5 (2026-09-14):**
+> - Project renamed: `visualizer-mcp` → `decentespresso-mcp`. The name follows
+>   the **machine**, not the source. Since §20 visualizer.coffee is neither the
+>   source nor the destination of the archive chain; a name pointing at it would
+>   describe the project wrongly. Affected: package name, module directory,
+>   console entry point, FastMCP server name, User-Agent, image path, container
+>   and volume name. `visualizer_client.py` keeps its filename — that module
+>   really does talk to Visualizer, so the name is historically correct.
+> - The repository switches to English throughout: code, docstrings, comments,
+>   messages, tests, documentation and commit messages. User data is not
+>   translated; changelog entries written before the switch stay in German.
 >
 > **Änderungen 1.4 (2026-09-14):**
 > - §20 (M8): Decaid im LAN ersetzt visualizer.coffee als Quelle.
@@ -37,132 +40,140 @@
 
 ---
 
-## 1. Ziel & Kontext
+## 1. Goal and context
 
-Ein selbst gehosteter MCP-Server (Docker, Homelab), der Claude in claude.ai/Claude-Apps
-per Custom Connector Zugriff auf Espresso-Bezugsdaten gibt:
+A self-hosted MCP server (Docker, homelab) that gives Claude in claude.ai and
+the Claude apps access to espresso shot data through a custom connector:
 
-1. **Shots von visualizer.coffee synchronisieren und lokal archivieren** (SQLite),
-   damit die volle Historie unabhängig vom 1-Monats-Limit des Visualizer-Free-Tiers
-   erhalten bleibt.
-2. **Profile (.tcl der de1app) automatisch mitladen, parsen und versionieren** —
-   Claude bekommt Soll-Kurven/Phasen als Klartext-JSON, nie mehr manuelle Uploads.
-3. **Kompakte, analysierbare Tool-Antworten** liefern: Shot-Listen (filterbar nach
-   Bohne), einzelne Shots inkl. Kurve + Profil, abgeleitete Metriken, Vergleiche.
+1. **Archive shots locally** (SQLite) so the full history survives independently
+   of whatever the source keeps. Until M8 the source was visualizer.coffee with
+   its one-month free-tier window; since §20 it is Decaid on the tablet.
+2. **Load, parse and version profiles automatically** — Claude gets the target
+   curves and phases as plain JSON, never a manual upload again.
+3. **Return compact, analysable tool responses**: shot lists (filterable by
+   bean), individual shots including curve and profile, derived metrics,
+   comparisons.
 
-**Umgebung (vorhanden):**
-- Docker-Stack im Heimnetz, `cloudflared`-Tunnel läuft bereits.
-- Maschine: Decent DE1 Pro (Firmware/App 1.46), Upload via de1app/DYE → visualizer.coffee.
-- Visualizer-Account: `the-walker` (Free-Tier). Shots aktuell öffentlich.
-- Claude-Nutzung: claude.ai Web + Mobile-App (Custom Connectors: hinzufügen nur via
-  Web/Desktop; Nutzung danach auch mobil möglich).
+**Environment (existing):**
+- Docker stack on the home network, a `cloudflared` tunnel is already running.
+- Machine: Decent DE1 Pro (firmware/app 1.46).
+- Claude usage: claude.ai web plus the mobile app (custom connectors can only be
+  added through web/desktop; using them afterwards works on mobile too).
 
-**Nicht-Ziele (v1):** Keine eigene Web-UI, kein Multi-User, kein Self-Hosting von
-Visualizer selbst, **kein Löschen** von Bezügen.
+**Non-goals (v1):** no web UI of our own, no multi-user, no self-hosting of
+Visualizer itself, **no deleting** of shots.
 
-*(Ursprünglich stand hier auch „kein Schreiben zu Visualizer". Das ist mit §18
-eingelöst: ein einziges Tool, strikte Whitelist, standardmäßig abgeschaltet.
-Gelesen wird weiterhin überwiegend — geschrieben nur auf ausdrückliche
-Anweisung.)*
-
----
-
-## 2. Architektur
-
-```
-de1app / DYE ──upload──▶ visualizer.coffee (Free-Tier, Upload-Ziel & Community)
-                              │  REST-API (HTTP Basic Auth)
-                              ▼
-                   ┌────────────────────────┐
-                   │  decentespresso-mcp        │  Docker-Container
-                   │  ├─ Sync-Worker        │  (Poll alle N Min + manuell)
-                   │  ├─ SQLite  /data      │  (Shots, Kurven, Profile, Versionen)
-                   │  └─ MCP-Server         │  Streamable HTTP  :8000
-                   └───────────┬────────────┘
-                               │  internes Docker-Netz
-                     cloudflared (vorhanden)
-                               │  https://<hostname>/<secret>/mcp
-                               ▼
-                  Claude (claude.ai / Desktop / Mobile)
-                  Custom Connector; lesende Tools plus - nur mit
-                  WRITE_ENABLED - update_shot (Write-through, §18)
-```
-
-Grundsatz: **visualizer.coffee bleibt Upload-Ziel und Community-Fenster; der
-MCP-Container ist die Quelle der Wahrheit für Analysen** (volle Historie, Profile,
-Metriken).
+*(This list originally also said "no writing". §18 settled that: a single tool,
+a strict whitelist, off by default. Reading still dominates — writing happens
+only on an explicit instruction.)*
 
 ---
 
-## 3. Tech-Stack (verbindlich, Abweichungen begründen)
+## 2. Architecture
 
-| Baustein | Wahl | Begründung |
+```
+Decent DE1 ──▶ Decaid on the tablet (source of record for shots)
+                      │  REST API over the local network, no auth
+                      ▼
+           ┌────────────────────────────┐
+           │  decentespresso-mcp        │  Docker container
+           │  ├─ sync worker            │  (poll every N min + manual)
+           │  ├─ SQLite  /data          │  (shots, curves, profiles, versions)
+           │  └─ MCP server             │  streamable HTTP  :8000
+           └───────────┬────────────────┘
+                       │  internal Docker network
+             cloudflared (existing)
+                       │  https://<hostname>/<secret>/mcp
+                       ▼
+          Claude (claude.ai / desktop / mobile)
+          custom connector; read tools plus - only with
+          WRITE_ENABLED - the four write tools (§18, §20.5)
+```
+
+Principle: **the MCP container is the source of truth for analysis** (full
+history, profiles, metrics). Since §20 nothing in that chain leaves the local
+network. The upload to visualizer.coffee can carry on as a community window but
+is no longer part of the chain.
+
+---
+
+## 3. Tech stack (binding; justify deviations)
+
+| Component | Choice | Reason |
 |---|---|---|
-| Sprache | Python ≥ 3.12 | Ökosystem, TCL-Parsing via stdlib möglich |
-| MCP-Framework | `fastmcp` (v2.x, jlowin/fastmcp) | Streamable-HTTP-Transport eingebaut, wenig Boilerplate |
-| Transport | **Streamable HTTP** | Von Claude unterstützt; SSE gilt als Auslaufmodell |
-| HTTP-Client | `httpx` | Async, Timeouts, Retries |
-| DB | SQLite (Datei in Volume `/data`) | Single-User, einfaches Backup, kein Zusatzcontainer |
-| Scheduler | `apscheduler` (oder asyncio-Loop) | periodischer Sync im selben Prozess |
-| Container | `python:3.12-slim`, non-root User | klein, sicher |
-| Tests | `pytest` + Fixture-Dateien (echte CSV/TCL-Beispiele) | deterministisch |
+| Language | Python ≥ 3.12 | ecosystem, TCL parsing possible through the stdlib |
+| MCP framework | `fastmcp` (v2.x, jlowin/fastmcp) | streamable HTTP transport built in, little boilerplate |
+| Transport | **streamable HTTP** | supported by Claude; SSE is on its way out |
+| HTTP client | `httpx` | async, timeouts, retries |
+| DB | SQLite (file in volume `/data`) | single user, simple backup, no extra container |
+| Scheduler | `apscheduler` (or an asyncio loop) | periodic sync in the same process |
+| Container | `python:3.12-slim`, non-root user | small, safe |
+| Tests | `pytest` + fixture files (real CSV/TCL samples) | deterministic |
 
 ---
 
-## 4. Visualizer-API — Referenz & Verifikationspflicht
+## 4. Visualizer API — reference and duty to verify
 
-**Authoritative Quelle: https://apidocs.visualizer.coffee/ — vor Implementierung
-jedes Endpunkts dort Schema und Feldnamen verifizieren.** Stand der Recherche:
+> Superseded by §20 as of M8: Decaid is the source. This section documents the
+> era before it and stays relevant for the optional showcase upload.
 
-| Endpunkt | Auth | Status | Zweck |
+**Authoritative source: https://apidocs.visualizer.coffee/ — verify the schema
+and field names there before implementing any endpoint.** State of research:
+
+| Endpoint | Auth | Status | Purpose |
 |---|---|---|---|
-| `GET /api/shots?page=&items=` | Basic | dokumentiert | paginierte Liste eigener Shots (Metadaten, IDs) |
-| `GET /api/shots/{id}` bzw. `/api/shots/{id}/download` | Basic | in API-Doku prüfen | vollständige Shot-Daten inkl. Zeitreihen als JSON |
-| `GET /api/shots/{id}/profile.csv` | öffentl. Shots: keine | **verifiziert** | Zeitreihen als CSV (Spalten s. §7.2) |
-| `GET /api/shots/{id}/profile` | öffentl. Shots: keine | **verifiziert** | Profildatei, Content-Type `application/x-tcl` |
+| `GET /api/shots?page=&items=` | Basic | documented | paginated list of one's own shots (metadata, ids) |
+| `GET /api/shots/{id}` or `/api/shots/{id}/download` | Basic | check the API docs | full shot data including time series as JSON |
+| `GET /api/shots/{id}/profile.csv` | public shots: none | **verified** | time series as CSV (columns see §7.2) |
+| `GET /api/shots/{id}/profile` | public shots: none | **verified** | profile file, content type `application/x-tcl` |
 
-Regeln:
-- **HTTP Basic Auth** mit `VISUALIZER_EMAIL` / `VISUALIZER_PASSWORD` (laut API-Doku
-  für persönliche Automationen vorgesehen). Credentials ausschließlich aus Env.
-- Bevorzugt den JSON-Download-Endpunkt für Zeitreihen nutzen (eine Anfrage statt
-  CSV+Meta getrennt); CSV-Endpunkt als Fallback implementieren.
-- Höflich pollen: Standardintervall 15 min, `If-None-Match`/ETag nutzen falls
-  vorhanden, Backoff bei 429/5xx (exponentiell, max 1 h), User-Agent
-  `decentespresso-mcp/<version> (privat, Kontakt-Mail)` setzen.
-- Alle Visualizer-Fehler loggen, aber Tools dürfen nie Credentials oder komplette
-  HTTP-Header ausgeben.
+Rules:
+- **HTTP Basic Auth** with `VISUALIZER_EMAIL` / `VISUALIZER_PASSWORD` (per the
+  API docs, intended for personal automation). Credentials from the environment
+  only.
+- Prefer the JSON download endpoint for time series (one request rather than CSV
+  and metadata separately); implement the CSV endpoint as a fallback.
+- Poll politely: default interval 15 min, use `If-None-Match`/ETag where
+  available, back off on 429/5xx (exponential, max 1 h), and set the User-Agent
+  `decentespresso-mcp/<version> (private, contact mail)`.
+- Log every Visualizer error, but tools must never emit credentials or complete
+  HTTP headers.
 
 ---
 
-## 5. Datenmodell (SQLite)
+## 5. Data model (SQLite)
 
-Migrationen als nummerierte SQL-Dateien (`migrations/001_init.sql`, …), beim Start
-automatisch anwenden. `PRAGMA journal_mode=WAL;` setzen.
+Migrations as numbered SQL files (`migrations/001_init.sql`, …), applied
+automatically at startup. Set `PRAGMA journal_mode=WAL;`.
+
+> The schema below is the Visualizer-era one. §20.4 replaces it; the current
+> schema lives in `migrations/001_decaid_init.sql`, the old migrations under
+> `migrations/visualizer-era/`.
 
 ```sql
 CREATE TABLE shots (
-  id            TEXT PRIMARY KEY,          -- Visualizer-UUID
+  id            TEXT PRIMARY KEY,          -- Visualizer UUID
   started_at    TEXT NOT NULL,             -- ISO8601 UTC
-  bean_brand    TEXT,                      -- z. B. "Tchibo"
-  bean_type     TEXT,                      -- z. B. "Test"
+  bean_brand    TEXT,                      -- "Tchibo", for instance
+  bean_type     TEXT,                      -- "Test", for instance
   bean_notes    TEXT,
   profile_name  TEXT,
   profile_id    INTEGER REFERENCES profiles(id),
   grinder_model TEXT,
   grinder_setting TEXT,
-  dose_g        REAL,                      -- kann fehlen → aus Download-JSON, sonst NULL
+  dose_g        REAL,                      -- may be absent -> from the download JSON, else NULL
   yield_g       REAL,
   duration_s    REAL,
-  ratio         REAL,                      -- yield/dose, berechnet
+  ratio         REAL,                      -- yield/dose, computed
   drink_tds     REAL,
   drink_ey      REAL,
-  enjoyment     INTEGER,                   -- Visualizer-Bewertung falls vorhanden
+  enjoyment     INTEGER,                   -- Visualizer rating if present
   notes         TEXT,
-  raw_json      TEXT NOT NULL,             -- kompletter API-Response (Nachverarbeitung)
+  raw_json      TEXT NOT NULL,             -- the complete API response (post-processing)
   synced_at     TEXT NOT NULL
 );
 
-CREATE TABLE shot_series (                 -- Zeitreihe, 1 Zeile pro Messpunkt
+CREATE TABLE shot_series (                 -- time series, one row per data point
   shot_id   TEXT REFERENCES shots(id) ON DELETE CASCADE,
   elapsed   REAL NOT NULL,
   pressure  REAL, flow_in REAL, flow_out REAL,
@@ -172,16 +183,16 @@ CREATE TABLE shot_series (                 -- Zeitreihe, 1 Zeile pro Messpunkt
 
 CREATE TABLE profiles (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
-  name          TEXT NOT NULL,             -- title aus TCL
-  version_hash  TEXT NOT NULL UNIQUE,      -- sha256 des normalisierten TCL
+  name          TEXT NOT NULL,             -- title from the TCL
+  version_hash  TEXT NOT NULL UNIQUE,      -- sha256 of the normalised TCL
   raw_tcl       TEXT NOT NULL,
-  parsed_json   TEXT NOT NULL,             -- s. §7 Parser-Output
+  parsed_json   TEXT NOT NULL,             -- see §7 for the parser output
   profile_notes TEXT,
   first_seen    TEXT NOT NULL,
   last_seen     TEXT NOT NULL
 );
 
-CREATE TABLE sync_state (                  -- Key-Value: letzter Lauf, Cursor, Fehler
+CREATE TABLE sync_state (                  -- key-value: last run, cursor, errors
   key TEXT PRIMARY KEY, value TEXT
 );
 
@@ -189,91 +200,97 @@ CREATE INDEX idx_shots_bean ON shots(bean_brand, bean_type, started_at DESC);
 CREATE INDEX idx_shots_started ON shots(started_at DESC);
 ```
 
-Designentscheidungen:
-- `raw_json` immer speichern → spätere Schema-Erweiterungen ohne Re-Sync möglich.
-- Profile werden **dedupliziert über `version_hash`**; ein Shot referenziert exakt
-  die Profilversion, mit der er bezogen wurde. So bleibt nachvollziehbar, mit
-  welchen Sollwerten ein alter Shot lief, auch wenn das Profil später geändert wurde.
-- Löschen von Shots auf Visualizer löscht lokal **nichts** (Archiv-Zweck).
+Design decisions:
+- Always store `raw_json` -> later schema extensions without a re-sync.
+- Profiles are **deduplicated through `version_hash`**; a shot references exactly
+  the profile version it was pulled with. That keeps it traceable which targets
+  an old shot ran on even after the profile was changed later.
+- Deleting a shot at the source deletes **nothing** locally (that is the point of
+  an archive).
 
 ---
 
-## 6. Sync-Logik
+## 6. Sync logic
 
-1. **Initial-Backfill:** `GET /api/shots` paginiert bis zum Ende durchlaufen; für
-   jeden unbekannten Shot Detaildaten + Profil-TCL laden und speichern.
-2. **Inkrementell (alle `SYNC_INTERVAL_MIN`, Default 15):**
-   `GET /api/shots?sort=updated_at&updated_after=<cursor>` (Unix-Sekunden). Cursor
-   ist der höchste bekannte `updated_at` minus 120 s Überlappung. Jede gelistete
-   ID, die unbekannt ist **oder** deren `updated_at` sich geändert hat, wird
-   nachgeladen. Bei Fehlern im Lauf bleibt der Cursor stehen.
-   Das ersetzt die frühere Heuristik „Seite 1 bis nur noch bekannte IDs": die
-   hätte nachträglich geänderte Shots (Notizen, Bewertung, TDS) nie gefunden.
-3. **Dedupe:** Primärschlüssel = Visualizer-UUID. Erneuter Abruf eines bekannten
-   Shots aktualisiert nur mutable Felder (Notizen, Bewertung, TDS) via Upsert.
-4. **Profil-Verarbeitung pro Shot:** TCL laden → normalisieren (Whitespace/Zeilen-
-   enden vereinheitlichen) → sha256 → falls Hash neu: parsen + `profiles`-Insert;
-   sonst nur `last_seen` aktualisieren. Shot mit `profile_id` verknüpfen.
-5. **Fehlerbehandlung:** Einzelner fehlerhafter Shot bricht den Lauf nicht ab;
-   Fehler in `sync_state['last_errors']` (JSON-Liste, max 20) protokollieren.
-6. **Uhrzeiten:** intern durchgehend UTC speichern; Ausgabe in Tools mit
-   Zeitzonen-Suffix (Anzeige-TZ `Europe/Berlin` aus Env `TZ`).
+> Superseded by §20.3 as of M8. Decaid has no server-side time filter, so the
+> incremental run pages a client-side `updatedAt` cursor.
+
+1. **Initial backfill:** page through `GET /api/shots` to the end; for every
+   unknown shot load and store the detail data plus the profile TCL.
+2. **Incremental (every `SYNC_INTERVAL_MIN`, default 15):**
+   `GET /api/shots?sort=updated_at&updated_after=<cursor>` (Unix seconds). The
+   cursor is the highest known `updated_at` minus 120 s of overlap. Every listed
+   id that is unknown **or** whose `updated_at` changed gets fetched again. If
+   the run hits errors the cursor stays put.
+   This replaces the earlier heuristic of "page 1 until only known ids remain":
+   that would never have found shots changed after the fact (notes, rating, TDS).
+3. **Dedupe:** the primary key is the source UUID. Fetching a known shot again
+   only updates mutable fields (notes, rating, TDS) through an upsert.
+4. **Profile handling per shot:** load the TCL -> normalise (unify whitespace and
+   line endings) -> sha256 -> if the hash is new: parse and insert into
+   `profiles`; otherwise only update `last_seen`. Link the shot via `profile_id`.
+5. **Error handling:** one faulty shot does not abort the run; record errors in
+   `sync_state['last_errors']` (a JSON list, max 20).
+6. **Times:** store UTC throughout internally; tool output carries a time zone
+   suffix (display TZ `Europe/Berlin` from the env var `TZ`).
 
 ---
 
 ## 7. Parsing
 
-### 7.1 DE1-Profil (.tcl)
+### 7.1 DE1 profile (.tcl)
 
-Format: flache Tcl-Key-Value-Struktur, u. a. `title`, `author`, `profile_notes`,
-`beverage_type`, `settings_profile_type`, Temperatur-/Druck-/Flow-Settings sowie bei
-Advanced-Profilen `advanced_shot { {step1…} {step2…} }` (Liste von Step-Dicts mit
-`name`, `temperature`, `pressure`/`flow`, `seconds`, `transition`, `exit_*`-Feldern).
+Format: a flat Tcl key-value structure, among others `title`, `author`,
+`profile_notes`, `beverage_type`, `settings_profile_type`, the
+temperature/pressure/flow settings, and for advanced profiles
+`advanced_shot { {step1…} {step2…} }` (a list of step dicts with `name`,
+`temperature`, `pressure`/`flow`, `seconds`, `transition` and `exit_*` fields).
 
-**Implementierung:** Kein Regex-Gefrickel — die stdlib mitnutzen:
+**Implementation:** no regex fiddling — use the stdlib:
 
 ```python
 from tkinter import Tcl
 tcl = Tcl()
-pairs = tcl.splitlist(raw)            # top-level: abwechselnd key, value
-steps = [dict_from(tcl.splitlist(s))  # advanced_shot: Liste von Step-Strings
+pairs = tcl.splitlist(raw)            # top level: alternating key, value
+steps = [dict_from(tcl.splitlist(s))  # advanced_shot: a list of step strings
          for s in tcl.splitlist(d["advanced_shot"])]
 ```
 
-(Läuft headless ohne Display. Fallback bei Parse-Fehler: Rohtext speichern,
-`profile_notes`/`title` per tolerantem Zeilen-Scan extrahieren, Flag
-`parse_ok=false` im JSON.)
+(Runs headless without a display. Fallback on a parse error: store the raw text,
+extract `profile_notes`/`title` with a tolerant line scan, flag `parse_ok=false`
+in the JSON.)
 
-**Container-Umgebung (Fassung 1.1, nach einem Produktionsabsturz präzisiert):**
-Der Entwurf lag richtig — `Tcl()` braucht kein X —, aber `python:*-slim`
-braucht trotzdem eine Zutat. `_tkinter` ist dort einkompiliert, die
-Tk-Laufzeitbibliotheken fehlen jedoch; schon `import tkinter` scheitert an
+**Container environment (revision 1.1, made precise after a production crash):**
+the design was right — `Tcl()` needs no X — but `python:*-slim` still needs one
+ingredient. `_tkinter` is compiled in there, yet the Tk runtime libraries are
+missing; even `import tkinter` fails with
 
 ```
 ImportError: libtk8.6.so: cannot open shared object file
 ```
 
-Das Dockerfile installiert deshalb `libtk8.6`
-(`apt-get install -y --no-install-recommends libtk8.6`, zieht `libtcl8.6` und
-die nötigen X11-Bibliotheken als Abhängigkeiten mit). Das Metapaket `tk` mit
-`wish` und Werkzeugen ist nicht nötig.
+The Dockerfile therefore installs `libtk8.6` (`apt-get install -y
+--no-install-recommends libtk8.6`, which pulls in `libtcl8.6` and the necessary
+X11 libraries as dependencies). The `tk` metapackage with `wish` and its tools
+is not needed.
 
-Zwei Sicherungen, damit derselbe Fehler nicht zweimal in Produktion auffällt:
+Two safeguards, so the same failure does not surface in production twice:
 
-- Der Import von `tkinter` in `tcl_profile.py` ist weich. Fällt der Interpreter
-  aus, setzt das Modul `TCL_INTERPRETER_AVAILABLE = False`, hält den Grund in
-  `TCL_IMPORT_ERROR` fest und parst mit einem eigenen Listensplitter
-  (`_split_tcl_list`) weiter — blanke Wörter, `{...}` mit Verschachtelung und
-  Zeilenumbrüchen, `"..."` mit Backslash-Ersetzungen, keine Ersetzung innerhalb
-  von Klammern. Ein Profilparser ist kein Grund, den Dienst nicht zu starten.
-  Ein Test simuliert den Importfehler und prüft genau das.
-- Der Smoke-Step im Build-Workflow **erzwingt** den Interpreter im fertigen
-  Image. Fehlt die apt-Zeile, wird der Build rot statt der Container.
+- The `tkinter` import in `tcl_profile.py` is soft. If the interpreter is
+  unavailable the module sets `TCL_INTERPRETER_AVAILABLE = False`, records the
+  reason in `TCL_IMPORT_ERROR` and carries on parsing with a list splitter of its
+  own (`_split_tcl_list`) — bare words, `{...}` with nesting and newlines,
+  `"..."` with backslash substitution, no substitution inside braces. A profile
+  parser is no reason to stop the service from starting. A test simulates the
+  import failure and checks exactly that.
+- The smoke step in the build workflow **requires** the interpreter in the
+  finished image. If the apt line is missing the build goes red rather than the
+  container.
 
-Beide Parser-Wege werden auf allen Fixtures gegeneinander geprüft, inklusive
-der Frage, welche Eingaben sie ablehnen.
+Both parser routes are checked against each other on all fixtures, including the
+question of which inputs they reject.
 
-**Parser-Output (`parsed_json`):**
+**Parser output (`parsed_json`):**
 
 ```json
 {
@@ -288,106 +305,112 @@ der Frage, welche Eingaben sie ablehnen.
 }
 ```
 
-### 7.2 Zeitreihen (CSV-Fallback)
+> Superseded by §20.4 as of M8: Decaid ships the profile as JSON inside the
+> workflow, and `decaid_profile.py` produces the same `parsed_json` shape from
+> it. This module stays readable for the archived era.
 
-Spalten: `information_type, elapsed, pressure, current_total_shot_weight, flow_in,
-flow_out, water_temperature_boiler, water_temperature_in, water_temperature_basket,
-metatype, metadata, comment`. Zeilen `information_type=meta` → Metadaten-Map,
-`=moment` → Messpunkte. Achtung: `dose` ist im CSV **nicht** enthalten (nur im
-Detail-JSON bzw. auf der Shot-Seite); Boiler-Temp ist oft leer.
+### 7.2 Time series (CSV fallback)
+
+Columns: `information_type, elapsed, pressure, current_total_shot_weight,
+flow_in, flow_out, water_temperature_boiler, water_temperature_in,
+water_temperature_basket, metatype, metadata, comment`. Rows with
+`information_type=meta` form a metadata map, `=moment` are the data points. Note:
+`dose` is **not** in the CSV (only in the detail JSON or on the shot page);
+boiler temperature is often empty.
 
 ---
 
-## 8. Abgeleitete Metriken (deterministisch definieren!)
+## 8. Derived metrics (define them deterministically)
 
-Modul `metrics.py`, pro Shot einmal berechnen und cachen (Spalte oder Tabelle
-`shot_metrics`, JSON). Definitionen — exakt so implementieren, damit Werte über
-Shots vergleichbar sind:
+Module `metrics.py`, computed once per shot and cached (a column or the table
+`shot_metrics`, JSON). Definitions — implement exactly these, so values stay
+comparable across shots:
 
-| Metrik | Definition |
+| Metric | Definition |
 |---|---|
-| `t_first_drops` | kleinstes `elapsed` mit `weight > 0.3 g` |
-| `pi_end` | **primär** aus `shot_series.state_change`: Zeitpunkt der Phasenmarke, die das Ende der Präinfusion markiert. **Fallback** nur wenn der Shot keine Phasenmarken hat: kleinstes `elapsed` mit `pressure ≥ 0.6 × max_pressure_global`. Welcher Weg griff, steht in `pi_end_source` (`state_change` \| `heuristic`) |
-| `peak_pressure_infusion`, `t_peak` | Druckmaximum im Fenster `[0, pi_end + 2 s]` + Zeitpunkt. Das ist der Druck, der den Puck aufbaut — bei ansteigenden Profilen (D-Flow) liegt das globale Maximum am Shot-Ende und sagt darüber nichts aus |
-| `max_pressure_global` | globales Druckmaximum über den ganzen Shot, eigenes Feld |
-| `pressure_dip_after_peak` | `peak_pressure_infusion − min(pressure)` im Fenster `[t_peak, t_peak+4 s]` (Kanal-/Puck-Nachgeben-Indikator) |
-| `avg_flow_pour` | Mittel `flow_out` über `[pi_end, ende]` |
-| `flow_stability` | Variationskoeffizient von `flow_out` im selben Fenster |
-| `end_pressure` | Mittel `pressure` der letzten 2 s |
-| `pressure_trend_pour` | lineare Steigung (bar/s) von `pressure` über `[pi_end, ende]` |
-| `temp_basket_mean/std` | über `[pi_end, ende]` |
-| `duration_s`, `ratio` | letztes `elapsed`; `yield/dose` (dose aus Meta, sonst null) |
+| `t_first_drops` | the smallest `elapsed` with `weight > 0.3 g` |
+| `pi_end` | **primarily** from the machine's phase report: the moment that marks the end of preinfusion. **Fallback** only when the shot has no phase markers: the smallest `elapsed` with `pressure ≥ 0.6 × max_pressure_global`. Which route applied is recorded in `pi_end_source` (§20.4 gives the current three-level hierarchy) |
+| `peak_pressure_infusion`, `t_peak` | the pressure maximum within the window `[0, pi_end + 2 s]` plus its moment. That is the pressure building the puck — with ramping profiles (D-Flow) the global maximum sits at the end of the shot and says nothing about it |
+| `max_pressure_global` | the global pressure maximum across the whole shot, its own field |
+| `pressure_dip_after_peak` | `peak_pressure_infusion − min(pressure)` within `[t_peak, t_peak+4 s]` (an indicator of channelling or the puck giving way) |
+| `avg_flow_pour` | the mean of `flow_out` over `[pi_end, end]` |
+| `flow_stability` | the coefficient of variation of `flow_out` over the same window |
+| `end_pressure` | the mean of `pressure` over the last 2 s |
+| `pressure_trend_pour` | the linear slope (bar/s) of `pressure` over `[pi_end, end]` |
+| `temp_basket_mean/std` | over `[pi_end, end]` |
+| `duration_s`, `ratio` | the last `elapsed`; `yield/dose` (dose from the metadata, else null) |
 
-Alle Werte gerundet (Druck 0.1, Flow 0.01, Zeit 0.1 s). Fehlende Grundlagen → Feld
-`null` + `warnings`-Liste.
+Every value is rounded (pressure 0.1, flow 0.01, time 0.1 s). A missing basis ->
+the field is `null` plus an entry in the `warnings` list.
 
 ---
 
-## 9. MCP-Interface
+## 9. MCP interface
 
-Server-Name: `visualizer-espresso`. Alle Tools **read-only** außer `sync_now`.
-Antwortbudget: Standard ≤ ~15 kB; Kurven immer downsampeln (§9.1).
+Server name: `decentespresso`. Every tool is **read-only** except `sync_now` and
+the write tools from §18 and §20.5. Response budget: ≤ ~15 kB by default; always
+downsample curves (§9.1).
 
-### 9.1 Downsampling-Regel
+### 9.1 Downsampling rule
 
-Parameter `max_points` (Default 120, Max 400). Gleichmäßige zeitbasierte Ausdünnung;
-zusätzlich garantiert enthalten: erster Punkt, letzter Punkt, Punkt von
-`max_pressure_global` und Punkt von `peak_pressure_infusion` (hier geht es um
-Kurventreue, deshalb beide Maxima).
-Rückgabe als kompakte Arrays (`t[]`, `p[]`, `fo[]`, `fi[]`, `w[]`, `tb[]`), nicht
-als Objektliste — spart ~60 % Tokens.
+Parameter `max_points` (default 120, max 400). Evenly thinned over time;
+additionally guaranteed to be included: the first point, the last point, the
+point of `max_pressure_global` and the point of `peak_pressure_infusion` (this is
+about curve fidelity, hence both maxima).
+Returned as compact arrays (`t[]`, `p[]`, `fo[]`, `fi[]`, `w[]`, `tb[]`) rather
+than a list of objects — that saves roughly 60 % of the tokens.
 
 ### 9.2 Tools
 
-| Tool | Parameter | Rückgabe (Kern) |
+| Tool | Parameters | Returns (core) |
 |---|---|---|
-| `list_beans()` | – | Bohnen mit `brand, type, shot_count, first/last_shot, letzte grinder_settings` |
-| `list_shots(bean?, roaster?, profile?, since?, until?, limit=10, cursor?)` | Filter case-insensitive, Teilstring-Match | kompakte Zeilen: `id, started_at, bean, profile, grind, dose, yield, ratio, duration, peak_pressure_infusion, notes_kurz`; `next_cursor` |
-| `get_shot(id \| "latest", include_curve=true, max_points=120)` | `latest` optional mit `bean`-Filter | Metadaten + Metriken (§8) + Kurve (§9.1) + Profil-Kurzfassung (`title, version_hash[:8], steps kompakt`) |
-| `get_shot_metrics(id)` | – | nur §8-Metriken + Warnungen |
-| `compare_shots(ids[2..4], include_curves=false)` | müssen existieren | Tabelle der Metriken nebeneinander + Delta-Spalte zum ersten Shot; optional Kurven (dann `max_points=60` je Shot) |
-| `list_profiles()` | – | je Profil: `name, versionen[] (hash8, first/last_seen, shot_count)` |
-| `get_profile(shot_id? \| name?, version_hash?)` | genau eine Angabe | `parsed_json` vollständig + `notes`; bei `name` ohne Version: neueste |
+| `list_beans()` | – | beans with `name, roaster, shot_count, first/last_shot, the most recent grinder_settings` |
+| `list_shots(bean?, roaster?, profile?, since?, until?, limit=10, cursor?)` | filters case-insensitive, substring match | compact rows: `id, started_at, bean, profile, grind, dose, yield, ratio, duration, peak_pressure_infusion, short note`; `next_cursor` |
+| `get_shot(id \| "latest", include_curve=true, max_points=120)` | `latest` optionally with a `bean` filter | metadata + metrics (§8) + curve (§9.1) + profile summary (`title, version_hash[:8], compact steps`) |
+| `get_shot_metrics(id)` | – | the §8 metrics plus warnings only |
+| `compare_shots(ids[2..4], include_curves=false)` | must exist | a table of the metrics side by side plus a delta column against the first shot; optionally curves (then `max_points=60` per shot) |
+| `list_profiles()` | – | per profile: `name, versions[] (hash8, first/last_seen, shot_count)` |
+| `get_profile(shot_id? \| name?, version_hash?)` | exactly one argument | the complete `parsed_json` plus `notes`; with `name` and no version: the newest |
 | `sync_now()` | – | `{new_shots, updated, new_profile_versions, duration_ms, errors[]}` |
-| `status()` | – | DB-Statistik, letzter Sync, Version, Free-Tier-Hinweis falls letzter Visualizer-Shot > 25 Tage alt |
+| `status()` | – | database statistics, last sync, version, and a warning when the last sync is long enough ago that shots may be missing |
 
-Konventionen:
-- Fehler als strukturierte MCP-Tool-Errors mit klarer Meldung
-  (`shot_not_found`, `visualizer_unreachable`, `auth_failed`, …).
-- Jede Tool-Beschreibung (Docstring) erklärt Einheiten (bar, ml/s, g, °C, s) —
-  das liest das Modell und interpretiert die Zahlen dann korrekt.
-- Datumsparameter: ISO8601 oder relative Kürzel (`"7d"`, `"1m"`).
+Conventions:
+- Errors as structured MCP tool errors with a clear message (`shot_not_found`,
+  `waiting_for_tablet`, `decaid_rejected`, …).
+- Every tool description (docstring) explains the units (bar, ml/s, g, °C, s) —
+  the model reads that and then interprets the numbers correctly.
+- Date parameters: ISO8601 or a relative shorthand (`"7d"`, `"1m"`).
 
-### 9.3 Optionale MCP-Prompts (nice-to-have)
+### 9.3 Optional MCP prompts (nice to have)
 
-- `dial_in_check(shot_id)` — vorformulierter Analyseauftrag (Metriken vs. Profil-Soll).
-- `bean_history(bean)` — Verlaufsauswertung einer Bohne.
+- `dial_in_check(shot_id)` — a pre-formulated analysis task (metrics against the
+  profile targets).
+- `bean_history(bean)` — an evaluation of one bean over time.
 
 ---
 
-## 10. Sicherheit
+## 10. Security
 
-**Bedrohungsmodell:** Der Endpoint ist öffentlich erreichbar (Claude ruft ihn aus
-Anthropics Infrastruktur auf — Heimnetz-/VPN-Beschränkung funktioniert daher NICHT).
-Die Daten sind unkritisch (Espresso-Shots, read-only), die Visualizer-Credentials
-sind kritisch.
+**Threat model:** the endpoint is publicly reachable (Claude calls it from
+Anthropic's infrastructure, so restricting it to the home network or a VPN does
+NOT work). The data is uncritical (espresso shots), the credentials are not.
 
-Maßnahmen (v1, pragmatisch):
-1. **Geheimer Pfad statt Auth:** MCP-Endpoint unter
-   `https://<hostname>/<MCP_PATH_SECRET>/mcp` mit `MCP_PATH_SECRET` = 32+ Zeichen
-   zufällig (`openssl rand -hex 24`). Alle anderen Pfade → 404 ohne Body.
+Measures (v1, pragmatic):
+1. **A secret path instead of auth:** the MCP endpoint sits under
+   `https://<hostname>/<MCP_PATH_SECRET>/mcp` with `MCP_PATH_SECRET` being 32+
+   random characters (`openssl rand -hex 24`). Every other path -> 404 without a
+   body.
 
-   **Ausnahme `/healthz`** (Stand der Umsetzung, korrigiert gegenüber dem
-   Entwurf): Die Route liegt auf derselben ASGI-App wie der MCP-Endpoint und
-   ist damit über den Tunnel erreichbar, sofern das Ingress den Hostnamen
-   pauschal weiterleitet — was die Vorlage in §11.4 tut. Sie liefert
-   ausschließlich `ok` als Text: keine Bestandszahlen, keine Version, kein
-   Hinweis auf den Secret-Pfad. Der Informationsgewinn für einen Scanner
-   beschränkt sich darauf, dass hinter dem Hostnamen überhaupt etwas läuft —
-   das verrät ein 404 mit TLS-Handshake ohnehin.
+   **Exception `/healthz`** (as implemented, corrected against the draft): the
+   route lives on the same ASGI app as the MCP endpoint and is therefore
+   reachable through the tunnel as long as the ingress forwards the hostname
+   wholesale — which the template in §11.4 does. It returns nothing but `ok` as
+   text: no counts, no version, no hint at the secret path. What a scanner gains
+   is the knowledge that something runs behind the hostname at all — which a 404
+   with a TLS handshake gives away anyway.
 
-   Wer sie dennoch schließen will, ergänzt vor der Catch-all-Regel im
-   `cloudflared`-Ingress:
+   To close it regardless, add this before the catch-all rule in the
+   `cloudflared` ingress:
 
    ```yaml
    - hostname: coffee-mcp.example.com
@@ -395,55 +418,64 @@ Maßnahmen (v1, pragmatisch):
      service: http_status:404
    ```
 
-   Der Docker-Healthcheck bleibt davon unberührt, er spricht `127.0.0.1:8000`
-   im Container an und geht nie durch den Tunnel.
-2. **Kein Cloudflare Access davor** — Access würde Claudes Verbindungsaufbau
-   blockieren. Stattdessen in Cloudflare: Rate-Limiting-Regel (z. B. 100 req/min)
-   und Bot-Fight-Mode für den Hostname aus/anpassen, WAF-Standardregeln an.
-3. **Credentials:** nur via Env/`.env` (nicht ins Git; `.env.example` committen).
-   Tools/Logs geben niemals Credentials, Auth-Header oder vollständige URLs mit
-   Secret aus. Log-Filter dafür implementieren.
-4. **Container-Härtung:** non-root User, `read_only: true` Root-FS, nur `/data`
-   beschreibbar, `no-new-privileges`, keine Ports am Host publishen (nur internes
-   Docker-Netz zum cloudflared-Container).
-5. **Schreiben ist die Ausnahme:** Von den Tools mutiert einzig `update_shot`
-   etwas bei Visualizer, und das nur, wenn `WRITE_ENABLED` gesetzt ist —
-   sonst wird es gar nicht erst registriert (§18.4). Es ist idempotent, hat
-   eine geschlossene Feldliste und kann nicht löschen. `sync_now` bleibt
-   ebenfalls idempotent und schreibt nichts nach außen.
+   The Docker health check is unaffected; it addresses `127.0.0.1:8000` inside
+   the container and never goes through the tunnel.
+2. **No Cloudflare Access in front** — Access would block Claude from
+   establishing the connection. Instead, in Cloudflare: a rate-limiting rule
+   (100 req/min, say), bot fight mode adjusted or off for that hostname, and the
+   standard WAF rules on.
+3. **Credentials:** through the environment or `.env` only (not in git; commit
+   `.env.example`). Tools and logs never emit credentials, auth headers or
+   complete URLs carrying the secret. Implement a log filter for that.
+4. **Container hardening:** non-root user, `read_only: true` root filesystem,
+   only `/data` writable, `no-new-privileges`, no ports published on the host
+   (only the internal Docker network to the cloudflared container).
+5. **Writing is the exception:** of all the tools only the `update_*` and
+   `set_*` ones mutate anything at the source, and only when `WRITE_ENABLED` is
+   set — otherwise they are not registered at all (§18.4). They are idempotent,
+   have a closed field list and cannot delete. `sync_now` is likewise idempotent
+   and writes nothing outward.
+6. **Decaid is local only** (§20.6): `DECAID_URL` accepts private IP literals
+   and nothing else, and that traffic must never go through the tunnel.
 
-**Upgrade-Pfad (v2, optional):** FastMCP bringt Auth-Provider mit (OAuth 2.1 /
-Token-Verifier). Claude unterstützt authlose UND OAuth-basierte Remote-Server;
-wenn gewünscht, später OAuth nachrüsten und den Secret-Pfad ablösen. Als Issue im
-Repo anlegen, nicht in v1 bauen.
+**Upgrade path (v2, optional):** FastMCP brings auth providers (OAuth 2.1 /
+token verifier). Claude supports both authless and OAuth-based remote servers;
+if wanted, retrofit OAuth later and retire the secret path. File it as an issue
+in the repo, do not build it in v1.
 
 ---
 
 ## 11. Deployment
 
-### 11.1 Repo-Struktur
+### 11.1 Repository layout
 
 ```
 decentespresso-mcp/
 ├─ compose.yaml
 ├─ Dockerfile
 ├─ .env.example
-├─ migrations/001_init.sql
+├─ migrations/001_decaid_init.sql
 ├─ src/decentespresso_mcp/
-│  ├─ server.py            # FastMCP-App, Tools, Prompts
-│  ├─ sync.py              # Scheduler + Sync-Worker
-│  ├─ visualizer_client.py # httpx-Client, Auth, Retry/Backoff
-│  ├─ tcl_profile.py       # §7.1
+│  ├─ server.py            # FastMCP app, tools, prompts
+│  ├─ sync.py              # scheduler + sync worker
+│  ├─ decaid_client.py     # httpx client for Decaid (§20)
+│  ├─ decaid_mapping.py    # normalisation into archive rows (§20.4)
+│  ├─ decaid_profile.py    # profile versioning from the workflow JSON
+│  ├─ visualizer_client.py # the Visualizer client, superseded (§20.1)
+│  ├─ tcl_profile.py       # §7.1, superseded
 │  ├─ metrics.py           # §8
-│  ├─ db.py                # Schema, Migrationen, Queries
-│  └─ config.py            # Env-Parsing, Validierung beim Start
+│  ├─ guards.py            # §20.7
+│  ├─ notify.py            # ntfy, §20.7
+│  ├─ writes.py            # whitelists, §18.2 and §20.5
+│  ├─ db.py                # schema, migrations, queries
+│  └─ config.py            # env parsing, validation at startup
 ├─ tests/
-│  ├─ fixtures/            # echte CSV-, TCL-, JSON-Beispiele
+│  ├─ fixtures/            # real CSV, TCL and JSON samples
 │  └─ test_*.py
-└─ README.md               # Betriebshandbuch (Kurzfassung dieser Spec §11–13)
+└─ README.md               # operating manual (a short form of §11–13)
 ```
 
-### 11.2 compose.yaml (Vorlage)
+### 11.2 compose.yaml (template)
 
 ```yaml
 services:
@@ -457,7 +489,7 @@ services:
     volumes:
       - ./data:/data
     networks:
-      - cloudflared_net          # an das vorhandene Netz des Tunnels anpassen
+      - cloudflared_net          # adjust to the tunnel's existing network
     read_only: true
     tmpfs: [/tmp]
     security_opt: ["no-new-privileges:true"]
@@ -475,771 +507,834 @@ networks:
 ### 11.3 .env.example
 
 ```dotenv
-VISUALIZER_EMAIL=you@example.com
-VISUALIZER_PASSWORD=change-me
+DECAID_URL=http://10.100.100.171:8080
 MCP_PATH_SECRET=<openssl rand -hex 24>
 SYNC_INTERVAL_MIN=15
 DB_PATH=/data/shots.db
 LOG_LEVEL=INFO
-PUBLIC_BASE_URL=https://coffee-mcp.example.com   # nur für Log-Ausgabe der Connector-URL
+PUBLIC_BASE_URL=https://coffee-mcp.example.com   # only for printing the connector URL
 ```
 
-### 11.4 Cloudflare-Tunnel (Ergänzung der vorhandenen Config)
+### 11.4 Cloudflare tunnel (an addition to the existing config)
 
 ```yaml
 ingress:
   - hostname: coffee-mcp.example.com
     service: http://decentespresso-mcp:8000
-  # …bestehende Regeln…
+  # …existing rules…
   - service: http_status:404
 ```
 
-DNS: CNAME `coffee-mcp` → `<tunnel-id>.cfargotunnel.com` (proxied).
+DNS: CNAME `coffee-mcp` -> `<tunnel-id>.cfargotunnel.com` (proxied).
 
-### 11.5 Einbindung in Claude
+### 11.5 Connecting it to Claude
 
-1. claude.ai (Web) → Einstellungen → Connectors → „Add custom connector".
-2. URL: `https://coffee-mcp.example.com/<MCP_PATH_SECRET>/mcp` — OAuth-Felder leer.
-3. Im Chat über „+" → Connectors aktivieren; Tools erscheinen automatisch.
-4. Mobile: Connector wird übernommen, Hinzufügen neuer Server geht nur via Web/Desktop.
-5. Projekt-Anweisung ergänzen (ersetzt den bisherigen Visualizer-Link-Workflow):
-   „Für Shot-Analysen nutze den Connector visualizer-espresso: erst list_shots/
-   get_shot, Profile über get_profile."
+1. claude.ai (web) -> Settings -> Connectors -> "Add custom connector".
+2. URL: `https://coffee-mcp.example.com/<MCP_PATH_SECRET>/mcp` — OAuth fields
+   empty.
+3. In the chat, enable it under "+" -> Connectors; the tools appear
+   automatically.
+4. Mobile: the connector carries over; adding new servers only works through
+   web/desktop.
+5. Add a project instruction: "For shot analysis use the connector
+   decentespresso: list_shots/get_shot first, profiles through get_profile."
 
 ---
 
-## 12. Betrieb & Wartung
+## 12. Operation and maintenance
 
-**Backup:** Nächtlicher Host-Cronjob:
-`sqlite3 ./data/shots.db ".backup ./data/backup/shots-$(date +%F).db"` +
-Rotation (7 Tage behalten). Optional später: Litestream-Replikation.
+**Backup:** a nightly host cron job:
+`sqlite3 ./data/shots.db ".backup ./data/backup/shots-$(date +%F).db"` plus
+rotation (keep 7 days). Optionally later: Litestream replication.
 
-**Updates:** Manuell `git pull && docker compose build && docker compose up -d`.
-Kein Auto-Update (Watchtower) für diesen Container — API-Breaking-Changes lieber
-bewusst einspielen.
+**Updates:** manually, `git pull && docker compose build && docker compose up
+-d`. No auto-update (Watchtower) for this container — better to apply
+API-breaking changes deliberately.
 
-**Logs:** strukturiert (JSON oder key=value) auf stdout; `docker logs`. Sync-Läufe
-mit Zusammenfassung loggen (`new=2 updated=1 profiles=0 dur=1.2s`).
+**Logs:** structured (JSON or key=value) on stdout; `docker logs`. Log sync runs
+with a summary (`new=2 updated=1 profiles=0 dur=1.2s`).
 
 **Troubleshooting:**
 
-| Symptom | Prüfen |
+| Symptom | Check |
 |---|---|
-| Claude: „couldn't connect" | URL exakt (inkl. `/mcp`)? Tunnel-Ingress? `curl -s https://…/<secret>/mcp` liefert MCP-Antwort/405 statt 404? |
-| Tools fehlen im Chat | Connector im Chat aktiviert? Server neu verbunden nach Tool-Änderungen? |
-| 401 im Sync-Log | Visualizer-Credentials; Login im Browser testen |
-| 502 vom Hostname | Container läuft? Gleiches Docker-Netz wie cloudflared? Service-Name in Ingress korrekt? |
-| Leere Shot-Liste | `status()` → letzter Sync? `sync_now()` ausführen; Backfill-Log prüfen |
-| Neue Shots fehlen | Free-Tier: Shot älter als Sync-Lücke + 1 Monat? → verloren; Intervall verkürzen |
-| Profil `parse_ok=false` | TCL-Rohtext in DB ansehen; Parser-Fixture ergänzen, Issue |
+| Claude: "couldn't connect" | URL exact (including `/mcp`)? Tunnel ingress? Does `curl -s https://…/<secret>/mcp` return an MCP response or 405 rather than 404? |
+| Tools missing in the chat | Connector enabled in the chat? Server reconnected after tool changes? |
+| `waiting_for_tablet` in the sync log | The tablet is off. Not an error - switch it on and sync again |
+| 502 from the hostname | Container running? Same Docker network as cloudflared? Service name in the ingress correct? |
+| Empty shot list | `status()` -> last sync? Run `sync_now()`; check the backfill log |
+| New shots missing | Is the tablet reachable? Does `status()` show `waiting_for_tablet`? |
+| Profile `parse_ok=false` | Look at the raw TCL in the database; add a parser fixture, file an issue |
 
-**Free-Tier-Wächter:** `status()` warnt, wenn `now − letzter_sync > 7 Tage`
-(Archivlücken-Risiko durch das 1-Monats-Fenster von Visualizer Free).
-
----
-
-## 13. Tests & Abnahmekriterien
-
-**Unit (pytest, offline mit Fixtures):**
-- TCL-Parser: D-Flow-Beispiel → erwartete Steps/Notes; kaputtes TCL → `parse_ok=false` ohne Exception.
-- Metriken: Referenz-Shot (Fixture = realer Shot `6eb25d36…`) → erwartete Werte:
-  `peak_pressure_infusion` ≈ 4.1 bar, `end_pressure` ≈ 5.3 bar,
-  `t_first_drops` ≈ 5.3 s, `duration` ≈ 22.9 s, `pi_end` ≈ 6.2 s
-  (Quelle `state_change`).
-  Bei diesem D-Flow-Shot ist `max_pressure_global` ≈ 5.4 bar und fällt mit dem
-  Schlusspunkt zusammen — genau deshalb sind Infusions- und Globalmaximum
-  getrennte Felder.
-
-  Zwei dieser Werte wurden mit Fassung 1.1 an §8 angeglichen, nicht umgekehrt:
-  - `end_pressure` ≈ 5.3 statt 5.4: §8 mittelt über die letzten 2 s (hier
-    5.320). Der letzte Einzelmesswert allein wäre 5.43, reagiert aber auf
-    einen einzigen Ausreißer — der Mittelwert ist das robustere Maß.
-  - `t_first_drops` ≈ 5.3 statt 4.8: die Schwelle bleibt bei `weight > 0.3 g`.
-    Das erste Gewicht überhaupt fällt bei 4.77 s mit 0.20 g an, liegt damit
-    aber im Rauschband der Waage (Auflösung ~0.1 g, Tropfenaufprall und
-    Vibration erzeugen dort Ausschläge). Eine Schwelle unterhalb 0.3 g würde
-    je nach Waage und Tassenstellung schwanken und die Werte über Shots
-    hinweg unvergleichbar machen — genau das soll §8 verhindern.
-
-- pi_end-Fallback: eigener Fixture-Test mit einer Zeitreihe **ohne**
-  Phasenmarken → `pi_end_source == "heuristic"`. Der Pfad bleibt geprüft, auch
-  solange im Archiv ausschließlich `state_change` greift.
-- Downsampling: Peak-Punkt bleibt stets enthalten; `len ≤ max_points`.
-- Sync-Dedupe: zweifacher Lauf derselben Daten → keine Duplikate.
-
-**Integration (manuell):**
-- MCP Inspector (`npx @modelcontextprotocol/inspector`) gegen den lokalen Container:
-  alle Tools aufrufbar, Schemas valide.
-- End-to-end: Connector in claude.ai einbinden → „Zeig meine letzten Shots mit
-  Tchibo Test" liefert korrekte Daten.
-
-**Abnahme (Definition of Done):**
-1. Backfill lädt alle vorhandenen Shots inkl. Profilversionen fehlerfrei.
-2. Neuer Shot auf der DE1 erscheint ≤ `SYNC_INTERVAL_MIN` + 1 min in `list_shots`.
-3. `get_shot("latest")` liefert Metadaten + Metriken + Kurve + Profil in einer Antwort ≤ 15 kB.
-4. Profiländerung an der Maschine erzeugt nach nächstem Shot eine neue Profilversion; alter Shot bleibt mit alter Version verknüpft.
-5. Container übersteht Neustart ohne Datenverlust; Healthcheck grün.
-6. Kein Secret in Logs/Tool-Outputs (Stichprobe).
+**Staleness guard:** `status()` warns when `now − last_sync > 7 days` — that long
+a silence means the tablet has not been reachable and newer shots are missing.
 
 ---
 
-## 14. Build-Reihenfolge für Claude Code
+## 13. Tests and acceptance criteria
 
-- **M0** Gerüst: Repo, Dockerfile, compose, config.py, healthz, CI-freies pytest-Setup.
-- **M1** `visualizer_client.py` + `db.py` + Backfill (nur Metadaten + Zeitreihen).
-- **M2** `tcl_profile.py` + Profilversionierung, Verknüpfung Shot↔Profilversion.
-- **M3** `metrics.py` + Caching.
-- **M4** MCP-Tools (§9) + Inspector-Test.
-- **M5** Härtung (read-only FS, Log-Filter), README/Betriebsteil, Abnahmetests.
-- **M6** Antwortökonomie (§17): `curve_shape`, `compare_shots` in einem Aufruf,
-  gestraffte Docstrings, Messung je Aufruf.
-- **M7** Schreibende Tools (§18): `update_shot` mit Whitelist, Validierung und
-  Write-through, hinter `WRITE_ENABLED`.
-- **M8** Quelle = Decaid (§20): LAN-Ingestion, neues Quellschema, Wächter und
-  Audit; Visualizer nur noch optionales Schaufenster.
+**Unit (pytest, offline with fixtures):**
+- TCL parser: the D-Flow sample -> the expected steps and notes; broken TCL ->
+  `parse_ok=false` without an exception.
+- Metrics: the reference shot (fixture = a real shot) -> the expected values.
 
-Nach jedem Milestone: Tests grün, **Version in `pyproject.toml` bumpen**
-(Nebenversion = Meilensteinnummer, siehe §19), kurzer Commit. API-Schemas in M1 zuerst gegen
-https://apidocs.visualizer.coffee/ verifizieren, bevor Felder festgezurrt werden.
+  The original figures belonged to the Visualizer-era reference shot
+  `6eb25d36…`: `peak_pressure_infusion` ≈ 4.1 bar, `end_pressure` ≈ 5.3 bar,
+  `t_first_drops` ≈ 5.3 s, `duration` ≈ 22.9 s, `pi_end` ≈ 6.2 s. With §20 the
+  acceptance reference moves to a Decaid shot that actually exists in the
+  archive: `peak_pressure_infusion` ≈ 6.6 bar, `end_pressure` ≈ 8.5 bar,
+  `t_first_drops` ≈ 14.2 s, `duration` ≈ 45.6 s, `pi_end` = 21.1 s (source
+  `substate`). The old fixtures stay in the repo as unit fixtures — they still
+  exercise valid logic and are the only real data set covering the heuristic
+  path.
+
+  On the Visualizer-era shot `max_pressure_global` ≈ 5.4 bar and coincides with
+  the final point — which is exactly why the infusion maximum and the global one
+  are separate fields.
+
+  Two of those values were aligned to §8 in revision 1.1, not the other way
+  round:
+  - `end_pressure` ≈ 5.3 rather than 5.4: §8 averages over the last 2 s (5.320
+    here). The final single reading alone would be 5.43 but reacts to a single
+    outlier — the mean is the more robust measure.
+  - `t_first_drops` ≈ 5.3 rather than 4.8: the threshold stays at
+    `weight > 0.3 g`. The first weight at all appears at 4.77 s with 0.20 g,
+    which sits inside the scale's noise band (resolution ~0.1 g; drop impact and
+    vibration cause deflections there). A threshold below 0.3 g would vary with
+    the scale and the cup placement and make the values incomparable across
+    shots — which is exactly what §8 is meant to prevent.
+
+- pi_end fallback: a fixture test of its own with a series **without** phase
+  markers -> `pi_end_source == "heuristic"`. The path stays covered even while
+  the archive is served by the machine's own reports.
+- Downsampling: the peak point always stays in; `len ≤ max_points`.
+- Sync dedupe: running the same data twice -> no duplicates.
+
+**Integration (manual):**
+- MCP Inspector (`npx @modelcontextprotocol/inspector`) against the local
+  container: every tool callable, schemas valid.
+- End to end: connect the connector in claude.ai -> "Show me my last shots with
+  Tchibo Test" returns correct data.
+
+**Acceptance (definition of done):**
+1. The backfill loads every existing shot including profile versions cleanly.
+2. A new shot on the DE1 appears in `list_shots` within `SYNC_INTERVAL_MIN` + 1
+   min.
+3. `get_shot("latest")` returns metadata + metrics + curve + profile in one
+   response ≤ 15 kB.
+4. A profile change at the machine produces a new profile version after the next
+   shot; the old shot stays linked to the old version.
+5. The container survives a restart without data loss; health check green.
+6. No secret in logs or tool output (spot check).
 
 ---
 
-## 15. Bewusst verschoben (Backlog)
+## 14. Build order for Claude Code
 
-- OAuth statt Secret-Pfad (FastMCP-Auth-Provider).
-- MCP-Prompts aus §9.3 (`dial_in_check`, `bean_history`).
-- Wochen-/Bohnen-Reports als MCP-Resource.
-- TDS-/EY-Erfassung strukturiert (falls Refraktometer angeschafft wird).
-- Import weiterer Quellen (Beanconqueror) — Schema ist darauf vorbereitet (`raw_json`).
-- ~~Schreibende Tools (Notizen/Bewertung zurück zu Visualizer)~~ — eingelöst
-  in §18 (M7). Löschen bleibt bewusst draußen.
+- **M0** scaffolding: repo, Dockerfile, compose, config.py, healthz, a pytest
+  setup without CI.
+- **M1** `visualizer_client.py` + `db.py` + backfill (metadata and time series
+  only).
+- **M2** `tcl_profile.py` + profile versioning, linking shot to profile version.
+- **M3** `metrics.py` + caching.
+- **M4** MCP tools (§9) + inspector test.
+- **M5** hardening (read-only FS, log filter), the README operating section,
+  acceptance tests.
+- **M6** response economy (§17): `curve_shape`, `compare_shots` in one call,
+  trimmed docstrings, measurement per call.
+- **M7** write tools (§18): `update_shot` with a whitelist, validation and
+  write-through, behind `WRITE_ENABLED`.
+- **M8** source = Decaid (§20): local-network ingestion, a new source schema,
+  guards and audit; Visualizer only an optional showcase.
+
+After every milestone: tests green, **bump the version in `pyproject.toml`**
+(minor version = milestone number, see §19), a short commit. Verify the API
+schemas against the live API before nailing down any fields.
+
+---
+
+## 15. Deliberately deferred (backlog)
+
+- OAuth instead of the secret path (a FastMCP auth provider).
+- The MCP prompts from §9.3 (`dial_in_check`, `bean_history`).
+- Weekly or per-bean reports as an MCP resource.
+- Structured TDS/EY capture (should a refractometer be bought).
+- Importing further sources (Beanconqueror) — the schema is prepared for it
+  (`raw_json`).
+- ~~Write tools (notes/ratings back to Visualizer)~~ — settled in §18 (M7).
+  Deleting stays out deliberately.
 
 ---
 
 ## 16. Deployment via Portainer + GHCR
 
-Ergänzt §11 für den Fall, dass der Stack nicht per `docker compose` auf dem Host,
-sondern über Portainer verwaltet wird. §11 bleibt gültig für lokale Läufe.
+Extends §11 for the case where the stack is managed through Portainer rather
+than `docker compose` on the host. §11 stays valid for local runs.
 
-### 16.1 Bildbau in GitHub Actions
+### 16.1 Building the image in GitHub Actions
 
-`.github/workflows/build-image.yaml`: bei jedem Push auf `main` (außer reinen
-Doku-Änderungen) und auf Knopfdruck.
+`.github/workflows/build-image.yaml`: on every push to `main` (except pure
+documentation changes) and on demand.
 
-1. **Job `test`** — `ruff check` und `pytest`. Bewusst als Tor: ein Image mit
-   roten Tests soll nicht in der Registry landen.
-2. **Job `build`** — `docker/build-push-action` baut aus dem vorhandenen
-   `Dockerfile` und pusht nach `ghcr.io/<owner>/<repo>`.
+1. **Job `test`** — `ruff check` and `pytest`. Deliberately a gate: an image with
+   failing tests should not land in the registry.
+2. **Job `build`** — `docker/build-push-action` builds from the existing
+   `Dockerfile` and pushes to `ghcr.io/<owner>/<repo>`.
 
-Tags: `latest` und `sha-<commit>`. Der SHA-Tag erlaubt ein Zurückrollen auf eine
-bestimmte Version, ohne den Stack umzubauen. Authentifizierung läuft über das
-vom Runner bereitgestellte `GITHUB_TOKEN` mit `packages: write` — kein eigenes
-Secret nötig. Der Buildcache liegt in `type=gha`.
+Tags: `latest` and `sha-<commit>`. The SHA tag allows rolling back to a specific
+version without rebuilding the stack. Authentication runs through the
+`GITHUB_TOKEN` the runner provides, with `packages: write` — no secret of your
+own is needed. The build cache lives in `type=gha`.
 
-### 16.2 Stack-Datei
+### 16.2 The stack file
 
-`compose.portainer.yaml`, drei Unterschiede zu `compose.yaml`:
+`compose.portainer.yaml`, three differences from `compose.yaml`:
 
-| Punkt | `compose.yaml` (lokal) | `compose.portainer.yaml` |
+| Point | `compose.yaml` (local) | `compose.portainer.yaml` |
 |---|---|---|
 | Image | `build: .` | `image: ${IMAGE_REPOSITORY}:${IMAGE_TAG}` |
-| Daten | Bind-Mount `./data`, braucht `chown 10001` | benanntes Volume `decentespresso_mcp_data` |
-| Config | `env_file: .env` | `${VAR}` aus den Portainer-Stack-Variablen |
+| Data | bind mount `./data`, needs `chown 10001` | named volume `decentespresso_mcp_data` |
+| Config | `env_file: .env` | `${VAR}` from the Portainer stack variables |
 
-Das benannte Volume ist der wichtigere der drei: Docker legt es mit der
-Eigentümerschaft an, die `/data` im Image hat (UID 10001), womit der
-Stolperstein „Container läuft als non-root, Bind-Mount gehört root" entfällt.
+The named volume is the more important of the three: Docker creates it with the
+ownership `/data` has in the image (UID 10001), which removes the stumbling
+block of "the container runs non-root, the bind mount belongs to root".
 
-Alles andere aus §10.4 bleibt: `read_only: true`, `tmpfs: /tmp`,
-`no-new-privileges`, keine Host-Ports. Zusätzlich ein Deckel auf die
-Logrotation — der Container läuft dauerhaft.
+Everything else from §10.4 stays: `read_only: true`, `tmpfs: /tmp`,
+`no-new-privileges`, no host ports. In addition a cap on log rotation — the
+container runs permanently.
 
-### 16.3 Private Repositories
+### 16.3 Private repositories
 
-Ist das GitHub-Repo privat, ist auch das Paket in GHCR privat, und Portainer
-kann es nicht ohne Anmeldung ziehen. Zwei Wege:
+If the GitHub repo is private, so is the package in GHCR, and Portainer cannot
+pull it without signing in. Two routes:
 
-- **Paket öffentlich schalten** (GitHub → Packages → Package settings → Change
-  visibility). Das Image enthält keine Credentials — die kommen erst zur
-  Laufzeit aus den Stack-Variablen. Für dieses Projekt ausreichend.
-- **Registry in Portainer hinterlegen** (Registries → Add registry → Custom,
-  URL `ghcr.io`, Benutzername = GitHub-Login, Passwort = PAT mit
-  `read:packages`). Nötig, wenn das Paket privat bleiben soll.
+- **Make the package public** (GitHub -> Packages -> Package settings -> Change
+  visibility). The image contains no credentials — those arrive at runtime from
+  the stack variables. Sufficient for this project.
+- **Register the registry in Portainer** (Registries -> Add registry -> Custom,
+  URL `ghcr.io`, username = GitHub login, password = a PAT with
+  `read:packages`). Needed if the package is to stay private.
 
-### 16.4 Abnahme auf dem Host
+### 16.4 Acceptance on the host
 
-Kriterium 2 und 5 aus §13 lassen sich nur dort prüfen. Die Schrittfolge samt
-Erfolgskriterien steht im README unter „Abnahme auf dem Host".
+Criteria 2 and 5 from §13 can only be checked there. The step sequence including
+success criteria sits in the README under "Acceptance on the host".
 
 ---
 
-## 17. Antwortökonomie (M6)
+## 17. Response economy (M6)
 
-**Problem.** Jede Runde eines Gesprächs verarbeitet den gesamten bisherigen
-Kontext neu. Zwei Dinge treiben ihn: Antworten, die mehr liefern als die Frage
-braucht, und Fragen, die mehrere Aufrufe kosten. Beides ist behebbar, ohne an
-der Analysequalität zu sparen.
+**Problem.** Every turn of a conversation reprocesses the whole context so far.
+Two things drive it: responses that deliver more than the question needs, and
+questions that cost several calls. Both are fixable without economising on the
+quality of the analysis.
 
-**Nicht angetastet:** die Metrikdefinitionen aus §8 (`METRICS_VERSION` bleibt),
-die Tool-Namen und die Semantik in den `INSTRUCTIONS`.
+**Left untouched:** the metric definitions from §8 (`METRICS_VERSION` stays),
+the tool names, and the semantics in the `INSTRUCTIONS`.
 
-### 17.1 Kurvenform statt Rohzahlen
+### 17.1 Curve shape instead of raw numbers
 
-Neues Feld `curve_shape`, immer mitgeliefert von `get_shot` und `compare_shots`.
-Es beschreibt den Verlauf abschnittsweise entlang der Phasenmarken aus
-`state_change` — dieselbe Quelle wie `pi_end`:
+A new field `curve_shape`, always returned by `get_shot` and `compare_shots`. It
+describes the curve segment by segment along the machine's phase markers — the
+same source as `pi_end`:
 
 ```json
 {"segments": [{"from": 6.2, "to": 22.9,
                "p":  {"from": 3.0, "to": 5.4,  "dir": "rising",  "linear": false},
                "fo": {"from": 2.09,"to": 1.8,  "dir": "falling", "linear": false}}],
  "markers": {"t_first_drops": 5.3, "pi_end": 6.2, "t_peak": 7.2},
- "source": "state_change"}
+ "source": "machine"}
 ```
 
-`dir` vergleicht Anfangs- und Endwert (`flat` unterhalb 0.2 bar bzw. 0.15 ml/s),
-`linear` beschreibt den Weg dazwischen: maximale Abweichung von der Geraden,
-bezogen auf die Spannweite im Abschnitt, Grenze 15 %. Beides zusammen — ein
-Abschnitt kann `flat` und trotzdem nicht linear sein, wenn er eine Delle hat.
-`source` hält fest, woher die Grenzen stammen: `state_change` (Maschinenmarken),
-`markers` (ersatzweise `pi_end`) oder `none`.
+`dir` compares the starting and ending value (`steady` below 0.2 bar or
+0.15 ml/s), `linear` describes the path between them: the maximum deviation from
+the straight line, relative to the range within the segment, with a 15 % bound.
+The two together — a segment can be `steady` and still not linear if it has a
+dip. `source` records where the boundaries came from: `machine` (the machine's
+phase markers), `markers` (derived from `pi_end` instead) or `none`.
 
-Folgerichtig kehren sich die Vorgaben aus §9.1 um: **`include_curve` in
-`get_shot` hat jetzt Default `false`**, `max_points` den Default 60 statt 120.
-Die Punktarrays bleiben unverändert verfügbar, sind aber die Ausnahme.
+Consequently the defaults from §9.1 invert: **`include_curve` in `get_shot` now
+defaults to `false`**, and `max_points` defaults to 60 rather than 120. The point
+arrays remain available unchanged but are the exception.
 
-**Korrektur zu §9.2:** Dort steht „optional Kurven (dann `max_points=60` je
-Shot)". Vier Shots mit je 60 Punkten ergeben zusammen mit `curve_shape` und den
-Profilen 18,2 kB und sprengen damit das Antwortbudget. `compare_shots` verteilt
-deshalb ein Gesamtbudget von 100 Punkten auf die verglichenen Shots (mindestens
-20 je Shot): 2 Shots → 47, 3 → 30, 4 → 23 Punkte. Der schlimmste Fall liegt
-damit bei 13,4 kB. Ein Test prüft genau diesen Fall.
+**Correction to §9.2:** it says "optionally curves (then `max_points=60` per
+shot)". Four shots at 60 points each, together with `curve_shape` and the
+profiles, come to 18.2 kB and blow the response budget. `compare_shots`
+therefore distributes a total budget of 100 points across the compared shots (at
+least 20 each): 2 shots -> 47, 3 -> 30, 4 -> 23 points. The worst case then sits
+at 13.4 kB. A test checks exactly that case.
 
-### 17.2 `compare_shots` in einem Aufruf
+### 17.2 `compare_shots` in one call
 
-Liefert je Shot zusätzlich die Profil-Kurzfassung (Titel, `version_hash[:8]`,
-`semantic_hash[:8]`, Typ, Kopf-Sollwerte, Schrittzahl) und setzt
-`profile_notice`, wenn die Bezüge nicht auf denselben Sollwerten liefen. Drei
-Fälle, absichtlich unterschiedlich scharf formuliert:
+Additionally returns the profile summary per shot (title, `version_hash[:8]`,
+`semantic_hash[:8]`, type, headline targets, step count) and sets
+`profile_notice` when the shots did not run on the same targets. Three cases,
+deliberately phrased with different force:
 
-| Lage | Hinweis |
+| Situation | Note |
 |---|---|
-| gleicher `version_hash` | keiner |
-| verschiedene Version, gleicher `semantic_hash` | „rein kosmetisch" |
-| abweichender `semantic_hash` | „Achtung … Unterschiede können vom Profil kommen" |
-| mindestens ein Profil fehlt | „Vergleich der Sollwerte ist unvollständig" |
+| same `version_hash` | none |
+| different version, same `semantic_hash` | "purely cosmetic" |
+| differing `semantic_hash` | "careful … differences may come from the profile" |
+| at least one profile missing | "the comparison of targets is incomplete" |
 
-Der dritte Fall ist der Grund für das Feld: ohne ihn liest man einen
-Metrikunterschied leicht als Folge des Mahlgrads, obwohl das Profil ein anderes
-war. Abschaltbar über `include_profile=false`.
+The third case is the reason for the field: without it one easily reads a
+difference in the metrics as a consequence of the grind setting when the profile
+was a different one. Switchable through `include_profile=false`.
 
-### 17.3 Docstrings ohne Doppelung
+### 17.3 Docstrings without duplication
 
-Die vollständige Begriffserklärung steht in den `INSTRUCTIONS` — sie sind
-ohnehin immer im Kontext. Die Tool-Docstrings nennen nur noch Zweck,
-Parameterbedeutung und verweisen für die Begriffe dorthin. Die ausführlichen
-Warntexte zu `pi_end`, den beiden Druckmaxima und `warnings` sind aus den
-einzelnen Tools entfernt.
+The full glossary lives in the `INSTRUCTIONS` — they are always in context
+anyway. The tool docstrings now name only the purpose and the meaning of the
+parameters and point there for the terms. The detailed explanations of `pi_end`,
+the two pressure maxima and `warnings` are removed from the individual tools.
 
-Ein Test hält eine Obergrenze für die Summe aller Tool-Definitionen fest und
-prüft, dass die Glossartexte nicht in einzelne Docstrings zurückwandern.
+A test pins an upper bound on the sum of all tool definitions and checks that the
+glossary texts do not migrate back into individual docstrings.
 
-### 17.4 Messbarkeit
+### 17.4 Measurability
 
-`telemetry.py` loggt je Tool-Aufruf `tool`, `dur_ms` und `bytes` — **keine**
-Parameterwerte, keine URL, keinen Pfad. Argumente sind der wahrscheinlichste
-Weg, auf dem irgendwann etwas Vertrauliches in eine Logzeile gerät.
+`telemetry.py` logs `tool`, `dur_ms` and `bytes` for every tool call — **no**
+parameter values, no URL, no path. Arguments are the likeliest route by which
+something confidential eventually ends up in a log line.
 
-Gemessen am **Entwicklungsabzug vom 2026-08-01** (14 Shots) — beide Spalten am
-selben Stand, damit der Vergleich trägt. Byte:
+Measured against the **development snapshot of 2026-08-01** (14 shots) — both
+columns at the same state, so the comparison holds. Bytes:
 
-| Aufruf | vor M6 | nach M6 | |
+| Call | before M6 | after M6 | |
 |---|---:|---:|---|
-| Tool-Definitionen (alle 9, gehen bei jeder Anfrage mit) | 10 399 | 6 876 | −34 % |
-| `get_shot("latest")` | 5 021 | 2 092 | −58 % |
-| `get_shot(id)` | 4 626 | 1 868 | −60 % |
-| `compare_shots(2)` inkl. Profile | 1 680 + 2×1 013¹ | 4 234 | 3 Aufrufe → 1 |
-| `get_shot(id, include_curve=true)` | 4 626 | 3 959² | −14 % |
-| `list_shots(limit=10)` | 3 277 | 3 277 | ±0 |
+| tool definitions (all 9, sent with every request) | 10,399 | 6,876 | −34 % |
+| `get_shot("latest")` | 5,021 | 2,092 | −58 % |
+| `get_shot(id)` | 4,626 | 1,868 | −60 % |
+| `compare_shots(2)` incl. profiles | 1,680 + 2×1,013¹ | 4,234 | 3 calls -> 1 |
+| `get_shot(id, include_curve=true)` | 4,626 | 3,959² | −14 % |
+| `list_shots(limit=10)` | 3,277 | 3,277 | ±0 |
 
-¹ Vor M6 lieferte `compare_shots` keine Profile; derselbe Informationsstand
-kostete zwei zusätzliche `get_profile`-Aufrufe und damit drei Gesprächsrunden.
+¹ Before M6 `compare_shots` returned no profiles; the same information cost two
+additional `get_profile` calls and therefore three conversation turns.
 
-² Enthält jetzt zusätzlich `curve_shape` und ist trotzdem kleiner, weil
-`max_points` von 120 auf 60 gesunken ist. Wer mehr Punkte braucht, fordert sie
-weiterhin an (Maximum 400).
+² Now additionally contains `curve_shape` and is still smaller, because
+`max_points` dropped from 120 to 60. Anyone needing more points still asks for
+them (maximum 400).
 
-Von den verbleibenden 6 876 B der Tool-Definitionen sind rund 3 600 B
-JSON-Schema der Parameter. Tiefer kommt man nur über weniger Parameter, nicht
-über kürzere Texte.
+Of the remaining 6,876 B of tool definitions, roughly 3,600 B are the JSON schema
+of the parameters. Going lower means fewer parameters, not shorter text.
 
-**Gegenmessung bei Produktionsgröße** (Abzug vom 2026-08-31, 69 Shots, 3 Bohnen,
-11 Profilversionen). Nur zwei Werte hängen am Bestand, beide unkritisch:
+**Cross-measurement at production size** (snapshot of 2026-08-31, 69 shots, 3
+beans, 11 profile versions). Only two values depend on the archive, both
+uncritically:
 
-| Aufruf | Dev-Abzug (14 Shots) | Produktionsgröße (69) |
+| Call | dev snapshot (14 shots) | production size (69) |
 |---|---:|---:|
 | `list_beans()` | 522 | 921 |
-| `list_shots(limit=10)` | 3 277 | 3 684 |
+| `list_shots(limit=10)` | 3,277 | 3,684 |
 | `status()` | 654 | 683 |
-| Tool-Definitionen | 6 876 | 6 876 |
+| tool definitions | 6,876 | 6,876 |
 
-`get_shot` und `compare_shots` skalieren gar nicht mit der Bestandsgröße — sie
-liefern feste Shots. `list_shots` ist durch `limit` gedeckelt und wächst nur um
-`total_matching`; `list_beans` wächst mit der Zahl **verschiedener Bohnen**,
-nicht der Bezüge. Die Schranken aus §17.4 tragen damit auch im Betrieb.
+`get_shot` and `compare_shots` do not scale with the archive at all — they return
+fixed shots. `list_shots` is capped by `limit` and only grows by
+`total_matching`; `list_beans` grows with the number of **distinct beans**, not
+of shots. The bounds from §17.4 therefore hold in operation too.
+
+**M8 adds four tools**, and more capability necessarily costs more. The telling
+figure is the size **per tool**, and it stayed flat: 1,155 B before M6, 764 B
+after M6, 840 B now for the read-only set (9,241 B across 11 tools). With write
+mode on it is 808 B per tool (12,123 B across 15) — leaner than the 845 B M7
+needed with a single write tool, because the behavioural rules moved into the
+`INSTRUCTIONS`.
 
 ---
 
-## 18. Schreibende Tools (M7)
+## 18. Write tools (M7)
 
-Löst den Backlog-Punkt „Schreibende Tools" aus §15 ein. **Nicht-Ziel bleibt
-Löschen** — die API kann es (`DELETE /shots/{id}`), v1 baut es nicht.
+Settles the backlog item "write tools" from §15. **Deleting remains a non-goal**
+— the API can do it (`DELETE /shots/{id}`), v1 does not build it.
 
-### 18.1 Verifikation der API (2026-08-01, v1.17.1)
+### 18.1 Verifying the API (2026-08-01, v1.17.1)
 
-Wie in §4 gefordert erst geprüft, dann gebaut. Der Endpunkt ist
-`PATCH /api/shots/{id}` mit `{"shot": {…}}`. Vier Befunde, drei davon
-undokumentiert:
+As §4 demands: checked first, built second. The endpoint is
+`PATCH /api/shots/{id}` with `{"shot": {…}}`. Four findings, three of them
+undocumented:
 
-1. **`Accept: application/json` ist Pflicht.** Ohne den Header antwortet die
-   API mit `422 {"error":"Request must be JSON."}` — auch bei korrektem
-   `Content-Type`. Steht in keiner Doku.
+1. **`Accept: application/json` is mandatory.** Without the header the API
+   answers `422 {"error":"Request must be JSON."}` — even with a correct
+   `Content-Type`. It appears in no documentation.
 
-2. **Die dokumentierte Feldliste ist unvollständig.** `ShotUpdateRequest` listet
-   nur `profile_title`, `barista`, `bean_weight`, `bean_notes`,
-   `espresso_notes`, `private_notes`, die acht Sensorik-Noten, `coffee_bag_id`,
-   `tag_list` und `metadata`. Tatsächlich schreibbar sind (einzeln geprüft,
-   jeweils geschrieben, zurückgelesen und zurückgesetzt):
+2. **The documented field list is incomplete.** `ShotUpdateRequest` lists only
+   `profile_title`, `barista`, `bean_weight`, `bean_notes`, `espresso_notes`,
+   `private_notes`, the eight tasting notes, `coffee_bag_id`, `tag_list` and
+   `metadata`. Actually writable are (checked individually — each one written,
+   read back and reset):
 
-   | Feld | dokumentiert | schreibbar |
+   | Field | documented | writable |
    |---|:--:|:--:|
    | `bean_brand`, `bean_type`, `roast_date`, `roast_level` | – | ✅ |
    | `grinder_setting`, `drink_weight` | – | ✅ |
    | `espresso_enjoyment`, `drink_tds`, `drink_ey` | – | ✅ |
    | `bean_weight`, `bean_notes`, `espresso_notes`, `barista` | ✅ | ✅ |
-   | `private_notes` | ✅ | ❌ (400, Premium) |
+   | `private_notes` | ✅ | ❌ (400, premium) |
    | `id`, `start_time` | – | ❌ (400) |
 
-3. **Nicht erlaubte Felder werden stillschweigend verworfen.** `400` kommt nur,
-   wenn nach dem Filtern *nichts* Erlaubtes übrig bleibt (`"param is missing or
-   the value is empty or invalid: shot"`). Ein Aufruf mit `private_notes`
-   **plus** einem erlaubten Feld liefert also `200` — ohne die Notiz zu
-   schreiben. Deshalb ist der Read-back-Vergleich in §18.3 keine Kür.
+3. **Fields that are not permitted get discarded silently.** A `400` only comes
+   back when *nothing* permitted survives the filtering (`"param is missing or
+   the value is empty or invalid: shot"`). A call with `private_notes` **plus**
+   one permitted field therefore returns `200` — without writing the note. That
+   is why the read-back comparison in §18.3 is not optional polish.
 
-4. **Die API validiert keine Wertebereiche.** `espresso_enjoyment: 999` und
-   `-5` wurden anstandslos gespeichert. Die Prüfung in §18.2 ist der einzige
-   Schutz, nicht eine zweite Absicherung.
+4. **The API validates no value ranges.** `espresso_enjoyment: 999` and `-5` were
+   stored without complaint. The validation in §18.2 is the only protection, not
+   a second line of defence.
 
-### 18.2 Ein Tool, strikte Whitelist
+### 18.2 One tool, a strict whitelist
 
-`update_shot(id, fields)`. Erlaubt sind ausschließlich:
+`update_shot(id, fields)`. Permitted are exclusively:
 
-| Gruppe | Felder |
+| Group | Fields |
 |---|---|
-| Bohne | `bean_brand`, `bean_type`, `roast_date`, `roast_level`, `bean_notes` |
-| Zubereitung | `grinder_setting`, `bean_weight`, `drink_weight` |
-| Bewertung | `espresso_enjoyment`, `espresso_notes`, `private_notes`, `drink_tds`, `drink_ey` |
-| Sonstiges | `barista` |
+| Bean | `bean_brand`, `bean_type`, `roast_date`, `roast_level`, `bean_notes` |
+| Preparation | `grinder_setting`, `bean_weight`, `drink_weight` |
+| Rating | `espresso_enjoyment`, `espresso_notes`, `private_notes`, `drink_tds`, `drink_ey` |
+| Other | `barista` |
 
-Unbekannte Felder → Fehler mit der vollständigen Liste. Ausdrücklich gesperrt
-sind Kennung, Zeitstempel, Telemetrie und Profil; sie bekommen eine eigene
-Meldung, die den Grund nennt statt nur „unbekannt". `null` löscht ein Feld.
+Unknown fields -> an error carrying the complete list. Explicitly blocked are the
+identifier, timestamps, telemetry and the profile; they get a message of their
+own naming the reason rather than merely "unknown". `null` clears a field.
 
-Validierung **vor** dem ersten API-Aufruf, alle Verstöße gesammelt:
+Validation happens **before** the first API call, with every violation collected:
 
-| Feld | Regel |
+| Field | Rule |
 |---|---|
-| `espresso_enjoyment` | Ganzzahl 0–100 |
+| `espresso_enjoyment` | whole number 0–100 |
 | `bean_weight` | 5–30 g |
 | `drink_weight` | 10–100 g |
 | `drink_tds` / `drink_ey` | 0–30 % / 0–50 % |
-| `roast_date` | ISO `YYYY-MM-DD`, nicht in der Zukunft |
-| Freitextfelder | ≤ 5 000 Zeichen |
+| `roast_date` | ISO `YYYY-MM-DD`, not in the future |
+| free-text fields | ≤ 5,000 characters |
 
-Zwei Details aus der Praxis: Kommazahlen werden akzeptiert (`"18,5"` → `18.5`),
-und beim Röstdatum nennt die Fehlermeldung ausdrücklich, dass die DE1-App
-`TT.MM.JJJJ` schreibt, hier aber ISO erwartet wird. **Damit entstehen gemischte
-Formate im Bestand** — von der Maschine geschriebene Datumsangaben bleiben
-deutsch, von uns geschriebene sind ISO. Bewusst in Kauf genommen: ein
-maschinenlesbares Format ist mehr wert als Einheitlichkeit mit einem
-mehrdeutigen.
+Two details from practice: decimal commas are accepted (`"18,5"` -> `18.5`), and
+for the roast date the error message explicitly says that the DE1 app writes
+`DD.MM.YYYY` while ISO is expected here. **That produces mixed formats in the
+archive** — dates written by the machine stay German, ones written by us are
+ISO. Accepted deliberately: a machine-readable format is worth more than
+uniformity with an ambiguous one.
 
-### 18.3 Write-through — Visualizer bleibt die Wahrheit
+> §20.5 moves this ruleset onto Decaid's field names and adds three more
+> rulesets. The principles below stay unchanged.
 
-Es wird nie nur lokal geschrieben. Die Kette, unter demselben Lock wie der Sync:
+### 18.3 Write-through — the source stays the truth
 
-1. `GET /shots/{id}` — Vorher-Stand **frisch von der API**, nicht aus der
-   lokalen Kopie. Die könnte veraltet sein, und dann wäre das gemeldete
-   „vorher" eine Behauptung statt einer Messung.
-2. `PATCH /shots/{id}` mit den validierten Feldern.
-3. `GET /shots/{id}` erneut, Upsert in die lokale DB, Metriken des Shots neu
-   rechnen — über denselben Pfad wie im Sync-Lauf (`refresh_shot`). Eine
-   Dosisänderung ändert die Ratio; ohne diesen Schritt bliebe der Metrik-Cache
-   falsch.
+Nothing is ever written locally alone. The chain, under the same lock as the
+sync:
 
-Die Antwort nennt je Feld `before` und `after`, **beides aus dem Read-back**.
-Weicht ein Feld nicht ab, landet es in `unchanged` samt Hinweis auf den
-Premium-Vorbehalt — das ist die einzige Stelle, an der der stille Verwurf aus
-§18.1.3 sichtbar wird.
+1. `GET /shots/{id}` — the before state **fresh from the API**, not from the
+   local copy. That could be stale, and then the reported "before" would be a
+   claim rather than a measurement.
+2. `PATCH /shots/{id}` with the validated fields.
+3. `GET /shots/{id}` again, upsert into the local database, recompute the shot's
+   metrics — along the same path as in a sync run (`refresh_shot`). A dose change
+   changes the ratio; without this step the metrics cache would stay wrong.
 
-### 18.4 Schalter und Protokoll
+The response names `before` and `after` per field, **both from the read-back**.
+If a field does not differ it lands in `unchanged` together with a note — that is
+the only place where the silent discarding from §18.1.3 becomes visible.
 
-`WRITE_ENABLED` (Default `false`). Ist er aus, wird das Tool **nicht
-registriert** — es steht nicht in der Tool-Liste und lehnt nicht ab. Ein Tool,
-das existiert und ablehnt, lädt zum Nachfragen ein; eines, das es nicht gibt,
-nicht. Ohne Visualizer-Verbindung bleibt es ebenfalls weg.
+### 18.4 Switch and log
 
-Der Docstring bindet das Modell: nur auf ausdrückliche Nutzeranweisung, genau
-die genannten Felder, Bestätigung anhand der zurückgelieferten Werte.
+`WRITE_ENABLED` (default `false`). When it is off the tool is **not registered**
+— it does not appear in the tool list and does not refuse. A tool that exists
+and refuses invites asking again; one that does not exist does not. Without a
+connection to the source it stays away as well.
 
-Je Schreibvorgang eine Logzeile mit Shot-ID, **Feldnamen** und Dauer — keine
-Werte. In `espresso_notes` und `private_notes` kann Privates stehen, und ein
-Log ist der falsche Ort dafür.
+The docstring binds the model: only on an explicit user instruction, exactly the
+fields named, confirmation from the values that come back.
 
-### 18.5 Abnahme
+One log line per write with the shot id, the **field names** and the duration —
+no values. `espresso_notes` and `private_notes` can hold private things, and a
+log is the wrong place for those.
 
-An Shot `51c96e2c` (Tchibo Test) durchlaufen: fünf ungültige Eingaben
-abgewiesen ohne API-Aufruf, dann `espresso_enjoyment: 35` und eine Notiz
-gesetzt. Read-back über `get_shot`, lokale DB und Metrik-Cache stimmen überein,
-und die Gegenprobe direkt gegen `visualizer.coffee` zeigt beide Werte.
+### 18.5 Acceptance
+
+Run through on shot `51c96e2c` (Tchibo Test): five invalid inputs refused
+without an API call, then `espresso_enjoyment: 35` and a note set. The read-back
+through `get_shot`, the local database and the metrics cache agree, and the
+cross-check straight against `visualizer.coffee` shows both values.
 
 ---
 
-## 19. Versionierung und Build-Identität
+## 19. Versioning and build identity
 
-**Anlass.** Beim M7-Deployment meldete `status()` Version `0.1.0` und
-Meilenstein `M6`, obwohl M7-Code lief. Beide Zahlen waren handgepflegt: die
-Version stand seit M0 unverändert im Quelltext, das Meilenstein-Feld war beim
-Bump vergessen worden. Damit war die naheliegende Frage — *läuft noch das alte
-Image, oder ist bloß das Feld veraltet?* — aus der Antwort nicht zu beantworten.
+**Occasion.** During the M7 deployment `status()` reported version `0.1.0` and
+milestone `M6` while M7 code was running. Both numbers were maintained by hand:
+the version had sat unchanged in the source since M0, and the milestone field
+had been forgotten during the bump. The obvious question — *is the old image
+still running, or is only the field stale?* — could not be answered from the
+response.
 
-### 19.1 Eine Quelle für die Version
+### 19.1 One source for the version
 
-`__version__` kommt über `importlib.metadata` aus den Paketmetadaten, also aus
-`pyproject.toml`. Keine zweite Zahl im Code — die zweite ist die, die man
-vergisst. Ist das Paket nicht installiert (Start direkt aus dem Quellbaum),
-lautet die Version `0+unbekannt`; bewusst kein Rateversuch aus `pyproject.toml`,
-denn eine erfundene Zahl wäre schlimmer als eine sichtbare Lücke.
+`__version__` comes through `importlib.metadata` from the package metadata, and
+thus from `pyproject.toml`. No second number in the code — the second is the one
+that gets forgotten. If the package is not installed (started straight from the
+source tree) the version reads `0+unknown`; deliberately no guess from
+`pyproject.toml`, because an invented number would be worse than a visible gap.
 
-**Die Version wird pro Meilenstein gebumpt**, Nebenversion = Meilensteinnummer:
-M7 → `0.7.0`. Ein Test vergleicht die Nebenversion mit dem höchsten in §14
-gelisteten Meilenstein und schlägt fehl, wenn der Bump vergessen wurde.
+**The version is bumped per milestone**, minor version = milestone number:
+M7 -> `0.7.0`. A test compares the minor version against the highest milestone
+listed in §14 and fails when the bump was forgotten.
 
-### 19.2 Meilenstein abgeleitet, nicht gepflegt
+### 19.2 Milestone derived, not maintained
 
-`milestone()` leitet `M<Nebenversion>` ab, solange die Hauptversion `0` ist.
-Ab `1.0.0` ist die Meilensteinzählung vorbei und das Feld wird `null` — eine
-abgeleitete Angabe wäre dort irreführend.
+`milestone()` derives `M<minor>` as long as the major version is `0`. From
+`1.0.0` on the milestone count is over and the field becomes `null` — a derived
+value would mislead there.
 
-### 19.3 Welcher Stand läuft?
+### 19.3 Which build is running?
 
-Die Version sagt, *welcher Meilenstein* gebaut wurde. Für *welcher Commit* gibt
-es `BUILD_REF`: ein Build-Argument im Dockerfile, das der Workflow mit
-`${{ github.sha }}` füllt und das als Umgebungsvariable im Image landet.
-`status()` gibt es unverändert zurück, außerhalb eines gebauten Images `null`.
+The version says *which milestone* was built. For *which commit* there is
+`BUILD_REF`: a build argument in the Dockerfile that the workflow fills with
+`${{ github.sha }}` and that lands in the image as an environment variable.
+`status()` returns it unchanged, and `null` outside a built image.
 
-Damit ist beim Deployment eindeutig:
+That makes deployment unambiguous:
 
-| `version` | `build_ref` | Bedeutung |
+| `version` | `build_ref` | Meaning |
 |---|---|---|
-| erwartet | erwarteter SHA | neues Image läuft |
-| veraltet | alter SHA | Portainer hat nicht neu gezogen |
-| erwartet | `null` | lokal gestartet, nicht aus dem Image |
+| as expected | expected SHA | the new image is running |
+| stale | old SHA | Portainer did not re-pull |
+| as expected | `null` | started locally, not from the image |
 
-Der Smoke-Step im Workflow prüft beides im fertigen Image: dass die
-Paketmetadaten lesbar sind und dass `BUILD_REF` durchgereicht wurde.
+The smoke step in the workflow checks both inside the finished image: that the
+package metadata is readable and that `BUILD_REF` was passed through.
 
 ---
 
-## 20. Quelle = Decaid, alles lokal (M8)
+## 20. Source = Decaid, everything local (M8)
 
-> **Nummerierung:** Der Auftrag nannte §19; das war bereits durch
-> „Versionierung und Build-Identität" belegt. M8 ist deshalb §20.
+> **Numbering:** the brief said §19; that was already taken by "versioning and
+> build identity". M8 is therefore §20.
 
-### 20.1 Zielbild
+### 20.1 The goal
 
-Bis M7 war visualizer.coffee die Quelle. Damit lief die Archivkette über eine
-fremde Cloud, und das Free-Tier-Fenster von einem Monat bestimmte, was überhaupt
-geholt werden konnte (§1). Ab M8 gilt:
+Until M7 visualizer.coffee was the source. That ran the archive chain through
+someone else's cloud, and the one-month free-tier window determined what could be
+fetched at all (§1). From M8 on:
 
 ```
-        DE1 ──BLE──▶ Decaid (Tablet, 10.100.100.171:8080)   ← Master
-                          │  REST + WebSocket, reines LAN
+        DE1 ──BLE──▶ Decaid (tablet, 10.100.100.171:8080)   ← master
+                          │  REST + WebSocket, local network only
                           ▼
-                 decentespresso-mcp (Docker)   ← Archiv & Analyse
-                          │  internes Docker-Netz
+                 decentespresso-mcp (Docker)   ← archive and analysis
+                          │  internal Docker network
                     cloudflared ──▶ Claude
                           ▲
-                          └─ NIEMALS Decaid-Verkehr (§20.6)
+                          └─ NEVER Decaid traffic (§20.6)
 
-        Decaid ──optional──▶ visualizer.coffee   (Community-Schaufenster,
-                                                  nicht Teil der Archivkette)
+        Decaid ──optional──▶ visualizer.coffee   (community showcase,
+                                                  not part of the archive chain)
 ```
 
-**Decaid ist der Master.** Keine Cloud in der Kette zwischen Maschine und
-Archiv. Das Visualizer-Plugin in Decaid bleibt erlaubt, ist aber nur noch ein
-Veröffentlichungsweg — fällt es aus, ändert das am Archiv nichts.
+**Decaid is the master.** No cloud in the chain between machine and archive. The
+Visualizer plugin in Decaid stays permitted but is only a publication route — if
+it fails, nothing about the archive changes.
 
-Belege für den Gewinn, gemessen am 2026-09-14: Decaid hält **168 Bezüge** zurück
-bis 2026-06-24. Der Visualizer-Bestand derselben Maschine lag bei 71, und selbst
-ein frischer Sync von dort kam nur auf 69, weil ältere Bezüge aus dem
-Free-Tier-Fenster gefallen waren.
+Evidence for the gain, measured on 2026-09-14: Decaid holds **168 shots** going
+back to 2026-06-24. The Visualizer archive of the same machine stood at 71, and
+even a fresh sync from there only reached 69, because older shots had dropped out
+of the free-tier window.
 
-**Historien-Reset ist genehmigt:** neue DB-Datei, Migrationen frisch nummeriert,
-kein Migrationspfad von den Visualizer-Daten.
+**The history reset is approved:** a new database file, freshly numbered
+migrations, no migration path from the Visualizer data.
 
-### 20.2 Verifikationsergebnisse
+### 20.2 Verification results
 
-Gegen die laufende Instanz geprüft am **2026-09-14**, Decaid **0.8.5+2624**
-(Commit `a08bc41e`, gebaut 2026-09-02). Der Auftrag verwies auf eine Tabelle
-T1–T15 aus einer Quellcode-Verifikation; die lag nicht bei, daher ist dies die
-eigene Messung an der echten API.
+Checked against the running instance on **2026-09-14**, Decaid **0.8.5+2624**
+(commit `a08bc41e`, built 2026-09-02). The brief referred to a table T1–T15 from
+a source-code verification; that was not attached, so this is our own measurement
+against the real API.
 
-| # | Geprüft | Ergebnis |
+| # | Checked | Result |
 |---|---|---|
-| T1 | Pfadpräfix | **Alles unter `/api/v1/`.** `/shots/ids`, `/shots/latest`, `/shots/<id>` ohne Präfix → 404 |
+| T1 | Path prefix | **Everything under `/api/v1/`.** `/shots/ids`, `/shots/latest`, `/shots/<id>` without the prefix -> 404 |
 | T2 | `GET /api/v1/info` | 200, `{version, fullVersion, commit, commitShort, buildTime, buildNumber, localIp, appStore, branch}` |
-| T3 | `GET /api/v1/shots` Envelope | `{items, total, limit, offset}` — `total` vorhanden |
-| T4 | `limit`-Obergrenze | **Deckelt still bei 100.** `limit=101` und `limit=500` liefern je 100 Elemente ohne Fehler |
-| T5 | `offset` | Wirkt; `offset=0` und `offset=1` liefern verschiedene Bezüge |
-| T6 | `order` | `asc` → ältester zuerst (2026-06-24), `desc` → neuester. Default ist `desc` |
-| T7 | `beanId`-Filter | Wirkt (`beanId=x` → `total=0`). `profileId` wird **ignoriert** (`total` unverändert) |
-| T8 | Zeitfilter serverseitig | **Existiert nicht.** `updated_after`, `updatedAfter`, `since`, `sort` werden stillschweigend ignoriert, `total` bleibt 168 |
-| T9 | `GET /api/v1/shots/ids` | 200, **alle 168 IDs unpaginiert** als flaches Array |
-| T10 | `GET /api/v1/shots/latest` | 200, vollständiges Detail inkl. `measurements` |
-| T11 | `GET /api/v1/shots/<id>` | 200, Detail mit `measurements` (184 Punkte beim Referenzbezug) |
-| T12 | `measurements`-Struktur | `{machine{…}, scale{…}, volume}` je Punkt. **Kein `time`-Feld** — Zeitachse aus `machine.timestamp` minus erstem. `profileFrame` liegt unter `machine`, nicht auf Punktebene |
-| T13 | `PUT /shots/<id>` Deep-Merge | Bestätigt: nur `annotations.espressoNotes` gesendet → übrige `annotations` (`enjoyment`) und alle 184 `measurements` unverändert |
-| T14 | Geschützte Felder | `PUT` mit `createdAt`/`measurements`/`id` → **400**, nichts geändert. Strenger als Visualizer, das Unerlaubtes still verwarf |
-| T15 | `updatedAt` serverseitig | Bei Inhaltsänderung gesetzt (`06:02:39Z` → `15:37:24Z`), `createdAt` unangetastet |
-| T16 | Beans / Batches | Beans unter `/api/v1/beans`. **Batches unter `/api/v1/bean-batches`** bzw. `/api/v1/beans/<id>/batches` — `/api/v1/batches` → 404. Felder: `roastDate`, `buyDate`, `freezeDate`, `frozen`, `archived`, `beanId` |
-| T17 | WebSocket | `/ws/v1/machine/shotState` → **101 Upgrade**. `/ws/v1/machine/state` → 404 |
-| T18 | `enjoyment`-Skala | **0–100 als Float** (beobachtet: 40.0, 50.0, 80.0, 100.0). Keine Sterne-Skala, also **kein ×20-Mapping nötig** |
-| T19 | Retention / Pruning | Kein Hinweis: Bestand reicht lückenlos bis 2026-06-24 zurück, kein Endpunkt dafür |
+| T3 | `GET /api/v1/shots` envelope | `{items, total, limit, offset}` — `total` present |
+| T4 | `limit` ceiling | **Caps silently at 100.** `limit=101` and `limit=500` each return 100 items without an error |
+| T5 | `offset` | Works; `offset=0` and `offset=1` return different shots |
+| T6 | `order` | `asc` -> oldest first (2026-06-24), `desc` -> newest. The default is `desc` |
+| T7 | `beanId` filter | Works (`beanId=x` -> `total=0`). `profileId` is **ignored** (`total` unchanged) |
+| T8 | Server-side time filter | **Does not exist.** `updated_after`, `updatedAfter`, `since`, `sort` are silently ignored, `total` stays 168 |
+| T9 | `GET /api/v1/shots/ids` | 200, **all 168 ids unpaginated** as a flat array |
+| T10 | `GET /api/v1/shots/latest` | 200, the full detail including `measurements` |
+| T11 | `GET /api/v1/shots/<id>` | 200, the detail with `measurements` (184 points on the reference shot) |
+| T12 | `measurements` structure | `{machine{…}, scale{…}, volume}` per point. **No `time` field** — the time axis comes from `machine.timestamp` minus the first. `profileFrame` sits under `machine`, not at point level |
+| T13 | `PUT /shots/<id>` deep merge | Confirmed: sending only `annotations.espressoNotes` left the remaining `annotations` (`enjoyment`) and all 184 `measurements` untouched |
+| T14 | Protected fields | `PUT` with `createdAt`/`measurements`/`id` -> **400**, nothing changed. Stricter than Visualizer, which discarded the impermissible silently |
+| T15 | Server-side `updatedAt` | Set on a content change (`06:02:39Z` -> `15:37:24Z`), `createdAt` untouched |
+| T16 | Beans / batches | Beans under `/api/v1/beans`. **Batches under `/api/v1/bean-batches`** or `/api/v1/beans/<id>/batches` — `/api/v1/batches` -> 404. Fields: `roastDate`, `buyDate`, `freezeDate`, `frozen`, `archived`, `beanId` |
+| T17 | WebSocket | `/ws/v1/machine/shotState` -> **101 Upgrade**. `/ws/v1/machine/state` -> 404 |
+| T18 | `enjoyment` scale | **0–100 as a float** (observed: 40.0, 50.0, 80.0, 100.0). No star scale, so **no ×20 mapping needed** |
+| T19 | Retention / pruning | No sign of it: the archive reaches back to 2026-06-24 without gaps, and there is no endpoint for it |
 
-**Schreibpfade, nachverifiziert am 2026-09-14** (jede Änderung sofort zurückgesetzt und die Wiederherstellung nachgelesen):
+**Write paths, verified on 2026-09-14** (every change reversed immediately and
+the restore read back):
 
-| # | Pfad | Befund |
+| # | Path | Finding |
 |---|---|---|
-| T20 | `PUT /shots/<id>` `annotations` | `actualDoseWeight`, `actualYield` werden übernommen (Read-back bestätigt) |
-| T21 | `PUT /beans/<id>` | `notes`, `processing` werden übernommen |
-| T22 | `PUT /bean-batches/<id>` | `frozen`, `freezeDate`, `roastDate` werden übernommen. Datumsangaben kommen mit angehängter Uhrzeit zurück (`2026-09-01T00:00:00.000`), die Eingabe `2026-09-01` wird akzeptiert |
-| T23 | **`unfreezeDate`** | **Existiert nicht.** Decaid führt kein Auftaudatum — siehe §20.7 |
-| T24 | `PUT /workflow` | `context.grinderSetting`, `context.targetDoseWeight`, `context.beanBatchId` werden übernommen |
-| T25 | Geschützt | `id` → 400 („ID in path does not match"), `createdAt`/`updatedAt` → 400 („system-managed") |
-| T26 | **`timestamp`** | **Nicht geschützt.** `PUT` mit `timestamp` kam mit **200** zurück und der Wert stand danach wirklich so da |
+| T20 | `PUT /shots/<id>` `annotations` | `actualDoseWeight`, `actualYield` are taken (read-back confirmed) |
+| T21 | `PUT /beans/<id>` | `notes`, `processing` are taken |
+| T22 | `PUT /bean-batches/<id>` | `frozen`, `freezeDate`, `roastDate` are taken. Dates come back with a time attached (`2026-09-01T00:00:00.000`), the input `2026-09-01` is accepted |
+| T23 | **`unfreezeDate`** | **Does not exist.** Decaid keeps no thaw date — see §20.7 |
+| T24 | `PUT /workflow` | `context.grinderSetting`, `context.targetDoseWeight`, `context.beanBatchId` are taken |
+| T25 | Protected | `id` -> 400 ("ID in path does not match"), `createdAt`/`updatedAt` -> 400 ("system-managed") |
+| T26 | **`timestamp`** | **Not protected.** A `PUT` carrying `timestamp` came back **200** and the value really did stand afterwards |
 
-T26 ändert die Rolle der Blockliste in `writes.py`: für die Telemetriefelder ist sie nicht die zweite Sicherung, sondern **die einzige**. Ein eigener Test hält das fest.
+T26 changes the role of the block list in `writes.py`: for the telemetry fields
+it is not the second line of defence but **the only one**. A test of its own
+records that.
 
-**Abweichungen vom Auftrag** — gemeldet statt still umgebaut:
+**Deviations from the brief** — reported rather than built around silently:
 
-1. **Pfade** (T1): der Auftrag nennt `/shots/ids`, `/shots/latest`, `/shots/<id>`
-   ohne `/api/v1`-Präfix. So sind sie nicht erreichbar.
-2. **Batches** (T16): `/api/v1/batches` existiert nicht; der Pfad ist
+1. **Paths** (T1): the brief names `/shots/ids`, `/shots/latest`, `/shots/<id>`
+   without the `/api/v1` prefix. They are not reachable that way.
+2. **Batches** (T16): `/api/v1/batches` does not exist; the path is
    `/api/v1/bean-batches`.
-3. **Geschützte Felder** (T14): werden mit `400` abgewiesen, nicht ignoriert —
-   das ist besser als das Visualizer-Verhalten aus §18.1.3 und erlaubt eine
-   klarere Fehlermeldung.
-4. **`enjoyment`** (T18): bereits 0–100. Die im Auftrag vorsorglich erwähnte
-   Umrechnung Sterne×20 entfällt.
-5. **`pi_end` aus `profileFrame`** — siehe §20.4, die Ableitung trägt so nicht.
-6. **Ingestion in einem Verfahren statt zweien** — siehe §20.3.
-7. **Dosis-Ausreißer** — siehe §20.7, die Regel ist so nicht prüfbar.
+3. **Protected fields** (T14): refused with `400` rather than ignored — better
+   than the Visualizer behaviour from §18.1.3 and it allows a clearer error
+   message.
+4. **`enjoyment`** (T18): already 0–100. The ×20 star conversion the brief
+   mentioned as a precaution is not needed.
+5. **`pi_end` from `profileFrame`** — see §20.4, the derivation does not hold
+   that way.
+6. **Ingestion as one procedure rather than two** — see §20.3.
+7. **Dose outliers** — see §20.7, the rule is not checkable as specified.
 
 ### 20.3 Ingestion
 
-**Abweichung vom Auftrag: ein Verfahren statt zweier.** Die Bezugsliste liefert
-je Eintrag alles außer `measurements` — insbesondere `updatedAt`. Damit steht
-ohne einen einzigen Detailabruf fest, welche Bezüge sich geändert haben;
-Backfill und inkrementeller Lauf sind derselbe Algorithmus, `full=true`
-erzwingt nur das Neuholen. `GET /api/v1/shots/ids` wird dafür nicht gebraucht.
+**Deviation from the brief: one procedure rather than two.** The shot list
+returns everything except `measurements` per entry — `updatedAt` in particular.
+Without a single detail request it is therefore known which shots changed;
+backfill and incremental run are the same algorithm, and `full=true` only forces
+a refetch. `GET /api/v1/shots/ids` is not needed for it.
 
-**Die Liste wird immer vollständig gelesen.** Der Auftrag sah vor, das Blättern
-zu beenden, sobald eine Seite nur noch Bezüge mit `updatedAt <= Cursor` enthält.
-Das trägt nicht: die Liste ist nach **Bezugszeit** sortiert, nicht nach
-Änderungszeit. Ein im Juni gezogener Bezug, dessen Notiz heute ergänzt wurde,
-steht weiterhin hinten — ein früh abbrechendes Blättern sähe ihn nie. Bei 169
-Bezügen kostet die volle Liste zwei Anfragen im LAN; dafür findet der Abgleich
-auch nachträgliche Änderungen, was der ganze Zweck des Cursors war.
+**The list is always read in full.** The brief foresaw stopping the paging as
+soon as a page contained only shots with `updatedAt <= cursor`. That does not
+hold: the list is sorted by **shot time**, not by modification time. A shot
+pulled in June whose note was added today still sits at the back — paging that
+stops early would never see it. For 169 shots the full list costs two requests
+on the local network; in exchange the sync also finds changes made after the
+fact, which was the whole point of the cursor.
 
-**Obergrenze je Lauf:** 60 Detailabrufe. Ein Detail wiegt rund 140 kB; der
-erste Backfill wären sonst gut 23 MB in einem Zug über das WLAN des Tablets.
-Gemessen am 2026-09-14: 169 Bezüge in drei Läufen, 12,7 s, keine Fehler.
-Angefangene Backfills gelten erst als abgeschlossen, wenn nichts mehr offen
-ist — sonst liefe der nächste Lauf inkrementell und ließe die Lücke stehen.
-- **Ereignisgetrieben (optional):** `/ws/v1/machine/shotState` abonnieren; bei
-  Shot-Ende kurz warten, dann `GET /api/v1/shots/latest`. Polling bleibt als
-  Fallback **aktiv**, der WebSocket ist eine Beschleunigung, keine Bedingung.
+**Cap per run:** 60 detail requests. A detail weighs about 140 kB; the first
+backfill would otherwise be a good 23 MB in one go over the tablet's Wi-Fi.
+Measured on 2026-09-14: 169 shots across three runs, 12.7 s, no errors. A
+started backfill only counts as complete once nothing is outstanding — otherwise
+the next run would go incremental and leave the gap standing.
 
-**Betriebsregel: Tablet offline ist kein Fehlerzustand.** Ist Decaid nicht
-erreichbar, geht der Sync in den Zustand `waiting_for_tablet`, wartet mit
-Backoff und holt nach, sobald das Tablet wieder da ist. Das Tablet schläft, wird
-bewegt, hängt am WLAN — das ist der Normalfall, kein Ausnahmefall. Es gibt
-deshalb keine Fehlermeldung, keine Benachrichtigung und keinen roten Status;
-`status()` zeigt schlicht, wann zuletzt Kontakt bestand.
+- **Event driven (optional):** subscribe to `/ws/v1/machine/shotState`; on shot
+  end wait briefly, then `GET /api/v1/shots/latest`. Polling stays **active** as
+  the fallback; the WebSocket is an acceleration, not a precondition.
 
-### 20.4 Quellschema und Metriken
+**Operating rule: a tablet that is offline is not an error state.** If Decaid is
+unreachable the sync enters the state `waiting_for_tablet`, waits with backoff
+and catches up as soon as the tablet is back. The tablet sleeps, gets carried
+around, struggles with the Wi-Fi — that is the normal case, not an exception.
+There is therefore no error message, no notification and no red status;
+`status()` simply shows when contact last existed.
 
-`measurements` werden vollständig übernommen, **inklusive `targetPressure` und
-`targetFlow`** — die Sollwerte liegen damit erstmals pro Messpunkt vor, nicht
-nur als Profilkurve.
+### 20.4 Source schema and metrics
 
-**Zeitachse:** Es gibt kein `time`-Feld (T12). `elapsed` wird aus
-`machine.timestamp` minus dem ersten Messpunkt gerechnet; beim Referenzbezug
-184 Punkte über 45,58 s, mittlerer Abstand 0,249 s.
+`measurements` are taken over in full, **including `targetPressure` and
+`targetFlow`** — the targets are thereby available per data point for the first
+time, not only as a profile curve.
 
-#### Zwei bindende Normalisierungen
+**Time axis:** there is no `time` field (T12). `elapsed` is computed from
+`machine.timestamp` minus the first data point; on the reference shot that is
+184 points across 45.58 s, with a mean spacing of 0.249 s.
 
-Beide gehen auf Befunde des Annotationsumzugs aus M8 (2/n) zurück und sind am
-gesamten Bestand nachgemessen.
+#### Two binding normalisations
 
-**(1) Zeitstempel: das Archiv führt durchgehend UTC.** Decaid tut das nicht
-einheitlich. Aus der de1app importierte Bezüge tragen ihren Zeitstempel bereits
-in UTC, von Decaid selbst aufgezeichnete in Ortszeit ohne Zeitzonenangabe.
-Diskriminator ist die Kennung (`de1app-<unixzeit>` = UTC), gegengeprüft an
-`createdAt`; weichen beide voneinander ab, hat Decaid sein Verhalten geändert,
-und das erzeugt eine Warnung statt eines stillen Fehlers. Umgerechnet wird über
-`Europe/Berlin` **mit voller Sommerzeitbehandlung** — ein fester Versatz wäre
-nach dem letzten Oktobersonntag falsch (2026: 25. Oktober). In der mehrdeutigen
-Stunde der Rückstellung gilt die erste Lesart. Je Bezug hält `time_source` fest,
-woher der Stempel kam. Die Zeitzonendatenbank hängt als `tzdata` in den
-Abhängigkeiten, weil ein schlankes Basisimage `/usr/share/zoneinfo` nicht
-zusichert.
+Both arise from findings of the annotation migration in M8 (2/n) and are measured
+against the whole archive.
 
-Am Bestand (2026-09-14, 169 Bezüge) trennt sich das sauber und überlappungsfrei
-— genau am Tag, an dem Decaid die Aufzeichnung übernahm:
+**(1) Timestamps: the archive keeps UTC throughout.** Decaid does not do so
+uniformly. Shots imported from the de1app already carry their timestamp in UTC,
+ones recorded by Decaid itself carry local time without a zone. The
+discriminator is the identifier (`de1app-<unix time>` = UTC), cross-checked
+against `createdAt`; if the two disagree, Decaid has changed its behaviour, and
+that produces a warning rather than a silent error. Conversion runs through
+`Europe/Berlin` **with full daylight saving handling** — a fixed offset would be
+wrong after the last Sunday in October (2026: 25 October). In the ambiguous hour
+when the clocks go back the first reading applies. Per shot, `time_source`
+records where the stamp came from. The time zone database hangs in the
+dependencies as `tzdata`, because a slim base image does not guarantee
+`/usr/share/zoneinfo`.
 
-| `time_source` | Bezüge | Zeitraum |
+Across the archive (2026-09-14, 169 shots) this separates cleanly and without
+overlap — exactly on the day Decaid took over the recording:
+
+| `time_source` | Shots | Period |
 |---|---|---|
-| `utc` (Import) | 88 | 2026-06-24 02:22 … 2026-08-30 12:02 |
-| `local_berlin` (nativ) | 81 | 2026-08-30 18:55 … 2026-09-14 18:34 |
+| `utc` (import) | 88 | 2026-06-24 02:22 … 2026-08-30 12:02 |
+| `local_berlin` (native) | 81 | 2026-08-30 18:55 … 2026-09-14 18:34 |
 
-**(2) Bewertung: `0.0` aus der Import-Ära ist keine Bewertung.** Decaid legt
-importierte Bezüge mit `enjoyment: 0.0` an. Über alle Bezüge gemessen: 75 der
-88 importierten stehen so da, echte Bewertungen liegen zwischen 20 und 100, und
-**kein einziger** nativ aufgezeichneter Bezug trägt je `0.0`. Bei Bezügen mit
-de1app-Kennung wird eine 0 deshalb als `NULL` archiviert. Ohne diese Regel
-kämen 75 Scheinbewertungen ins Archiv, und `audit_archive` sowie die Wächter
-aus §20.7 würden sie für bare Münze nehmen. Beim **Schreiben** gilt die Regel
-nicht: was der Nutzer ausdrücklich auf 0 setzt, ist eine Eingabe.
+**(2) Rating: a `0.0` from the import era is not a rating.** Decaid creates
+imported shots with `enjoyment: 0.0`. Measured across all shots: 75 of the 88
+imported ones sit like that, real ratings run between 20 and 100, and **not a
+single** natively recorded shot ever carries `0.0`. For shots with a de1app
+identifier a 0 is therefore archived as `NULL`. Without this rule 75 phantom
+ratings would enter the archive, and `audit_archive` along with the guards from
+§20.7 would take them at face value. When **writing** the rule does not apply:
+what the user explicitly sets to 0 is an input.
 
-Ergebnis am Bestand: 0 Nullen im Archiv, 24 echte Bewertungen erhalten.
+Result across the archive: 0 zeros in the archive, 24 real ratings preserved.
 
-**`pi_end` — Abweichung vom Auftrag.** Der Auftrag will die Ableitung primär aus
-`profileFrame`-Wechseln. Die Messung zeigt, dass das so nicht trägt:
+**`pi_end` — deviation from the brief.** The brief wants the derivation to come
+primarily from `profileFrame` changes. The measurement shows that does not hold:
 
 ```
 profileFrame:   (0.00, 2)  (0.99, 0)  (3.73, 1)  (21.10, 2)
 state.substate: preparingForShot → preinfusion (0.99) → pouring (21.10)
 ```
 
-Der Wert bei t=0 ist ein Rest des Vorgängerbezugs, und der Wechsel 0→1 bei
-3,73 s liegt **mitten in der Präinfusion**. „Letzter `profileFrame`-Wechsel"
-träfe hier zufällig richtig, bei einem Profil mit zwei Ausschank-Frames aber
-nicht mehr. `state.substate` nennt den Übergang direkt und ist damit die
-belastbare Quelle.
+The value at t=0 is a leftover from the preceding shot, and the 0->1 change at
+3.73 s lies **inside preinfusion**. "The last `profileFrame` change" would land
+correctly here by coincidence, but no longer on a profile with two pouring
+frames. `state.substate` names the transition directly and is therefore the
+dependable source.
 
-Deshalb die Reihenfolge: `pi_end_source` = `substate` (Wechsel `preinfusion` →
-`pouring`), ersatzweise `profile_frame` (letzter Wechsel vor Ausschankbeginn),
-dann die Ableitungen aus §8 als Fallback. Übrige Metrikdefinitionen unverändert,
-`METRICS_VERSION` wird gebumpt.
+Hence the order: `pi_end_source` = `substate` (the change from `preinfusion` to
+`pouring`), failing that `profile_frame` (the last change before pouring
+begins), then the derivations from §8 as the fallback. The remaining metric
+definitions are unchanged, and `METRICS_VERSION` gets bumped.
 
-**`curve_shape`** bekommt je Abschnitt zusätzlich Soll-vs-Ist, da `targetFlow`
-und `targetPressure` jetzt punktweise vorliegen.
+**`curve_shape`** additionally gains target-vs-actual per segment, since
+`targetFlow` and `targetPressure` are now available point by point.
 
-**Profilversionierung:** Quellformat ist das eingebettete Profil-JSON unter
-`workflow.profile` (Struktur `{version, title, author, notes, beverage_type,
-steps[], target_weight, …}`) — dieselbe Gestalt, gegen die der TCL-Parser in M2
-bereits kreuzgeprüft wurde. `version_hash`/`semantic_hash` bleiben, die
-Kanonisierung wird auf das JSON umgestellt. **Der TCL-Parser wird als deprecated
-markiert, nicht gelöscht.**
+**Profile versioning:** the source format is the embedded profile JSON under
+`workflow.profile` (shape `{version, title, author, notes, beverage_type,
+steps[], target_weight, …}`) — the same shape the TCL parser was already
+cross-checked against in M2. `version_hash`/`semantic_hash` stay, the
+canonicalisation moves to the JSON. **The TCL parser is marked deprecated, not
+deleted.**
 
-**Wie oft welche Quelle trägt** (169 Bezüge, 2026-09-14). Die dreistufige
-Hierarchie ist kein Vorratsbeschluss: die de1app hat den Maschinenzustand nie
-aufgezeichnet, Decaid tut es. Ohne die zweite Stufe hätten 84 Bezüge einen
-geratenen `pi_end`.
+**How often each source carries** (169 shots, 2026-09-14). The three-level
+hierarchy is not a precaution: the de1app never recorded the machine state,
+Decaid does. Without the second stage 84 shots would have a guessed `pi_end`.
 
-| Herkunft | `substate` | `profile_frame` | Heuristik |
+| Origin | `substate` | `profile_frame` | heuristic |
 |---|---|---|---|
-| importiert (88) | — | 84 | 3 |
-| nativ (81) | 77 | 2 | 2 |
+| imported (88) | — | 84 | 3 |
+| native (81) | 77 | 2 | 2 |
 
-`METRICS_VERSION` steigt dabei von 2 auf 3; der Cache rechnet sich selbsttätig
-neu. Die Erwartungswerte aus §13 sind am Decaid-Referenzbezug neu bestimmt —
-die alten Zahlen gehörten zu einem Bezug, den es im Archiv nicht mehr gibt.
+`METRICS_VERSION` rises from 2 to 3 in the process; the cache recomputes on its
+own. The expectations from §13 are redetermined against the Decaid reference
+shot — the old numbers belonged to a shot that no longer exists in the archive.
 
-**Profilversionierung** läuft ab jetzt über das im Workflow eingebettete
-Profil-JSON statt über TCL. Das erspart den zweiten Abruf und die häufigste
-Fehlerquelle der Visualizer-Ära: ein Profil, das die API nicht herausgab (422),
-oder eines, dessen TCL der Parser nicht verstand. `tcl_profile.py` bleibt für
-den Altbestand lesbar, wird aber nicht mehr benutzt.
+**Profile versioning** now runs through the profile JSON embedded in the
+workflow rather than through TCL. That saves the second request and the most
+common source of failure in the Visualizer era: a profile the API would not hand
+out (422), or one whose TCL the parser did not understand. `tcl_profile.py`
+stays readable for the archived era but is no longer used.
 
-### 20.5 Schreibtools
+### 20.5 Write tools
 
-`update_shot` zieht auf `PUT /api/v1/shots/<id>` um; Whitelist auf
-`annotations`-Felder. Leitplanken aus §18 unverändert: Validierung vor dem
-Senden, Read-back vorher→nachher, nur auf ausdrückliche Anweisung, hinter
+`update_shot` moves to `PUT /api/v1/shots/<id>`; the whitelist covers
+`annotations` fields. The guard rails from §18 are unchanged: validation before
+sending, read-back before->after, only on an explicit instruction, behind
 `WRITE_ENABLED`.
 
-**Die Whitelist enthält vorerst nur `espressoNotes` und `enjoyment`** — genau
-die beiden Felder, die beim Annotationsumzug gegen die echte API geschrieben
-und wieder gelesen wurden. `actualDoseWeight` und `actualYield` stehen in
-denselben Annotationen, sind aber noch nicht schreibend verifiziert; sie sind
-mit eben dieser Begründung ausdrücklich gesperrt, statt ungeprüft mitzulaufen.
-Lieber ein Feld zu wenig als eines, das stillschweigend verworfen wird.
+**The whitelist holds `espressoNotes`, `enjoyment`, `actualDoseWeight` and
+`actualYield`** — exactly the fields that were written against the real API and
+read back (T20). The first two came from the annotation migration, the latter
+two from the write verification on 2026-09-14. Better one field too few than one
+that gets discarded silently.
 
-Noch offen: `update_bean`, `update_batch` (inkl.
-`freezeDate`/`unfreezeDate`/`frozen` mit Datumsvalidierung), `get_workflow`,
-`set_workflow` (nur Mahlgrad, Dosis, Zielgewicht, Bohnen-/Batch-Referenz —
-**kein Profilwechsel in v1**).
+Three further tools, each with its own ruleset:
 
-Die Visualizer-Tools verschwinden aus der Tool-Liste; `visualizer_client.py`
-wird als deprecated markiert, aber nicht gelöscht.
+- `update_bean` — `name`, `roaster`, `species`, `processing`, `notes`, `decaf`
+  (T21).
+- `update_batch` — `roastDate`, `buyDate`, `freezeDate`, `frozen` with date
+  validation (T22). **`unfreezeDate` does not exist** (T23); to thaw, set
+  `frozen` to false.
+- `get_workflow` / `set_workflow` — grind setting, grinder, target dose, target
+  yield, batch reference (T24). **No profile change in v1**: it changes brewing
+  behaviour fundamentally and belongs at the machine.
 
-### 20.6 Status und Sicherheit
+The Visualizer tools disappear from the tool list; `visualizer_client.py` is
+marked deprecated but not deleted.
 
-`status()` bekommt `decaid_status`: erreichbar ja/nein, zuletzt erreichbar,
-Decaid-Version aus `/api/v1/info` mit Warnung bei Abweichung von der getesteten
-Version (Konstante im Code, bei jedem verifizierten Update nachziehen).
+### 20.6 Status and security
 
-**`DECAID_URL` wird beim Start auf private IP-Bereiche geprüft** (RFC 1918,
-Loopback, link-local). Eine öffentliche Adresse ist ein Konfigurationsfehler und
-verhindert den Start.
+`status()` gains a `decaid` block: reachable yes/no, last reachable, and the
+Decaid version from `/api/v1/info` with a warning on deviation from the verified
+version (a constant in the code, updated with every verified upgrade).
 
-**Der Decaid-Verkehr darf unter keinen Umständen durch den Cloudflare-Tunnel
-laufen.** Die Verbindung Container → Tablet ist reines LAN. Der Tunnel bleibt
-ausschließlich der Weg, auf dem Claude den MCP-Endpoint erreicht.
+**`DECAID_URL` is checked for private address ranges at startup** (RFC 1918,
+loopback, link-local). A public address is a configuration error and prevents the
+start. Hostnames are rejected as well: a name can be repointed later without the
+configuration changing.
 
-### 20.7 Wächter und Audit
+**Decaid traffic must under no circumstances go through the Cloudflare tunnel.**
+The connection container -> tablet is local network only. The tunnel stays
+exclusively the route by which Claude reaches the MCP endpoint.
 
-Vier Prüfregeln als eigenes Modul (`guards.py`), reine Funktionen über
-Zeilen — ohne Netz, ohne Datenbank, mit übergebener Uhr. Jede Regel ist
-über `GUARD_RULES` einzeln abschaltbar; eine Regel, die zu oft anschlägt,
-würde sonst im Ganzen ignoriert und nähme die anderen mit.
+### 20.7 Guards and audit
 
-| Regel | Prüft | Am Bestand (169 Bezüge) |
+Four check rules as a module of their own (`guards.py`), pure functions over rows
+— no network, no database, with the clock handed in. Every rule can be switched
+off individually through `GUARD_RULES`; a rule that fires too often would
+otherwise be ignored wholesale and take the others with it.
+
+| Rule | Checks | Against the archive (169 shots) |
 |---|---|---|
-| `grind_not_adjusted` | Chargenwechsel ohne Mahlgradänderung | 5 Befunde |
-| `bean_age` | Bohnenalter beim Bezug, Gefrierzeit herausgerechnet | 0 — 6 von 8 Chargen haben kein `roastDate` |
-| `missing_rating` | `enjoyment` nach Frist nicht nachgetragen | 29 |
-| `dose_outlier` | Gewichte gegen das Soll des Workflows | 29 |
+| `grind_not_adjusted` | batch changed without adjusting the grind | 5 findings |
+| `bean_age` | bean age when pulled, frozen time subtracted | 0 — 6 of 8 batches have no `roastDate` |
+| `missing_rating` | `enjoyment` not added once the grace period passed | 29 |
+| `dose_outlier` | weights against the workflow target | 29 |
 
-**Abweichung 7: die Dosis ist nicht prüfbar.** Der Auftrag nennt Dosis-Ausreißer gegenüber dem Workflow-Sollwert. Die Messung zeigt, dass es die nicht geben kann: in **allen 165** Fällen mit beiden Werten ist `actualDoseWeight` **exakt** gleich `targetDoseWeight`. Die DE1 wiegt die Dosis nicht, sie übernimmt den Sollwert; der Vergleich verglich eine Zahl mit sich selbst. Die Streuung steckt im **Bezugsgewicht** — dort misst die Waage wirklich, im Mittel 8,9 g neben dem Soll, im Extremfall 497 g. Die Regel behält ihren Namen und ihre Absicht, prüft aber das Bezugsgewicht gegen sein Soll und die Dosis nur noch auf Plausibilität (0 g heißt: Waage nicht verbunden).
+**Deviation 7: the dose is not checkable.** The brief names dose outliers against
+the workflow target. The measurement shows there cannot be any: in **all 165**
+cases with both values, `actualDoseWeight` is **exactly** equal to
+`targetDoseWeight`. The DE1 does not weigh the dose, it adopts the target; the
+comparison compared a number with itself. The scatter sits in the **yield** —
+that is where the scale really measures, 8.9 g off target on average and 497 g in
+the extreme. The rule keeps its name and its intent but checks the yield against
+its target and the dose for plausibility only (0 g means the scale was not
+connected).
 
-**Das Bohnenalter ohne Auftaudatum.** Eingefrorene Zeit zählt nicht als Alterung. Decaid führt aber kein `unfreezeDate` (T23): steht `frozen` auf false und ist trotzdem ein `freezeDate` gesetzt, wurde die Charge irgendwann aufgetaut — wann, weiß niemand. Der Befund trägt dann `certain: false`, und das Alter ist ausdrücklich eine **Obergrenze**. Eine Zahl, die sich nicht belegen lässt, wird nicht als sicher ausgegeben.
+**Bean age without a thaw date.** Time spent frozen does not count as ageing. But
+Decaid keeps no `unfreezeDate` (T23): if `frozen` is false and a `freezeDate` is
+set nonetheless, the batch was thawed at some point — nobody knows when. The
+finding then carries `certain: false`, and the age is explicitly an **upper
+bound**. A number that cannot be substantiated is not reported as certain.
 
-**Zwei Fenster statt einer Frist.** `missing_rating` meldet nur zwischen `RATING_GRACE_HOURS` (36 h; vorher trinkt man ja erst) und sieben Tagen. Ohne Obergrenze meldete die Regel 140 der 169 Bezüge — 83 Prozent des Archivs, weil nur etwa jeder sechste Bezug bewertet wird. Wer einen Bezug von vorletzter Woche nicht bewertet hat, tut es nicht mehr.
+**Two bounds instead of one deadline.** `missing_rating` reports only between
+`RATING_GRACE_HOURS` (36 h; before that one drinks it first) and seven days.
+Without an upper bound the rule reported 140 of the 169 shots — 83 percent of the
+archive, because only about one shot in six gets rated. Whoever has not rated a
+shot from the week before last will not do so now.
 
-**Benachrichtigung** über ntfy (`NTFY_URL`, `NTFY_TOPIC`, optional Token), mit drei Deckeln, die alle demselben Zweck dienen — dass die Meldungen gelesen bleiben:
+**Notification** over ntfy (`NTFY_URL`, `NTFY_TOPIC`, optional token), with three
+caps that all serve the same purpose — that the messages keep being read:
 
-- **höchstens eine Nachricht je Bezug**, auch wenn vier Regeln anschlagen;   welcher Bezug schon gemeldet wurde, steht im Sync-Zustand und übersteht   einen Neustart
-- **nur Bezüge der letzten 48 Stunden** — eine Benachrichtigung sagt „eben   ist etwas schiefgegangen"; was länger her ist, steht in `audit_archive`
-- **höchstens fünf Nachrichten je Lauf**, neueste zuerst
+- **at most one message per shot**, even when four rules fire; which shots have
+  been reported lives in the sync state and survives a restart
+- **only shots from the last 48 hours** — a notification says "something just
+  went wrong"; what is further back sits in `audit_archive`
+- **at most five messages per run**, newest first
 
-Gemessen am Bestand: `audit_archive` zeigt 63 Befunde, ntfy würde 2 melden.
+Measured against the archive: `audit_archive` shows 63 findings, ntfy would
+report 2.
 
-**Keine Inhalte in Befunden.** Ein Befund nennt Kennung, Regel und die Zahlen, auf die er sich stützt — nie den Text einer Notiz oder einen Bohnennamen. Die Befunde verlassen per ntfy das Haus; was einmal dort war, ist dort. Ein Test prüft das je Regel gegen eine Eingabe mit Freitext.
+**No content in findings.** A finding names the identifier, the rule and the
+numbers it rests on — never the text of a note or a bean name. The findings leave
+the house over ntfy; whatever once landed there stays there. A test checks this
+per rule against an input carrying free text.
 
-**Ausbleiben ist kein Fehler.** Geht ntfy nicht, wird das protokolliert und der Abgleich läuft weiter; nur erfolgreich Gemeldetes gilt als gemeldet. Eine Benachrichtigung ist kein Teil der Archivierung.
+**Silence is not a failure.** If ntfy is down it gets logged and the sync carries
+on; only successfully delivered messages count as reported. A notification is not
+part of archiving.
 
-Das Tool `audit_archive(since?, rule?, limit?)` wendet dieselben Regeln auf den Bestand an und liefert Befunde **mitsamt den geltenden Schwellen** — ein Befund ohne seinen Maßstab lässt sich nicht einordnen.
+The tool `audit_archive(since?, rule?, limit?)` applies the same rules to the
+archive and returns findings **together with the thresholds in force** — a
+finding without its yardstick cannot be placed.

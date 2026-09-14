@@ -1,12 +1,12 @@
-"""HTTP-Client fuer die Decaid-REST-API im LAN (SPEC ss20).
+"""HTTP client for the Decaid REST API on the local network (SPEC §20).
 
-Gegen die laufende Instanz verifiziert am 2026-09-14, Decaid 0.8.5+2624. Die
-Befunde stehen als Tabelle T1-T19 in SPEC ss20.2; was davon das Verhalten dieses
-Moduls bestimmt, steht bei den jeweiligen Konstanten und Methoden.
+Verified against the running instance on 2026-09-14, Decaid 0.8.5+2624. The
+findings are tabulated as T1-T19 in SPEC §20.2; whichever of them shapes the
+behaviour of this module is noted at the relevant constant or method.
 
-Anders als beim Visualizer-Client gibt es hier keine Zugangsdaten: Decaid laeuft
-im eigenen LAN ohne Authentifizierung. Dafuer gilt die Regel aus SPEC ss20.6 -
-diese Verbindung darf niemals durch den Cloudflare-Tunnel laufen.
+Unlike the Visualizer client there are no credentials here: Decaid runs on the
+local network without authentication. In exchange the rule from SPEC §20.6
+applies - this connection must never go through the Cloudflare tunnel.
 """
 
 from __future__ import annotations
@@ -24,30 +24,31 @@ from . import __version__
 
 log = logging.getLogger(__name__)
 
-#: Gegen diese Decaid-Version wurde verifiziert. status() warnt bei Abweichung;
+#: The Decaid version this was verified against. status() warns on deviation;
 #: nach jedem geprueften Update hier nachziehen (SPEC ss20.6).
 VERIFIED_DECAID_VERSION = "0.8.5"
 
-#: T4: Die API deckelt still bei 100. Mehr anzufragen liefert kommentarlos 100
-#: Elemente - wer das nicht weiss, blaettert versehentlich im Kreis.
+#: T4: the API silently caps at 100. Asking for more returns 100 items without
+#: comment - not knowing that, one ends up paging in circles.
 MAX_PAGE_SIZE = 100
 
-#: T12: Es gibt kein time-Feld. Die Zeitachse entsteht aus machine.timestamp
-#: minus dem ersten Messpunkt.
+#: T12: there is no time field. The time axis comes from machine.timestamp
+#: minus the first data point.
 MEASUREMENT_TIME_FIELD = "timestamp"
 
 
 class DecaidError(RuntimeError):
-    """Basisklasse. Die Meldung darf in Tool-Antworten sichtbar werden."""
+    """Base class. The message may show up in tool responses."""
 
     code = "decaid_error"
 
 
 class DecaidUnreachable(DecaidError):
-    """Tablet nicht erreichbar.
+    """Tablet not reachable.
 
-    Laut SPEC ss20.3 ist das **kein Fehlerzustand**: das Tablet schlaeft, wird
-    bewegt oder haengt am WLAN. Der Aufrufer wartet und holt nach.
+    Per SPEC §20.3 this is **not an error state**: the tablet is asleep, being
+    carried around, or struggling with the Wi-Fi. The caller waits and catches
+    up later.
     """
 
     code = "waiting_for_tablet"
@@ -58,14 +59,14 @@ class ShotNotFound(DecaidError):
 
 
 class DecaidRejected(DecaidError):
-    """4xx, das kein Wiederholen rechtfertigt - etwa ein geschuetztes Feld (T14)."""
+    """A 4xx that does not warrant a retry - a protected field, say (T14)."""
 
     code = "decaid_rejected"
 
 
 @dataclass(slots=True)
 class ShotPage:
-    """Eine Seite von ``GET /api/v1/shots`` (T3)."""
+    """One page of ``GET /api/v1/shots`` (T3)."""
 
     items: list[dict[str, Any]]
     total: int
@@ -74,7 +75,7 @@ class ShotPage:
 
 
 class DecaidClient:
-    """Zugriff auf Decaid. Schreibend ist einzig ``update_*`` (SPEC ss20.5)."""
+    """Access to Decaid. Only ``update_*`` writes anything (SPEC §20.5)."""
 
     def __init__(
         self,
@@ -110,11 +111,11 @@ class DecaidClient:
         self, method: str, path: str, *, params: dict[str, Any] | None = None,
         json_body: Any = None,
     ) -> httpx.Response:
-        """Eine Anfrage mit Retry nur bei 5xx und Netzfehlern.
+        """One request, retried only on 5xx and network errors.
 
-        Kein Ratelimiter: das Tablet steht im eigenen Netz und wird nicht
-        fremdbelastet. Ein Netzfehler ist hier der Normalfall (schlafendes
-        Tablet) und wird deshalb als ``DecaidUnreachable`` gemeldet, nicht als
+        No rate limiter: the tablet sits on the local network and is not a
+        burden on anyone else. A network error is the normal case here (sleeping
+        tablet) and is therefore reported as ``DecaidUnreachable``, not as
         Stoerung.
         """
         last: Exception | None = None
@@ -125,7 +126,7 @@ class DecaidClient:
                 )
             except httpx.HTTPError as exc:
                 last = DecaidUnreachable(
-                    f"Decaid nicht erreichbar ({type(exc).__name__})."
+                    f"Decaid not reachable ({type(exc).__name__})."
                 )
                 log.info(
                     "decaid unreachable",
@@ -134,21 +135,21 @@ class DecaidClient:
                 )
             else:
                 if response.status_code == 404:
-                    raise ShotNotFound(f"Nicht gefunden: {path}")
+                    raise ShotNotFound(f"Not found: {path}")
                 if 400 <= response.status_code < 500:
                     raise DecaidRejected(
-                        f"Decaid weist die Anfrage ab ({response.status_code}) "
-                        f"fuer {path}: {response.text[:180]}"
+                        f"Decaid refuses the request ({response.status_code}) "
+                        f"for {path}: {response.text[:180]}"
                     )
                 if response.status_code >= 500:
                     last = DecaidUnreachable(
-                        f"Decaid antwortet mit {response.status_code}."
+                        f"Decaid responded with {response.status_code}."
                     )
                 else:
                     return response
             await self._sleep_backoff(attempt)
 
-        raise last or DecaidUnreachable(f"Keine Antwort von Decaid fuer {path}.")
+        raise last or DecaidUnreachable(f"No response from Decaid for {path}.")
 
     async def _sleep_backoff(self, attempt: int) -> None:
         delay = min(2.0**attempt, 30.0) * (1.0 + random.random() * 0.25)  # noqa: S311
@@ -166,12 +167,12 @@ class DecaidClient:
     ) -> ShotPage:
         """``GET /api/v1/shots`` (T3-T7).
 
-        ``limit`` wird auf 100 begrenzt, weil die API stillschweigend dort
-        deckelt (T4) - ohne die Begrenzung glaubte der Aufrufer, er habe mehr
-        angefordert als er bekommt.
+        ``limit`` is clamped to 100 because the API silently caps there (T4) -
+        without the clamp the caller would believe it asked for more than it
+        gets.
 
-        Einen serverseitigen Zeitfilter gibt es nicht (T8); der inkrementelle
-        Abgleich blaettert stattdessen mit einem eigenen ``updatedAt``-Cursor.
+        There is no server-side time filter (T8); the incremental sync pages
+        through with its own ``updatedAt`` cursor instead.
         """
         params: dict[str, Any] = {
             "limit": min(int(limit), MAX_PAGE_SIZE),
@@ -203,25 +204,25 @@ class DecaidClient:
     async def update_shot(self, shot_id: str, patch: dict[str, Any]) -> dict[str, Any]:
         """``PUT /api/v1/shots/<id>`` (T13/T14).
 
-        Deep-Merge: mitgeschickte Teilobjekte ergaenzen, sie ersetzen nicht.
-        ``measurements``, ``createdAt`` und ``id`` weist Decaid mit 400 ab -
-        anders als Visualizer, das Unerlaubtes stillschweigend verwarf. Der
-        Aufrufer liest trotzdem frisch nach, weil ein 200 nicht belegt, dass
-        jedes Feld auch uebernommen wurde.
+        Deep merge: sub-objects sent along add to what is there, they do not
+        replace it. Decaid rejects ``measurements``, ``createdAt`` and ``id``
+        with 400 - unlike Visualizer, which silently discarded what was not
+        allowed. The caller still reads back afterwards, because a 200 does not
+        prove that every field was actually taken.
         """
         return (await self._request("PUT", f"/api/v1/shots/{shot_id}",
                                     json_body=patch)).json()
 
-    # --- Bohnen und Chargen (T16) -------------------------------------------
+    # --- Beans and batches (T16) --------------------------------------------
 
     async def beans(self) -> list[dict[str, Any]]:
         """``GET /api/v1/beans``."""
         return list((await self._request("GET", "/api/v1/beans")).json())
 
     async def bean_batches(self, bean_id: str | None = None) -> list[dict[str, Any]]:
-        """``GET /api/v1/bean-batches`` bzw. die Chargen einer Bohne.
+        """``GET /api/v1/bean-batches``, or the batches of one bean.
 
-        Der im Auftrag genannte Pfad ``/api/v1/batches`` existiert nicht (T16).
+        The path ``/api/v1/batches`` named in the brief does not exist (T16).
         """
         path = (
             f"/api/v1/beans/{bean_id}/batches" if bean_id else "/api/v1/bean-batches"
@@ -252,10 +253,10 @@ class DecaidClient:
 
 
 def measurement_times(measurements: list[dict[str, Any]]) -> list[float]:
-    """Sekunden ab dem ersten Messpunkt (T12).
+    """Seconds from the first data point (T12).
 
-    Decaid liefert kein ``time``-Feld; jeder Punkt traegt nur seinen eigenen
-    Zeitstempel. Bezugspunkt ist der erste ``machine.timestamp``.
+    Decaid provides no ``time`` field; each point carries only its own
+    timestamp. The reference is the first ``machine.timestamp``.
     """
     if not measurements:
         return []

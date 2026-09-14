@@ -1,19 +1,19 @@
-"""Benachrichtigung ueber ntfy (SPEC ss20.7).
+"""Notification over ntfy (SPEC §20.7).
 
-Drei Regeln, die alle denselben Zweck haben - dass die Meldungen gelesen
-bleiben:
+Three rules, all serving the same purpose - that the messages keep being
+read:
 
-*Hoechstens eine Nachricht je Bezug.* Vier Regeln koennen an einem Bezug
-gleichzeitig anschlagen. Vier Nachrichten hintereinander liest niemand zu Ende;
-eine mit vier Zeilen schon. Welcher Bezug schon gemeldet wurde, steht im
-Sync-Zustand und ueberlebt damit einen Neustart.
+*At most one message per shot.* Four rules can fire on the same shot. Nobody
+reads four messages in a row to the end; one with four lines, yes. Which
+shots have already been reported lives in the sync state and therefore
+survives a restart.
 
-*Keine Inhalte.* Eine Nachricht nennt Kennung, Regel und Zahlen. Notizen,
-Bohnennamen und Bewertungen bleiben hier - ntfy laeuft auf einem fremden
-Server, und was einmal dort war, ist dort.
+*No content.* A message names the identifier, the rule and the numbers.
+Notes, bean names and ratings stay here - ntfy runs on someone else's server,
+and whatever once landed there stays there.
 
-*Ausbleiben ist kein Fehler.* Geht ntfy nicht, wird das protokolliert und der
-Sync laeuft weiter. Eine Benachrichtigung ist kein Teil der Archivierung.
+*Silence is not a failure.* If ntfy is down it gets logged and the sync
+carries on. A notification is not part of archiving.
 """
 
 from __future__ import annotations
@@ -30,27 +30,27 @@ from .guards import Finding
 
 log = logging.getLogger(__name__)
 
-#: Bereits gemeldete Bezuege. Im Sync-Zustand, damit ein Neustart nicht alles
-#: erneut meldet.
+#: Shots already reported. Kept in the sync state so a restart does not
+#: report everything again.
 STATE_NOTIFIED = "notified_shots"
 
-#: So viele Kennungen werden behalten. Mehr braucht es nicht: was so lange her
-#: ist, wurde entweder bearbeitet oder bewusst stehen gelassen.
+#: How many identifiers are kept. No more are needed: anything that far back
+#: has either been dealt with or deliberately left alone.
 KEEP_NOTIFIED = 200
 
-#: Laengster Text einer Nachricht. ntfy schneidet sonst selbst ab, und zwar an
-#: einer schlechteren Stelle.
+#: Longest message body. Otherwise ntfy truncates on its own, and in a worse
+#: place.
 MAX_BODY_CHARS = 900
 
-#: Nur Bezuege aus diesem Fenster werden gemeldet. Eine Benachrichtigung sagt
-#: "eben ist etwas schiefgegangen"; was vor Wochen war, steht in
-#: ``audit_archive`` und braucht kein Klingeln. Am Bestand gemessen
-#: (2026-09-14): 63 Befunde ueber die ganze Historie - so viele Nachrichten auf
-#: einmal liest niemand, und danach auch keine weitere mehr.
+#: Only shots inside this window get reported. A notification says "something
+#: just went wrong"; what happened weeks ago sits in ``audit_archive`` and
+#: needs no chime. Measured against the archive (2026-09-14): 63 findings
+#: across the whole history - nobody reads that many messages at once, and
+#: none afterwards either.
 NOTIFY_WINDOW_HOURS = 48
 
-#: Harte Obergrenze je Lauf. Faengt den Fall ab, dass im Fenster doch viel
-#: zusammenkommt - etwa nach einem Ausfall des Tablets.
+#: Hard cap per run. Catches the case where a lot does pile up inside the
+#: window - after the tablet was down, for instance.
 MAX_MESSAGES_PER_RUN = 5
 
 
@@ -58,7 +58,7 @@ def pending(
     db: Database, findings: Sequence[Finding], *, at: datetime | None = None,
     window_hours: int = NOTIFY_WINDOW_HOURS,
 ) -> list[Finding]:
-    """Befunde, die gemeldet gehoeren: frisch genug und noch nicht gemeldet."""
+    """Findings worth reporting: recent enough and not yet reported."""
     seen = set(db.get_json_state(STATE_NOTIFIED, []) or [])
     cutoff = (at or datetime.now(UTC)) - timedelta(hours=window_hours)
     return [
@@ -86,12 +86,12 @@ def mark_notified(db: Database, shot_ids: Sequence[str]) -> None:
 
 
 def compose(findings: Sequence[Finding]) -> tuple[str, str]:
-    """``(Titel, Text)`` fuer eine Gruppe von Befunden zu einem Bezug."""
+    """``(title, body)`` for a group of findings on one shot."""
     shot_id = findings[0].shot_id
     when = (findings[0].started_at or "")[:16].replace("T", " ")
-    title = f"Bezug {when}" if when else f"Bezug {shot_id[:12]}"
+    title = f"Shot {when}" if when else f"Shot {shot_id[:12]}"
     if len(findings) > 1:
-        title += f" - {len(findings)} Befunde"
+        title += f" - {len(findings)} findings"
 
     lines = [f"- {f.message}" for f in findings]
     lines.append(f"({shot_id})")
@@ -107,10 +107,10 @@ def group_by_shot(findings: Sequence[Finding]) -> dict[str, list[Finding]]:
 
 
 async def send(config: Config, findings: Sequence[Finding], db: Database) -> int:
-    """Meldet, was noch nicht gemeldet wurde. Gibt die Zahl der Nachrichten zurueck.
+    """Report what has not been reported yet. Returns the number of messages.
 
-    Ohne ``NTFY_URL`` passiert nichts - der Waechter laeuft trotzdem und seine
-    Befunde stehen in ``audit_archive``.
+    Without ``NTFY_URL`` nothing happens - the guards still run and their
+    findings remain available through ``audit_archive``.
     """
     if not config.ntfy_url or not config.ntfy_topic:
         return 0
@@ -126,7 +126,7 @@ async def send(config: Config, findings: Sequence[Finding], db: Database) -> int
     url = f"{config.ntfy_url.rstrip('/')}/{config.ntfy_topic}"
     sent: list[str] = []
 
-    # Neueste zuerst, damit bei Deckelung das Aktuelle durchkommt.
+    # Newest first, so that the current one gets through when capped.
     grouped = sorted(
         group_by_shot(fresh).items(),
         key=lambda kv: kv[1][0].started_at or "", reverse=True,
@@ -142,8 +142,7 @@ async def send(config: Config, findings: Sequence[Finding], db: Database) -> int
                 )
                 response.raise_for_status()
             except httpx.HTTPError as exc:
-                # Kein Abbruch: eine Benachrichtigung ist kein Teil der
-                # Archivierung.
+                # No abort: a notification is not part of archiving.
                 log.warning("ntfy failed",
                             extra={"fields": {"error": type(exc).__name__}})
                 continue
@@ -156,9 +155,9 @@ async def send(config: Config, findings: Sequence[Finding], db: Database) -> int
 
 
 def _ascii(text: str) -> str:
-    """ntfy-Header vertragen kein UTF-8.
+    """ntfy headers do not carry UTF-8.
 
-    Der Titel ist ohnehin nur Zeitstempel und Zahlen; der Text im Rumpf bleibt
-    unangetastet.
+    The title is only a timestamp and numbers anyway; the body text is left
+    untouched.
     """
     return text.encode("ascii", "replace").decode("ascii")

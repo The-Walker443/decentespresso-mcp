@@ -1,19 +1,19 @@
-# Stack-Definition fuer Portainer (SPEC ss16).
+# Stack definition for Portainer (SPEC §16).
 #
 # Unterschiede zu compose.yaml (lokal, baut selbst):
 #   - zieht ein fertiges Image aus ghcr.io statt zu bauen
-#   - benanntes Volume statt Bind-Mount: Docker legt es mit der Eigentuemer-
-#     schaft aus dem Image an, das haendische chown 10001 auf dem Host entfaellt
-#   - keine .env-Datei: Portainer setzt die ${VAR} aus den Stack-Variablen
+#   - a named volume rather than a bind mount: Docker creates it with the
+#     ownership from the image, so the manual chown 10001 on the host is gone
+#   - no .env file: Portainer fills the ${VAR} from the stack variables
 #
 # Zu setzende Variablen (Portainer -> Stack -> Environment variables):
 #   IMAGE_REPOSITORY   z. B. ghcr.io/<owner>/decentespresso-mcp
-#   IMAGE_TAG          latest  (oder ein sha-... fuer eine feste Version)
+#   IMAGE_TAG          latest  (or a sha-... for a pinned version)
 #   VISUALIZER_EMAIL
 #   VISUALIZER_PASSWORD
 #   MCP_PATH_SECRET    openssl rand -hex 24
 #   PUBLIC_BASE_URL    https://<hostname>
-#   WRITE_ENABLED      false (Default) oder true fuer schreibende Tools
+#   WRITE_ENABLED      false (default) or true for the write tools
 #   DECAID_URL         http://10.100.100.171:8080 (nur private IPs, SPEC 20.6)
 #   NTFY_URL/NTFY_TOPIC/NTFY_TOKEN   optional, Waechter-Nachrichten
 #   CLOUDFLARED_NETWORK  Name des vorhandenen Tunnel-Netzes
@@ -47,12 +47,12 @@ services:
       - decentespresso_mcp_data:/data
 
     networks:
-      # tunnel = Weg fuer Claude herein. Decaid wird darueber NIE
-      # angesprochen (SPEC 20.6); dafuer braucht der Container eine
-      # Route ins LAN - je nach Setup das Host-Netz oder ein macvlan.
+      # tunnel = the way in for Claude. Decaid is NEVER addressed through it
+      # (SPEC §20.6); for that the container needs a route onto the local
+      # network - depending on the setup the host network or a macvlan.
       - tunnel
 
-    # Keine Host-Ports: erreichbar nur ueber das interne Docker-Netz (SPEC ss10.4).
+    # No host ports: reachable only over the internal Docker network (SPEC §10.4).
     read_only: true
     tmpfs:
       - /tmp
@@ -71,7 +71,7 @@ services:
       start_period: 15s
 
     logging:
-      # Ohne Deckel waechst das Log unbegrenzt - der Container laeuft dauerhaft.
+      # Without a cap the log grows without bound - the container runs forever.
       driver: json-file
       options:
         max-size: "10m"

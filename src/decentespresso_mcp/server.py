@@ -1,10 +1,10 @@
-"""FastMCP-App: Streamable-HTTP-Endpoint unter dem Secret-Pfad (SPEC ss9, ss10).
+"""FastMCP app: streamable HTTP endpoint under the secret path (SPEC §9, §10).
 
-Die Docstrings der Tools sind kein Beiwerk: Claude liest sie und muss daraus
-ohne Rueckfrage ableiten, was eine Zahl bedeutet. Einheiten, die Semantik von
-`pi_end`, der Unterschied der beiden Druckmaxima und die Bedeutung von
-`warnings` stehen deshalb im Server-Prompt (immer im Kontext) und zusaetzlich
-verkuerzt in jedem Tool, das die betroffenen Felder liefert.
+The tool docstrings are not decoration: Claude reads them and has to work out
+from them, without asking back, what a number means. Units, the semantics of
+`pi_end`, the difference between the two pressure maxima and the meaning of
+`warnings` therefore live in the server prompt (always in context) and, in
+shortened form, in every tool that returns the affected fields.
 """
 
 from __future__ import annotations
@@ -55,20 +55,19 @@ log = logging.getLogger(__name__)
 
 SERVER_NAME = "decentespresso"
 
-#: SPEC ss12: status() warnt, wenn die Archivluecke gefaehrlich wird - Visualizer
-#: So lange darf ein Abgleich ausbleiben, bevor status() das anmerkt. Das
-#: Tablet ist oft aus; erst eine laengere Stille heisst, dass etwas fehlt.
+#: How long a sync may stay absent before status() remarks on it. The tablet
+#: is often off; only a longer silence means something is missing.
 STALE_SYNC_WARN_DAYS = 7
 
 DEFAULT_LIMIT = 10
 MAX_LIMIT = 50
-#: SPEC ss17.1: die Punktarrays sind die Ausnahme, nicht die Regel - deshalb
-#: niedriger als der Vorschlag aus ss9.1 (120).
+#: SPEC §17.1: the point arrays are the exception, not the rule - hence lower
+#: than the 120 suggested in §9.1.
 DEFAULT_MAX_POINTS = 60
 
-#: Punkte, die sich *alle* verglichenen Shots zusammen teilen. SPEC ss9.2 nennt
-#: pauschal 60 je Shot - damit sprengen vier Shots mit Kurven das Antwortbudget
-#: (gemessen 18.2 kB). Aufgeteilt bleibt auch der schlimmste Fall darunter.
+#: Points shared between *all* compared shots together. SPEC §9.2 names a flat
+#: 60 per shot - four shots with curves blow the response budget that way
+#: (measured 18.2 kB). Split up, even the worst case stays below it.
 COMPARE_POINT_BUDGET = 100
 COMPARE_MIN_POINTS = 20
 NOTES_PREVIEW_CHARS = 160
@@ -76,89 +75,93 @@ NOTES_PREVIEW_CHARS = 160
 READ_ONLY = {"readOnlyHint": True, "openWorldHint": False}
 
 INSTRUCTIONS = """\
-Lokales Archiv der Espresso-Bezuege einer Decent DE1. Quelle ist Decaid auf
-dem Tablet an der Maschine, im eigenen Netz; dieser Server ist die
-vollstaendige Historie und die Grundlage fuer Analysen.
+Local archive of espresso shots pulled on a Decent DE1. The source is Decaid on
+the tablet at the machine, reached over the local network; this server holds the
+complete history and is the basis for any analysis.
 
-TABLET AUS ist kein Fehler. Es laeuft nur, waehrend Kaffee gemacht wird.
-Meldet ein Tool `waiting_for_tablet` oder steht es im Status, heisst das:
-gerade nicht erreichbar, das Archiv antwortet trotzdem. Das so sagen und
-nicht als Stoerung darstellen.
+THE TABLET BEING OFF is not an error. It only runs while coffee is being made.
+When a tool reports `waiting_for_tablet`, or the status says so, it means: not
+reachable right now, and the archive answers anyway. Say it that way - do not
+present it as a fault.
 
-EINHEITEN (durchgaengig, nie mitgeliefert): Druck bar, Fluss ml/s,
-Gewicht und Dosis g, Temperatur Grad Celsius, Zeit s. Zeitstempel sind ISO8601
-in UTC; `elapsed`/`t` zaehlt ab Shot-Beginn.
+UNITS (used throughout, never sent along): pressure bar, flow ml/s, weight and
+dose g, temperature degrees Celsius, time s. Timestamps are ISO8601 in UTC;
+`elapsed`/`t` counts from the start of the shot.
 
-BEGRIFFE, die in den Metriken auftauchen:
+TERMS that appear in the metrics:
 
-- `pi_end` - Ende der Praeinfusion in Sekunden. Das ist ein von der Maschine
-  selbst gemeldeter Phasenwechsel (Kanal `espresso_state_change`), kein
-  Schwellwert und keine Schaetzung. `pi_end_source` sagt, woher der Wert kommt:
-  `state_change` = echte Maschinenmarke; `heuristic` = der Shot hatte keine
-  Marken, ersatzweise wurde der Zeitpunkt genommen, an dem der Druck erstmals
-  60 % des Maximums erreicht. Bei `heuristic` ist der Wert eine Naeherung und
-  taugt nicht fuer Vergleiche auf die Zehntelsekunde.
+- `pi_end` - end of preinfusion, in seconds. This is a phase transition the
+  machine itself reports, not a threshold and not an estimate.
+  `pi_end_source` names where the value actually came from, in this order:
+  `substate` = the machine reported the change to `pouring` in plain text -
+  read off, not inferred;
+  `profile_frame` = no state reported, so the last profile-step boundary before
+  the pressure anchor was used;
+  `heuristic` = neither was available, so the moment pressure first reaches
+  60 % of its maximum was used. With `heuristic` the value is an approximation
+  and is not fit for comparisons down to a tenth of a second.
 
-- Zwei Druckmaxima, absichtlich getrennt:
-  `peak_pressure_infusion` ist das Maximum bis kurz nach der Praeinfusion
-  (Fenster `[0, pi_end + 2 s]`). Das ist der Druck, der den Puck aufbaut - die
-  Zahl, die beim Einstellen interessiert.
-  `max_pressure_global` ist das Maximum ueber den ganzen Bezug. Bei Profilen
-  mit ansteigendem Druck (z. B. D-Flow) liegt es auf dem letzten Messpunkt und
-  sagt ueber den Puckaufbau nichts aus. Die beiden Werte nicht verwechseln und
-  nicht gegeneinander als "Anstieg" interpretieren.
+- Two pressure maxima, deliberately kept apart:
+  `peak_pressure_infusion` is the maximum up to shortly after preinfusion
+  (window `[0, pi_end + 2 s]`). That is the pressure building the puck - the
+  number that matters when dialling in.
+  `max_pressure_global` is the maximum across the whole shot. With profiles
+  that ramp pressure up (D-Flow, for instance) it sits on the last data point
+  and says nothing about how the puck was built. Do not confuse the two, and
+  never interpret one against the other as a "rise".
 
-- `warnings` - eine nicht leere Liste heisst: fuer diesen Shot ist mindestens
-  eine Metrik unzuverlaessig. Das betroffene Feld ist dann `null`, nicht etwa
-  0. Haeufigste Ursache ist die Waage (nicht tariert, angestossen, nicht
-  verbunden). Auf `null` gesetzte Felder nicht raten und nicht ueberlesen -
-  die Warnung im Klartext an den Nutzer weitergeben, wenn sie die Frage
-  betrifft.
+- `warnings` - a non-empty list means at least one metric is unreliable for
+  this shot. The affected field is then `null`, not 0. The most common cause is
+  the scale (not tared, knocked, not connected). Do not guess at fields set to
+  `null` and do not skip past them - pass the warning on to the user in plain
+  words whenever it bears on the question.
 
-- `null` bedeutet durchgaengig "nicht erfasst", nie "Wert ist 0". Das gilt auch
-  fuer `drink_tds`, `drink_ey` und `enjoyment`.
+- `null` always means "not recorded", never "the value is 0". That holds for
+  `enjoyment` in particular: shots imported from the de1app carry a default of
+  0.0 in Decaid, which is not a rating. Ingestion stores those as `null`, so a
+  0 that does reach you is a deliberate rating by the user.
 
-VERLAUF - zwei Darstellungen, und die erste reicht fast immer:
+CURVE - two representations, and the first one is almost always enough:
 
-- `curve_shape` kommt immer mit. Es beschreibt den Bezug abschnittsweise
-  entlang der Phasenmarken der Maschine: je Abschnitt `from`/`to` (Zeit) und
-  fuer Druck (`p`) und Waagenfluss (`fo`) jeweils Anfangswert, Endwert,
-  Richtung (`rising` | `falling` | `flat`) und `linear` (ob der Verlauf
-  zwischen den Enden gerade ist oder gekruemmt). `markers` nennt die markanten
-  Zeitpunkte, `source` sagt, woher die Abschnittsgrenzen stammen
-  (`machine` = Phasenmarken der Maschine, `markers` = ersatzweise aus
-  `pi_end`, `none` = nur ein Abschnitt). Damit lassen sich Fragen nach Anstieg, Abfall,
-  Plateau, Dauer einer Phase und Vergleich zweier Bezuege beantworten, ohne
-  eine einzige Rohzahl.
+- `curve_shape` always comes along. It describes the shot segment by segment
+  along the machine's phase markers: per segment `from`/`to` (time), and for
+  pressure (`p`) and scale flow (`fo`) the starting value, the ending value,
+  the direction (`rising` | `falling` | `steady`) and `linear` (whether the
+  path between the ends is straight or curved). `markers` names the notable
+  moments; `source` says where the segment boundaries came from (`machine` =
+  the machine's phase markers, `markers` = derived from `pi_end` instead,
+  `none` = a single segment). That answers questions about rise, fall, plateau,
+  the length of a phase and the comparison of two shots without a single raw
+  number.
 
-- Die Punktarrays (`t`, `p`, `fi`, `fo`, `w`, `tb`, parallele Listen) kommen
-  nur auf ausdrueckliche Anforderung (`include_curve` bzw. `include_curves`).
-  Sie sind rund zehnmal so gross wie `curve_shape`. Nur anfordern, wenn es um
-  Formdetails geht, die `curve_shape` nicht hergibt - etwa Schwingungen
-  innerhalb eines Abschnitts. Fehlt ein Kanal, gab es dafuer keinen einzigen
-  Messwert.
+- The point arrays (`t`, `p`, `fi`, `fo`, `w`, `tb`, as parallel lists) are
+  only sent when explicitly asked for (`include_curve` or `include_curves`).
+  They are roughly ten times the size of `curve_shape`. Ask for them only when
+  the question is about shape detail that `curve_shape` cannot give - an
+  oscillation inside one segment, say. A missing channel means there was not a
+  single reading for it.
 
-WAECHTER - `audit_archive` prueft vier Regeln. Was sie bedeuten:
+GUARDS - `audit_archive` checks four rules. What they mean:
 
-- `grind_not_adjusted` - die Charge wurde gewechselt, der Mahlgrad blieb
-  stehen. Jede Bohne mahlt anders; der erste Bezug danach geht meist daneben.
-- `bean_age` - die Bohne war beim Bezug ueber der Altersschwelle. Gefrierzeit
-  ist herausgerechnet. Steht im Befund `certain: false`, war die Charge
-  eingefroren und Decaid fuehrt kein Auftaudatum - das Alter ist dann eine
-  **Obergrenze** und als solche weiterzugeben, nicht als feste Zahl.
-- `missing_rating` - nach Ablauf der Frist keine Bewertung nachgetragen.
-- `dose_outlier` - Dosis weit weg vom Soll. `basis` sagt, woran gemessen
-  wurde: am Soll des Workflows oder ersatzweise am Median der Charge.
+- `grind_not_adjusted` - the batch was changed and the grind setting stayed put.
+  Every bean grinds differently; the first shot after such a change is usually
+  off.
+- `bean_age` - the bean was past the age threshold when the shot was pulled.
+  Time spent frozen is subtracted. When a finding says `certain: false`, the
+  batch had been frozen and Decaid keeps no thaw date - the age is then an
+  **upper bound** and must be passed on as one, not as a firm number.
+- `missing_rating` - no rating was added once the grace period had passed.
+- `dose_outlier` - weights do not match the workflow target. `basis` says what
+  was measured against: the workflow target, or the batch median as a fallback.
 
-Ein Befund ist ein Hinweis, kein Urteil. Er nennt immer die Zahlen, auf die
-er sich stuetzt - die mitliefern, statt nur die Meldung zu wiederholen.
+A finding is a hint, not a verdict. It always names the numbers it rests on -
+pass those along instead of merely repeating the message.
 
-SCHREIBEN - alle `update_*`- und `set_*`-Tools nur auf ausdrueckliche
-Anweisung aufrufen, nie von sich aus und nie "zur Sicherheit". Genau die
-Felder setzen, die genannt wurden. Danach anhand der zurueckgelieferten
-Werte bestaetigen, nicht anhand dessen, was gesendet wurde: steht ein Feld
-unter `unchanged`, hat Decaid es nicht uebernommen - das sagen, statt Erfolg
-zu melden.\
+WRITING - call the `update_*` and `set_*` tools only on an explicit instruction,
+never on your own initiative and never "just to be safe". Set exactly the fields
+that were named. Confirm afterwards from the values that come back, not from
+what was sent: if a field appears under `unchanged`, Decaid did not take it -
+say so instead of reporting success.\
 """
 
 
@@ -168,11 +171,11 @@ zu melden.\
 def build_mcp(
     config: Config, db: Database, coordinator: SyncCoordinator | None = None
 ) -> FastMCP:
-    """Baut die FastMCP-Instanz.
+    """Builds the FastMCP instance.
 
-    ``coordinator`` ist optional: ohne ihn arbeiten alle lesenden Tools normal
-    weiter, nur ``sync_now`` und der Frische-Check von ``get_shot("latest")``
-    entfallen. Tests nutzen das, um ohne Netz auszukommen.
+    ``coordinator`` is optional: without it every read tool works as usual,
+    only ``sync_now`` and the freshness check of ``get_shot("latest")`` fall
+    away. Tests use that to get by without a network.
     """
     mcp = FastMCP(
         name=SERVER_NAME,
@@ -183,10 +186,10 @@ def build_mcp(
 
     @mcp.tool(annotations=READ_ONLY)
     async def list_beans() -> dict[str, Any]:
-        """Alle Bohnen im Archiv mit Bezugszahl, Zeitraum und Muehleneinstellungen.
+        """Every bean in the archive with shot count, date range and grind settings.
 
-        Einstieg fuer "welche Bohnen gibt es". Zeiten ISO8601 UTC,
-        `grinder_setting` ist Freitext der Muehle (z. B. "4,2").
+        The way into "which beans are there". Times are ISO8601 UTC,
+        `grinder_setting` is free text from the grinder ("4,2", for instance).
         """
         rows = await asyncio.to_thread(db.list_beans)
         return {
@@ -218,19 +221,19 @@ def build_mcp(
         limit: int = DEFAULT_LIMIT,
         cursor: str | None = None,
     ) -> dict[str, Any]:
-        """Kompakte Liste der Bezuege, neueste zuerst.
+        """Compact list of shots, newest first.
 
-        Filter sind Teilstrings ohne Beachtung der Gross-/Kleinschreibung:
-        `bean` trifft Marke oder Sorte, `roaster` nur die Marke, `profile` den
+        Filters are case-insensitive substrings: `bean` matches the bean name
+        or the roastery, `roaster` only the roastery, `profile` the
         Profilnamen. `since`/`until` nehmen ISO8601 (`2026-07-31`) oder relative
-        Kuerzel (`12h`, `7d`, `2w`, `1m`, `1y`). `warnings` ist die Anzahl
+        shorthand (`12h`, `7d`, `2w`, `1m`, `1y`). `warnings` is the number
         unzuverlaessiger Metriken dieses Shots.
 
-        Bei mehr Treffern als `limit` kommt `next_cursor`; unveraendert als
-        `cursor` zurueckschicken. Die erste Seite gleicht vorher mit Visualizer
-        ab, wenn noetig (`freshness`); Folgeseiten nicht.
+        With more matches than `limit` a `next_cursor` comes back; send it
+        again unchanged as `cursor`. The first page syncs with the tablet
+        beforehand if needed (`freshness`); later pages do not.
 
-        Einheiten und Begriffe: siehe Server-Anweisungen.
+        Units and terms: see the server instructions.
         """
         capped = max(1, min(int(limit), MAX_LIMIT))
         offset = _decode_cursor(cursor)
@@ -265,17 +268,17 @@ def build_mcp(
         include_curve: bool = False,
         max_points: int = DEFAULT_MAX_POINTS,
     ) -> dict[str, Any]:
-        """Ein Bezug: Metadaten, Metriken, Kurvenform, Profil-Kurzfassung.
+        """One shot: metadata, metrics, curve shape, profile summary.
 
-        `id` ist eine Shot-UUID oder `"latest"` (mit `bean` der neueste dieser
-        Bohne); bei `"latest"` gleicht der Server vorher ab, wenn noetig.
+        `id` is a shot UUID or `"latest"` (with `bean`, the newest of that
+        bean); for `"latest"` the server syncs beforehand if needed.
 
-        Das mitgelieferte `curve_shape` reicht fuer die allermeisten Fragen.
-        `include_curve=true` haengt zusaetzlich die Punktarrays an, ausgeduennt
-        auf `max_points` (Standard 60, Maximum 400) - nur fuer Formdetails, die
-        die Form nicht hergibt.
+        The `curve_shape` that comes along covers the vast majority of
+        questions. `include_curve=true` additionally attaches the point arrays,
+        thinned to `max_points` (default 60, maximum 400) - only for shape
+        detail the shape itself cannot give.
 
-        Verlauf, Einheiten und Begriffe: siehe Server-Anweisungen.
+        Curve, units and terms: see the server instructions.
         """
         freshness = None
         if id == "latest" and coordinator is not None:
@@ -286,13 +289,13 @@ def build_mcp(
             shot_id = await asyncio.to_thread(db.latest_shot_id, bean)
             if shot_id is None:
                 raise ToolError(
-                    "shot_not_found: Es gibt keinen archivierten Bezug"
-                    + (f" fuer die Bohne {bean!r}." if bean else ".")
+                    "shot_not_found: there is no archived shot"
+                    + (f" for the bean {bean!r}." if bean else ".")
                 )
 
         row = await asyncio.to_thread(db.get_shot_row, shot_id)
         if row is None:
-            raise ToolError(f"shot_not_found: Kein Bezug mit der Kennung {shot_id!r}.")
+            raise ToolError(f"shot_not_found: no shot with the identifier {shot_id!r}.")
 
         metrics = await asyncio.to_thread(metrics_for_shot, db, shot_id)
         series = await asyncio.to_thread(_series, db, shot_id)
@@ -310,14 +313,14 @@ def build_mcp(
 
     @mcp.tool(annotations=READ_ONLY)
     async def get_shot_metrics(id: str) -> dict[str, Any]:
-        """Nur die abgeleiteten Metriken eines Bezugs, ohne Form, Kurve, Profil.
+        """Only the derived metrics of a shot - no shape, no curve, no profile.
 
-        Schmalste Antwort, wenn nur Zahlen gebraucht werden. Einheiten und
+        The narrowest response when only numbers are needed. Units and
         Begriffe: siehe Server-Anweisungen.
         """
         metrics = await asyncio.to_thread(metrics_for_shot, db, id)
         if metrics is None:
-            raise ToolError(f"shot_not_found: Kein Bezug mit der Kennung {id!r}.")
+            raise ToolError(f"shot_not_found: no shot with the identifier {id!r}.")
         return {"id": id, **_public_metrics(metrics)}
 
     @mcp.tool(annotations=READ_ONLY)
@@ -326,23 +329,23 @@ def build_mcp(
         include_profile: bool = True,
         include_curves: bool = False,
     ) -> dict[str, Any]:
-        """Zwei bis vier Bezuege nebeneinander - Metriken, Form, Profile, Deltas.
+        """Two to four shots side by side - metrics, shape, profiles, deltas.
 
-        Der erste Eintrag in `ids` ist die Bezugsgroesse; `deltas` nennt je
-        weiterem Shot die Differenz zu ihm. Felder, die dort `null` sind, fehlen.
+        The first entry in `ids` is the reference; `deltas` gives the difference
+        to it for every further shot. Fields that are `null` there are absent.
 
-        `include_profile` (Standard true) liefert je Shot die Profil-Kurzfassung
-        und setzt `profile_notice`, wenn die Bezuege nicht auf denselben
-        Sollwerten liefen - ein separater `get_profile`-Aufruf eruebrigt sich
-        damit meist. `include_curves=true` haengt Punktarrays an; ueblicherweise
-        genuegt das mitgelieferte `curve_shape`.
+        `include_profile` (default true) returns the profile summary per shot
+        and sets `profile_notice` when the shots did not run on the same
+        targets - that usually makes a separate `get_profile` call unnecessary.
+        `include_curves=true` attaches point arrays; the `curve_shape` that
+        comes along is normally enough.
 
-        Verlauf, Einheiten und Begriffe: siehe Server-Anweisungen.
+        Curve, units and terms: see the server instructions.
         """
         if not 2 <= len(ids) <= 4:
             raise ToolError(
                 f"invalid_argument: compare_shots braucht 2 bis 4 Kennungen, "
-                f"bekommen hat es {len(ids)}."
+                f"got {len(ids)}."
             )
 
         per_shot_points = max(COMPARE_MIN_POINTS, COMPARE_POINT_BUDGET // len(ids))
@@ -352,7 +355,7 @@ def build_mcp(
         for shot_id in ids:
             row = await asyncio.to_thread(db.get_shot_row, shot_id)
             if row is None:
-                raise ToolError(f"shot_not_found: Kein Bezug mit der Kennung {shot_id!r}.")
+                raise ToolError(f"shot_not_found: no shot with the identifier {shot_id!r}.")
             metrics = await asyncio.to_thread(metrics_for_shot, db, shot_id)
             series = await asyncio.to_thread(_series, db, shot_id)
             entry: dict[str, Any] = {
@@ -391,10 +394,10 @@ def build_mcp(
 
     @mcp.tool(annotations=READ_ONLY)
     async def list_profiles() -> dict[str, Any]:
-        """Alle Profile mit ihren Versionen.
+        """Every profile with its versions.
 
-        `version_hash` ist die Identitaet einer Version, `semantic_hash`
-        gruppiert Versionen mit gleichen Sollwerten - Naeheres in den
+        `version_hash` is the identity of a version, `semantic_hash` groups
+        versions with identical targets - more in the
         Server-Anweisungen.
         """
         rows = await asyncio.to_thread(db.profile_overview)
@@ -420,30 +423,32 @@ def build_mcp(
         name: str | None = None,
         version_hash: str | None = None,
     ) -> dict[str, Any]:
-        """Die vollstaendigen Sollwerte eines Profils - genau eine Angabe machen.
+        """The complete targets of a profile - give exactly one argument.
 
-        `shot_id` liefert die Version, mit der dieser Bezug lief; `version_hash`
-        (Praefix genuegt) eine bestimmte, `name` die zuletzt gesehene dieses
-        Namens. In den Schritten ist `target` bar bei `mode: pressure`, sonst
-        ml/s; `exit` ist `null` ohne aktive Abbruchbedingung. Legacy-Profile
+        `shot_id` returns the version this shot ran on; `version_hash` (a prefix
+        suffices) a specific one, `name` the most recently seen one of that
+        name. Within the steps `target` is bar for `mode: pressure` and ml/s
+        otherwise; `exit` is `null` without an active exit condition. Legacy
+        profiles
         haben keine Schritte, ihre Sollwerte stehen in `legacy_settings`.
 
-        Zum blossen Vergleich zweier Bezuege genuegt `compare_shots`.
+        For merely comparing two shots, `compare_shots` is enough.
         """
         given = [bool(shot_id), bool(name), bool(version_hash)]
         if sum(given) != 1:
             raise ToolError(
-                "invalid_argument: genau eine Angabe erwartet - shot_id, name "
+                "invalid_argument: exactly one argument expected - shot_id, name "
                 "oder version_hash."
             )
 
         if shot_id:
             row = await asyncio.to_thread(db.get_shot_row, shot_id)
             if row is None:
-                raise ToolError(f"shot_not_found: Kein Bezug mit der Kennung {shot_id!r}.")
+                raise ToolError(f"shot_not_found: no shot with the identifier {shot_id!r}.")
             if row["profile_id"] is None:
                 raise ToolError(
-                    f"profile_not_found: Fuer den Bezug {shot_id!r} ist kein Profil "
+                    f"profile_not_found: no profile archived for the shot "
+                    f"{shot_id!r} "
                     "archiviert."
                 )
             profile = await asyncio.to_thread(db.get_profile_row, row["profile_id"])
@@ -453,7 +458,7 @@ def build_mcp(
             )
         if profile is None:
             raise ToolError(
-                "profile_not_found: Kein Profil zu "
+                "profile_not_found: no profile for "
                 f"{'version_hash ' + repr(version_hash) if version_hash else 'name ' + repr(name)}."
             )
 
@@ -471,13 +476,13 @@ def build_mcp(
         annotations={"readOnlyHint": False, "idempotentHint": True, "openWorldHint": True}
     )
     async def sync_now() -> dict[str, Any]:
-        """Holt neue und geaenderte Bezuege sofort vom Tablet.
+        """Fetches new and changed shots from the tablet right away.
 
-        Meist unnoetig: der Server synchronisiert selbst, und `get_shot`/
-        `list_shots` pruefen ohnehin auf Frische. Aendert in Decaid nichts,
+        Usually unnecessary: the server syncs on its own, and `get_shot`/
+        `list_shots` check freshness anyway. Changes nothing in Decaid,
         beliebig wiederholbar. `errors` sind voruebergehende Probleme,
-        `warnings` endgueltige Befunde. Ist `waiting_for_tablet` gesetzt, war
-        das Tablet aus - kein Fehler, nur nichts zu holen; das so sagen.
+        `warnings` are final findings. If `waiting_for_tablet` is set the tablet
+        was off - not an error, just nothing to fetch; say it that way.
         """
         if coordinator is None:
             raise ToolError(
@@ -491,12 +496,12 @@ def build_mcp(
 
     @mcp.tool(annotations=READ_ONLY)
     async def status() -> dict[str, Any]:
-        """Zustand des Archivs: Bestand, letzter Abgleich, offene Warnungen.
+        """State of the archive: contents, last sync, open warnings.
 
-        Zeiten ISO8601 UTC. `decaid` sagt, wann das Tablet zuletzt erreichbar
-        war; `waiting_for_tablet` heisst nicht Stoerung, sondern dass das
-        Tablet gerade aus ist - das ist zwischen zwei Kaffees der Normalfall
-        und sollte nicht als Fehler gemeldet werden.
+        Times are ISO8601 UTC. `decaid` says when the tablet was last
+        reachable; `waiting_for_tablet` does not mean a fault but that the
+        tablet is currently off - between two coffees that is the normal case
+        and should not be reported as an error.
         """
         return await asyncio.to_thread(_status_payload, config, db)
 
@@ -504,10 +509,10 @@ def build_mcp(
     async def audit_archive(
         since: str | None = None, rule: str | None = None, limit: int = 20
     ) -> dict[str, Any]:
-        """Prueft das Archiv auf Unstimmigkeiten (Regeln siehe Anleitung).
+        """Checks the archive for inconsistencies (rules: see the instructions).
 
-        `since` als ISO-Datum oder Kurzform (`7d`, `2w`, `1m`), `rule`
-        filtert auf eine der vier Regeln.
+        `since` as an ISO date or shorthand (`7d`, `2w`, `1m`); `rule` narrows
+        to one of the four rules.
         """
         cutoff = _parse_time(since, "since")
         shots = await asyncio.to_thread(db.shots_for_guards, cutoff)
@@ -522,7 +527,7 @@ def build_mcp(
         if rule:
             if rule not in ALL_RULES:
                 raise ToolError(
-                    f"invalid_argument: {rule!r} ist keine Regel. Erlaubt: "
+                    f"invalid_argument: {rule!r} is not a rule. Allowed: "
                     + ", ".join(ALL_RULES)
                 )
             findings = [f for f in findings if f.rule == rule]
@@ -550,22 +555,23 @@ def build_mcp(
 
     @mcp.custom_route("/healthz", methods=["GET"], include_in_schema=False)
     async def healthz(request: Request) -> Response:
-        # Bewusst ohne Secret-Pfad: der Docker-Healthcheck kennt es nicht. Gibt
-        # nichts preis, darf aber laut SPEC ss10.1 nicht ins Tunnel-Ingress.
+        # Deliberately without the secret path: the Docker health check does not
+        # know it. Reveals nothing, but per SPEC §10.1 must not reach the tunnel
+        # ingress.
         return PlainTextResponse("ok")
 
     return mcp
 
 
 def _register_workflow_reader(mcp: FastMCP, coordinator: SyncCoordinator) -> None:
-    """``get_workflow`` liest live vom Tablet - im Archiv steht es nicht."""
+    """``get_workflow`` reads live from the tablet - the archive does not hold it."""
 
     @mcp.tool(annotations=READ_ONLY)
     async def get_workflow() -> dict[str, Any]:
-        """Die Einstellung, mit der der naechste Bezug laufen wuerde.
+        """The setting the next shot would run on.
 
-        Kommt live vom Tablet - im Archiv steht nur, womit tatsaechlich
-        bezogen wurde.
+        Comes live from the tablet - the archive only holds what shots were
+        actually pulled with.
         """
         try:
             workflow = await coordinator.read_workflow()
@@ -591,10 +597,10 @@ def _register_workflow_reader(mcp: FastMCP, coordinator: SyncCoordinator) -> Non
 def _register_catalog_writes(
     mcp: FastMCP, db: Database, coordinator: SyncCoordinator
 ) -> None:
-    """Schreibtools fuer Bohne, Charge und Workflow (SPEC ss20.5).
+    """Write tools for bean, batch and workflow (SPEC §20.5).
 
-    Dieselben Leitplanken wie ``update_shot``: Whitelist vor dem Senden,
-    Read-back danach, und nur vorhanden, wenn ``WRITE_ENABLED`` gesetzt ist.
+    The same guard rails as ``update_shot``: whitelist before sending, read-back
+    afterwards, and present only when ``WRITE_ENABLED`` is set.
     """
 
     @mcp.tool(
@@ -602,11 +608,11 @@ def _register_catalog_writes(
                      "destructiveHint": False, "openWorldHint": True},
     )
     async def update_bean(id: str, fields: dict[str, Any]) -> dict[str, Any]:
-        """Aendert Stammdaten einer Bohne in Decaid.
+        """Changes the master data of a bean in Decaid.
 
-        Kennung aus `list_beans`. Erlaubt: name, roaster, species,
-        processing, notes, decaf. Gilt rueckwirkend fuer alle Bezuege dieser
-        Bohne - das vorher sagen.
+        Identifier from `list_beans`. Allowed: name, roaster, species,
+        processing, notes, decaf. Applies retroactively to every shot of this
+        bean - say so beforehand.
         """
         return await _write(coordinator.write_bean, BEAN, id, fields,
                             what="bean")
@@ -616,11 +622,11 @@ def _register_catalog_writes(
                      "destructiveHint": False, "openWorldHint": True},
     )
     async def update_batch(id: str, fields: dict[str, Any]) -> dict[str, Any]:
-        """Aendert eine Bohnencharge (Roestdatum, Gefrierzustand).
+        """Changes a bean batch (roast date, frozen state).
 
-        Erlaubt: roastDate, buyDate, freezeDate (je ISO YYYY-MM-DD), frozen.
-        Decaid fuehrt kein Auftaudatum - beim Auftauen `frozen` auf false
-        setzen; das Bohnenalter ist danach nur noch nach oben begrenzt.
+        Allowed: roastDate, buyDate, freezeDate (each ISO YYYY-MM-DD), frozen.
+        Decaid keeps no thaw date - to thaw, set `frozen` to false; bean age is
+        an upper bound only from then on.
         """
         return await _write(coordinator.write_batch, BATCH, id, fields,
                             what="batch")
@@ -630,12 +636,12 @@ def _register_catalog_writes(
                      "destructiveHint": False, "openWorldHint": True},
     )
     async def set_workflow(fields: dict[str, Any]) -> dict[str, Any]:
-        """Stellt ein, womit der naechste Bezug laufen soll.
+        """Sets what the next shot should run on.
 
-        Aendert die Maschine, nicht das Archiv. Erlaubt: grinderSetting,
-        grinderModel, targetDoseWeight, targetYield, beanBatchId. Ein
-        Profilwechsel ist nicht moeglich - der gehoert an die Maschine.
-        Danach nennen, was jetzt eingestellt ist.
+        Changes the machine, not the archive. Allowed: grinderSetting,
+        grinderModel, targetDoseWeight, targetYield, beanBatchId. A profile
+        change is not possible - that belongs at the machine. Afterwards name
+        what is now set.
         """
         return await _write(coordinator.write_workflow, WORKFLOW, None, fields,
                             what="workflow")
@@ -645,10 +651,10 @@ async def _write(
     writer: Any, ruleset: Ruleset, target_id: str | None,
     fields: dict[str, Any], *, what: str,
 ) -> dict[str, Any]:
-    """Gemeinsamer Weg aller Schreibtools: pruefen, senden, nachlesen.
+    """The shared path of every write tool: validate, send, read back.
 
-    Ein Weg statt drei, damit Validierung, Read-back-Vergleich und
-    Protokollzeile nicht dreimal leicht verschieden ausfallen.
+    One path rather than three, so that validation, read-back comparison and
+    log line do not come out three slightly different ways.
     """
     try:
         payload = validate_fields(fields, ruleset)
@@ -670,7 +676,7 @@ async def _write(
     }
     ignored = [n for n, pair in changes.items() if pair["before"] == pair["after"]]
 
-    # Feldnamen ja, Werte nein - in Notizen kann Privates stehen.
+    # Field names yes, values no - notes can hold private things.
     log.info(
         f"{what} updated",
         extra={"fields": {
@@ -687,9 +693,9 @@ async def _write(
     if ignored:
         result["unchanged"] = ignored
         result["note"] = (
-            "Decaid hat diese Felder nicht uebernommen: " + ", ".join(ignored)
-            + ". Entweder war der neue Wert mit dem alten identisch, oder "
-            "die API hat ihn verworfen."
+            "Decaid did not take these fields: " + ", ".join(ignored)
+            + ". Either the new value was identical to the old one, or the API "
+            "discarded it."
         )
     return result
 
@@ -702,12 +708,12 @@ def _count_by_rule(findings: Any) -> dict[str, int]:
 
 
 def _register_update_shot(mcp: FastMCP, db: Database, coordinator: SyncCoordinator) -> None:
-    """Registriert das Schreibtool - nur bei ``WRITE_ENABLED`` (SPEC ss18.4).
+    """Registers the write tool - only with ``WRITE_ENABLED`` (SPEC §18.4).
 
-    Bewusst als eigene Funktion statt als Flag im Tool: ist der Schalter aus,
-    taucht ``update_shot`` in der Tool-Liste gar nicht auf. Ein Tool, das
-    existiert und ablehnt, laedt zum Nachfragen ein; eines, das es nicht gibt,
-    nicht.
+    Deliberately a separate function rather than a flag inside the tool: when
+    the switch is off, ``update_shot`` does not appear in the tool list at all.
+    A tool that exists and refuses invites asking again; one that does not
+    exist does not.
     """
 
     @mcp.tool(
@@ -715,11 +721,11 @@ def _register_update_shot(mcp: FastMCP, db: Database, coordinator: SyncCoordinat
                      "destructiveHint": False, "openWorldHint": True},
     )
     async def update_shot(id: str, fields: dict[str, Any]) -> dict[str, Any]:
-        """Aendert Notiz, Bewertung oder Gewichte eines Bezugs in Decaid.
+        """Changes the note, rating or weights of a shot in Decaid.
 
-        `fields` ist eine Zuordnung Feldname -> neuer Wert; `null` loescht ein
-        Feld. Erlaubt: espressoNotes, enjoyment (0-100), actualDoseWeight,
-        actualYield (je g). Zeitstempel, Telemetrie und Profil nicht.
+        `fields` maps field name -> new value; `null` clears a field. Allowed:
+        espressoNotes, enjoyment (0-100), actualDoseWeight, actualYield (each in
+        g). Timestamps, telemetry and profile are not.
         """
         try:
             payload = validate_fields(fields)
@@ -728,7 +734,7 @@ def _register_update_shot(mcp: FastMCP, db: Database, coordinator: SyncCoordinat
 
         row = await asyncio.to_thread(db.get_shot_row, id)
         if row is None:
-            raise ToolError(f"shot_not_found: Kein Bezug mit der Kennung {id!r}.")
+            raise ToolError(f"shot_not_found: no shot with the identifier {id!r}.")
 
         started = time.perf_counter()
         try:
@@ -743,7 +749,7 @@ def _register_update_shot(mcp: FastMCP, db: Database, coordinator: SyncCoordinat
         ignored = [name for name, pair in changes.items()
                    if pair["before"] == pair["after"]]
 
-        # Feldnamen ja, Werte nein - in Notizen kann Privates stehen.
+        # Field names yes, values no - notes can hold private things.
         log.info(
             "shot updated",
             extra={"fields": {
@@ -758,10 +764,10 @@ def _register_update_shot(mcp: FastMCP, db: Database, coordinator: SyncCoordinat
         if ignored:
             result["unchanged"] = ignored
             result["note"] = (
-                "Decaid hat diese Felder nicht uebernommen: "
+                "Decaid did not take these fields: "
                 + ", ".join(ignored)
-                + ". Entweder war der neue Wert mit dem alten identisch, oder "
-                "die API hat ihn verworfen."
+                + ". Either the new value was identical to the old one, or the "
+                "API discarded it."
             )
         return result
 
@@ -770,24 +776,24 @@ def _register_update_shot(mcp: FastMCP, db: Database, coordinator: SyncCoordinat
 
 
 async def _refresh(coordinator: SyncCoordinator) -> dict[str, Any]:
-    """Frische-Check fuer ``get_shot("latest")`` und die erste ``list_shots``-Seite.
+    """Freshness check for ``get_shot("latest")`` and the first ``list_shots`` page.
 
-    Ein Fehler bricht nichts ab: der Bestand ist da, nur vielleicht nicht
-    taufrisch - das ist eine bessere Antwort als gar keine.
+    A failure aborts nothing: the archive is there, just perhaps not brand new -
+    which is a better answer than none at all.
     """
     try:
         result = await coordinator.ensure_fresh(QUICK_SYNC_MAX_AGE_S)
     except DecaidError as exc:
-        # Der Bestand ist da, nur vielleicht nicht ganz aktuell - das ist eine
-        # bessere Antwort als gar keine.
-        return {"synced": False, "note": f"Sync fehlgeschlagen ({exc.code}), "
-                                         "Antwort stammt aus dem Archiv."}
+        # The archive is there, just perhaps not quite current - a better answer
+        # than none at all.
+        return {"synced": False, "note": f"Sync failed ({exc.code}), the answer "
+                                         "comes from the archive."}
     if result is None:
-        return {"synced": False, "note": "Bestand war aktuell, kein Abgleich noetig."}
+        return {"synced": False, "note": "Archive was current, no sync needed."}
     if result.waiting_for_tablet:
-        # Kein Fehler: das Tablet ist zwischen zwei Kaffees schlicht aus.
+        # Not an error: between two coffees the tablet is simply off.
         return {"synced": False, "waiting_for_tablet": True,
-                "note": "Tablet nicht erreichbar, Antwort stammt aus dem Archiv."}
+                "note": "Tablet not reachable, the answer comes from the archive."}
     return {"synced": True, "new_shots": result.new_shots, "updated": result.updated}
 
 
@@ -847,7 +853,7 @@ def _full_shot(row: Any) -> dict[str, Any]:
 
 
 def _public_metrics(metrics: dict[str, Any] | None) -> dict[str, Any]:
-    """Cache-Interna (``metrics_version``, ``n_points``) gehoeren nicht in die Antwort."""
+    """Cache internals (``metrics_version``, ``n_points``) do not belong in the response."""
     if not metrics:
         return {"warnings": ["Keine Metriken berechnet."]}
     return {k: v for k, v in metrics.items() if k not in ("metrics_version", "n_points")}
@@ -869,7 +875,7 @@ def _curve(
 
 
 def _profile_summary(db: Database, profile_id: int | None) -> dict[str, Any] | None:
-    """Kurzfassung fuers Shot-Detail - das volle Profil liefert ``get_profile``."""
+    """Summary for the shot detail - ``get_profile`` returns the full profile."""
     if profile_id is None:
         return None
     row = db.get_profile_row(profile_id)
@@ -898,9 +904,9 @@ def _profile_summary(db: Database, profile_id: int | None) -> dict[str, Any] | N
 
 
 def _profile_brief(db: Database, profile_id: int | None) -> dict[str, Any] | None:
-    """Kurzfassung fuer ``compare_shots`` - Kopf-Sollwerte, keine Schrittliste.
+    """Summary for ``compare_shots`` - headline targets, no step list.
 
-    Reicht fuer die Frage "liefen die Bezuege auf demselben Profil"; die
+    Enough for the question "did these shots run on the same profile"; the
     vollstaendigen Schritte liefert ``get_profile``.
     """
     if profile_id is None:
@@ -924,19 +930,19 @@ def _profile_brief(db: Database, profile_id: int | None) -> dict[str, Any] | Non
 
 
 def _profile_notice(profiles: list[dict[str, Any] | None]) -> str | None:
-    """Warnt, wenn die verglichenen Bezuege nicht dieselben Sollwerte hatten.
+    """Warns when the compared shots did not share the same targets.
 
-    Ohne diesen Hinweis liest man Unterschiede leicht als Folge der Einstellung,
-    obwohl sie vom Profil kommen.
+    Without this note one easily reads differences as a consequence of the
+    settings when they come from the profile.
     """
     known = [p for p in profiles if p]
     if not known:
         return None
-    # Fehlende Profile zuerst: sonst verschluckt die Zwei-Profile-Schranke
-    # unten genau den Fall, in dem nur eines archiviert ist.
+    # Missing profiles first: otherwise the two-profile guard below swallows
+    # exactly the case where only one of them is archived.
     if len(known) != len(profiles):
-        return ("Fuer mindestens einen Bezug ist kein Profil archiviert - der "
-                "Vergleich der Sollwerte ist unvollstaendig.")
+        return ("At least one shot has no profile archived - the comparison of "
+                "targets is incomplete.")
     if len(known) < 2:
         return None
 
@@ -946,15 +952,15 @@ def _profile_notice(profiles: list[dict[str, Any] | None]) -> str | None:
 
     semantics = {p["semantic_hash"] for p in known}
     if len(semantics) == 1:
-        return ("Die Bezuege liefen auf verschiedenen Profilversionen, die aber "
-                "identisch bruehen (gleicher semantic_hash) - der Unterschied "
-                "ist rein kosmetisch.")
-    return ("Achtung: Die Bezuege liefen auf Profilen mit unterschiedlichen "
-            "Sollwerten (abweichender semantic_hash). Unterschiede in den "
-            "Metriken koennen vom Profil kommen, nicht von Mahlgrad oder Dosis.")
+        return ("The shots ran on different profile versions that brew "
+                "identically (same semantic_hash) - the difference is purely "
+                "cosmetic.")
+    return ("Careful: the shots ran on profiles with different targets "
+            "(differing semantic_hash). Differences in the metrics may come "
+            "from the profile, not from grind setting or dose.")
 
 
-#: Felder, deren Differenz sich zu vergleichen lohnt.
+#: Fields whose difference is worth comparing.
 _DELTA_FIELDS = (
     "dose_g", "yield_g", "duration_s", "ratio", "pi_end", "t_first_drops",
     "peak_pressure_infusion", "max_pressure_global", "end_pressure",
@@ -994,8 +1000,9 @@ def _parse_time(value: str | None, label: str) -> str | None:
         parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError as exc:
         raise ToolError(
-            f"invalid_argument: {label}={value!r} ist weder ISO8601 "
-            "(2026-07-31 oder 2026-07-31T19:00:00Z) noch ein Kuerzel wie 7d, 12h, 2w."
+            f"invalid_argument: {label}={value!r} is neither ISO8601 "
+            "(2026-07-31 or 2026-07-31T19:00:00Z) nor a shorthand such as 7d, "
+            "12h, 2w."
         ) from exc
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=UTC)
@@ -1013,8 +1020,8 @@ def _decode_cursor(cursor: str | None) -> int:
         return max(0, int(cursor.lstrip("o")))
     except ValueError as exc:
         raise ToolError(
-            f"invalid_argument: cursor={cursor!r} stammt nicht aus einer frueheren "
-            "Antwort. Ohne cursor beginnt die Liste von vorn."
+            f"invalid_argument: cursor={cursor!r} did not come from an earlier "
+            "response. Without a cursor the list starts from the beginning."
         ) from exc
 
 
@@ -1027,41 +1034,41 @@ def _status_payload(config: Config, db: Database) -> dict[str, Any]:
     warnings: list[str] = []
 
     if not db.get_state(STATE_BACKFILL_DONE):
-        warnings.append("Backfill wurde noch nicht vollstaendig abgeschlossen.")
+        warnings.append("The backfill has not completed in full yet.")
 
     age_days = _age_days(last_sync)
     if age_days is None:
-        warnings.append("Es gab noch keinen Sync-Lauf.")
+        warnings.append("There has not been a sync run yet.")
     elif age_days > STALE_SYNC_WARN_DAYS:
         warnings.append(
-            f"Letzter Abgleich vor {age_days:.0f} Tagen - das Tablet war so "
-            "lange nicht erreichbar. Neuere Bezuege fehlen im Archiv."
+            f"Last sync {age_days:.0f} days ago - the tablet has not been "
+            "reachable for that long. Newer shots are missing from the archive."
         )
     if config.sync_interval_min == 0:
-        warnings.append("Automatischer Sync ist abgeschaltet (SYNC_INTERVAL_MIN=0).")
+        warnings.append("Automatic sync is switched off (SYNC_INTERVAL_MIN=0).")
 
     missing_profiles = len(db.shot_ids_without_profile())
     if missing_profiles:
-        warnings.append(f"{missing_profiles} Shots ohne Profilversion.")
+        warnings.append(f"{missing_profiles} shots without a profile version.")
 
     last_reachable = db.get_state(STATE_LAST_REACHABLE)
     decaid_version = db.get_state(STATE_DECAID_VERSION) or None
     if decaid_version and decaid_version != VERIFIED_DECAID_VERSION:
-        # Kein Fehler, aber der Grund, warum eine Annahme ueber die API
-        # ploetzlich nicht mehr stimmen koennte.
+        # Not an error, but the reason an assumption about the API could
+        # suddenly stop holding.
         warnings.append(
-            f"Decaid laeuft in Version {decaid_version}, verifiziert ist "
-            f"{VERIFIED_DECAID_VERSION} - Abweichungen im Verhalten der API "
-            "sind moeglich."
+            f"Decaid is running version {decaid_version}, verified is "
+            f"{VERIFIED_DECAID_VERSION} - deviations in API behaviour are "
+            "possible."
         )
 
     last_result = db.get_json_state(STATE_LAST_RESULT, {}) or {}
     if last_result.get("waiting_for_tablet"):
-        # Kein Fehler, nur eine Tatsache - das Tablet laeuft nur, waehrend
-        # Kaffee gemacht wird.
+        # Not an error, just a fact - the tablet only runs while coffee is
+        # being made.
         warnings.append(
-            "Tablet zuletzt nicht erreichbar"
-            + (f" (zuletzt erreicht: {last_reachable})" if last_reachable else "")
+            "Tablet was not reachable on the last attempt"
+            + (f" (last reached: {last_reachable})" if last_reachable else "")
             + "."
         )
 
@@ -1078,7 +1085,7 @@ def _status_payload(config: Config, db: Database) -> dict[str, Any]:
         "guards": {
             "active_rules": list(config.guard_rules),
             "findings": last_result.get("findings", 0),
-            "notifications": "an" if config.ntfy_url else "aus",
+            "notifications": "on" if config.ntfy_url else "off",
         },
         "version": __version__,
         "milestone": milestone(),
@@ -1114,7 +1121,7 @@ def _age_days(iso_ts: str | None) -> float | None:
 
 
 async def _empty_404(request: Request, exc: Exception) -> Response:
-    """404 ohne Body (SPEC ss10.1): ein Scanner soll nicht mal Starlette erkennen."""
+    """404 without a body (SPEC §10.1): a scanner should not even recognise Starlette."""
     status_code = getattr(exc, "status_code", 404)
     if status_code == 404:
         return Response(status_code=404)
@@ -1128,11 +1135,11 @@ def build_app(
     db: Database | None = None,
     enable_sync: bool | None = None,
 ):
-    """Fertige ASGI-App: MCP unter ``/<secret>/mcp``, ``/healthz``, sonst 404.
+    """The finished ASGI app: MCP under ``/<secret>/mcp``, ``/healthz``, else 404.
 
-    ``enable_sync`` steuert Hintergrundschleife *und* Decaid-Verbindung;
-    ohne Angabe laeuft beides, wenn ``SYNC_INTERVAL_MIN > 0`` ist. Tests setzen
-    es auf False und kommen damit ohne Netz aus.
+    ``enable_sync`` controls the background loop *and* the Decaid connection;
+    without it both run when ``SYNC_INTERVAL_MIN > 0``. Tests set it to False
+    and thereby get by without a network.
     """
     database = db or open_database(config.db_path)
     sync_on = config.sync_interval_min > 0 if enable_sync is None else enable_sync
@@ -1152,7 +1159,7 @@ def build_app(
 
 
 def _attach_sync_lifespan(app, config: Config, coordinator: SyncCoordinator) -> None:
-    """Haengt den Sync-Worker an den Lebenszyklus der bereits gebauten App."""
+    """Attaches the sync worker to the lifecycle of the already built app."""
     inner = app.router.lifespan_context
 
     @contextlib.asynccontextmanager

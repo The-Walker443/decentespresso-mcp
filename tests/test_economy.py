@@ -1,9 +1,9 @@
-"""Antwortoekonomie nach SPEC ss17.
+"""Response economy per SPEC §17.
 
-Haelt fest, was M6 erreicht hat: die Groesse der Tool-Definitionen, die
-Antwortgroessen der typischen Aufrufe und dass jeder Aufruf messbar ist. Die
-Schranken sind bewusst eng - sie sollen anschlagen, wenn etwas zurueckwaechst,
-nicht erst wenn es aus dem Ruder laeuft.
+Records what M6 achieved: the size of the tool definitions, the response sizes
+of the typical calls, and that every call is measurable. The bounds are
+deliberately tight - they should fire when something grows back, not only when
+it gets out of hand.
 """
 
 from __future__ import annotations
@@ -29,36 +29,36 @@ RECENT = RECENT_ID
 
 # --- Schranken (SPEC ss17.4) -------------------------------------------------
 #
-# Jede Schranke liegt knapp ueber dem gemessenen Wert - sie soll anschlagen,
-# wenn etwas zurueckwaechst, nicht erst bei einer Verdopplung. Gemessen am
-# Archiv aus den Fixtures.
+# Every bound sits just above the measured value - it should fire when
+# something grows back, not only on a doubling. Measured against the archive
+# built from the fixtures.
 
-#: Alle lesenden Tool-Definitionen zusammen, wie sie in jeder Anfrage
-#: mitgehen. Vor M6: 10399 B bei 9 Tools. Nach M6: 6876 B. Mit M8 kommen
-#: audit_archive und get_workflow dazu: 9323 B bei 11 Tools.
+#: All read-only tool definitions together, as they travel with every
+#: request. Before M6: 10399 B across 9 tools. After M6: 6876 B. M8 adds
+#: audit_archive and get_workflow: 9241 B across 11 tools (English texts came
+#: out marginally leaner than the German ones - 82 B less).
 #:
-#: Der aussagekraeftige Wert ist der **je Tool**, nicht die Summe - mehr
-#: Faehigkeiten kosten zwangslaeufig mehr, Geschwaetzigkeit nicht. Je Tool:
-#: 1155 B vor M6, 764 B nach M6, 848 B jetzt. Der Zuwachs steckt im
-#: JSON-Schema der neuen Parameter, nicht in den Beschreibungen.
+#: The telling figure is the one **per tool**, not the sum - more capability
+#: necessarily costs more, verbosity does not. Per tool: 1155 B before M6,
+#: 764 B after M6, 840 B now. The growth sits in the JSON schema of the new
+#: parameters, not in the descriptions.
 MAX_TOOL_DEFINITIONS = 9_800
 MAX_BYTES_PER_TOOL = 900
 
-#: get_shot("latest") ohne Punktarrays.
-#: Vor M6: 5021 B (Arrays waren Default). Jetzt: 2092 B.
+#: get_shot("latest") without point arrays.
+#: Before M6: 5021 B (arrays were the default). Now: 2092 B.
 MAX_GET_SHOT_LEAN = 2_300
 
-#: Mit WRITE_ENABLED kommen vier Schreibtools dazu (update_shot, update_bean,
-#: update_batch, set_workflow). Gemessen: 12267 B bei 15 Tools - 818 B je
-#: Tool und damit sparsamer als die 845 B, die M7 mit einem Schreibtool
-#: brauchte. Die Verhaltensregeln stehen seit M8 zentral in INSTRUCTIONS
-#: statt in jedem Docstring. Der Aufschlag faellt nur an, wenn Schreiben
-#: eingeschaltet ist.
+#: With WRITE_ENABLED four write tools join in (update_shot, update_bean,
+#: update_batch, set_workflow). Measured: 12123 B across 15 tools - 808 B per
+#: tool and therefore leaner than the 845 B M7 needed with a single write
+#: tool. Since M8 the behavioural rules live centrally in INSTRUCTIONS rather
+#: than in every docstring. The surcharge only applies when writing is on.
 MAX_TOOL_DEFINITIONS_WITH_WRITE = 12_800
 
-#: compare_shots mit zwei Shots inklusive Profilen. Jetzt: 4234 B.
-#: Vor M6 brauchte derselbe Informationsstand drei Aufrufe: compare_shots
-#: (1680 B) plus zweimal get_profile (je 1013 B) = 3706 B in drei Runden.
+#: compare_shots with two shots including profiles. Now: 4234 B.
+#: Before M6 the same information took three calls: compare_shots (1680 B)
+#: plus get_profile twice (1013 B each) = 3706 B across three round trips.
 MAX_COMPARE_TWO = 4_500
 
 
@@ -71,7 +71,7 @@ def _profile_of(detail: dict) -> dict:
 
 
 def _relink(db: Database, per_shot: dict[str, dict]) -> None:
-    """Haengt je Bezug eine eigene Profilversion an."""
+    """Attaches a profile version of its own to each shot."""
     for shot_id, profile in per_shot.items():
         pid, _ = db.upsert_profile(
             seen_at="2026-09-14T12:00:00Z", source="decaid",
@@ -114,9 +114,9 @@ async def call(mcp, name: str, args: dict | None = None):
 
 
 async def test_tool_definitions_stay_small(mcp) -> None:
-    """Die Definitionen gehen bei *jeder* Anfrage mit - doppelte Semantik kostet.
+    """The definitions travel with *every* request - duplicated semantics cost.
 
-    Die vollstaendige Begriffserklaerung steht in den Server-Anweisungen; die
+    The full glossary lives in the server instructions; the
     Docstrings verweisen nur darauf.
     """
     async with Client(mcp) as client:
@@ -126,17 +126,17 @@ async def test_tool_definitions_stay_small(mcp) -> None:
     total = size_of(definitions)
     assert total <= MAX_TOOL_DEFINITIONS, (
         f"Tool-Definitionen sind auf {total} B gewachsen, erlaubt sind "
-        f"{MAX_TOOL_DEFINITIONS}. Gehoert der neue Text in die INSTRUCTIONS?"
+        f"{MAX_TOOL_DEFINITIONS}. Does the new text belong in INSTRUCTIONS?"
     )
 
 
 async def test_no_tool_repeats_the_glossary(mcp) -> None:
-    """Die ausfuehrlichen Warntexte stehen genau einmal - in den Anweisungen."""
+    """The detailed explanations appear exactly once - in the instructions."""
     async with Client(mcp) as client:
         tools = await client.list_tools()
 
-    # Begriffe, die frueher in mehreren Docstrings ausbuchstabiert waren.
-    for phrase in ("60 % des Druckmaximums", "Puckaufbau", "kein Nullwert"):
+    # Terms that used to be spelled out across several docstrings.
+    for phrase in ("60 % of its maximum", "building the puck", "not 0"):
         carriers = [t.name for t in tools if phrase in (t.description or "")]
         assert not carriers, f"{phrase!r} steht wieder in {carriers}"
 
@@ -151,19 +151,19 @@ async def test_get_shot_lean_is_small(mcp) -> None:
 
     actual = size_of(payload)
     assert actual <= MAX_GET_SHOT_LEAN, (
-        f"get_shot('latest') ist {actual} B, erlaubt sind {MAX_GET_SHOT_LEAN}"
+        f"get_shot('latest') is {actual} B, allowed is {MAX_GET_SHOT_LEAN}"
     )
 
 
 async def test_compare_two_with_profiles_is_small(mcp) -> None:
     payload = await call(mcp, "compare_shots", {"ids": [REFERENCE, RECENT]})
-    # Vollstaendig in einem Aufruf: Metriken, Form und Profile.
+    # Complete in one call: metrics, shape and profiles.
     assert all("profile" in shot for shot in payload["shots"])
     assert all("curve_shape" in shot for shot in payload["shots"])
 
     actual = size_of(payload)
     assert actual <= MAX_COMPARE_TWO, (
-        f"compare_shots(2, mit Profilen) ist {actual} B, erlaubt sind {MAX_COMPARE_TWO}"
+        f"compare_shots(2, with profiles) is {actual} B, allowed is {MAX_COMPARE_TWO}"
     )
 
 
@@ -187,7 +187,7 @@ async def test_same_profile_needs_no_notice(db: Database, config: Config) -> Non
 
 
 async def test_cosmetic_difference_is_named_as_such(db: Database, config: Config) -> None:
-    """Zwei Versionen, die sich nur in den Notizen unterscheiden."""
+    """Two versions differing only in their notes."""
     base = _profile_of(corpus()[0])
     cosmetic = dict(base)
     cosmetic["notes"] = base.get("notes", "") + " (Tippfehler korrigiert)"
@@ -195,12 +195,12 @@ async def test_cosmetic_difference_is_named_as_such(db: Database, config: Config
 
     payload = await call(build_mcp(config, db), "compare_shots", {"ids": [REFERENCE, RECENT]})
     notice = payload["profile_notice"]
-    assert "kosmetisch" in notice
-    assert "Achtung" not in notice
+    assert "cosmetic" in notice
+    assert "Careful" not in notice
 
 
 async def test_different_targets_are_flagged_loudly(db: Database, config: Config) -> None:
-    """Unterschiedliche Sollwerte - die Differenz kommt dann vom Profil."""
+    """Different targets - the difference then comes from the profile."""
     base = _profile_of(corpus()[0])
     louder = dict(base)
     louder["target_weight"] = float(base.get("target_weight") or 36) + 12
@@ -208,8 +208,8 @@ async def test_different_targets_are_flagged_loudly(db: Database, config: Config
 
     payload = await call(build_mcp(config, db), "compare_shots", {"ids": [REFERENCE, RECENT]})
     notice = payload["profile_notice"]
-    assert "Achtung" in notice
-    assert "vom Profil kommen" in notice
+    assert "Careful" in notice
+    assert "from the profile" in notice
 
 
 async def test_missing_profile_is_reported(db: Database, config: Config) -> None:
@@ -217,7 +217,7 @@ async def test_missing_profile_is_reported(db: Database, config: Config) -> None
     db._conn.commit()
 
     payload = await call(build_mcp(config, db), "compare_shots", {"ids": [REFERENCE, RECENT]})
-    assert "unvollstaendig" in payload["profile_notice"]
+    assert "incomplete" in payload["profile_notice"]
 
 
 async def test_profiles_can_be_switched_off(mcp) -> None:
@@ -250,7 +250,7 @@ async def test_failed_calls_are_logged_without_leaking(mcp, caplog) -> None:
 
     caplog.set_level(logging.INFO, logger="decentespresso_mcp.telemetry")
     with pytest.raises(ToolError):
-        await call(mcp, "get_shot", {"id": "gibt-es-nicht"})
+        await call(mcp, "get_shot", {"id": "does-not-exist"})
 
     records = [r for r in caplog.records if r.getMessage() == "tool call failed"]
     assert len(records) == 1
@@ -259,7 +259,7 @@ async def test_failed_calls_are_logged_without_leaking(mcp, caplog) -> None:
 
 
 async def test_log_never_carries_arguments(mcp, caplog) -> None:
-    """Argumente sind der wahrscheinlichste Weg, auf dem etwas ins Log geraet."""
+    """Arguments are the likeliest route by which something reaches the log."""
     caplog.set_level(logging.INFO, logger="decentespresso_mcp.telemetry")
     await call(mcp, "list_shots", {"bean": "Tchibo", "limit": 3})
 
@@ -271,7 +271,7 @@ async def test_log_never_carries_arguments(mcp, caplog) -> None:
 
 
 async def test_write_tool_costs_what_it_is_worth(valid_env, db) -> None:
-    """Der Schreibmodus darf die Tool-Liste nicht sprengen (SPEC ss17.3/ss18.4)."""
+    """Write mode must not blow up the tool list (SPEC §17.3/§18.4)."""
     from decentespresso_mcp.sync import SyncCoordinator
     from decentespresso_mcp.visualizer_client import VisualizerClient
 
@@ -288,6 +288,6 @@ async def test_write_tool_costs_what_it_is_worth(valid_env, db) -> None:
     assert "update_shot" in {t.name for t in tools}
     total = size_of([t.model_dump(mode="json", exclude_none=True) for t in tools])
     assert total <= MAX_TOOL_DEFINITIONS_WITH_WRITE, (
-        f"Tool-Definitionen mit Schreibmodus: {total} B, erlaubt "
+        f"tool definitions with write mode: {total} B, allowed "
         f"{MAX_TOOL_DEFINITIONS_WITH_WRITE}"
     )

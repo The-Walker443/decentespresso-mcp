@@ -1,10 +1,9 @@
-"""Abgeleitete Shot-Metriken (SPEC ss8, Fassung 1.1).
+"""Derived shot metrics (SPEC §8, revision 1.1).
 
-Alle Definitionen sind deterministisch, damit Werte ueber Shots hinweg
-vergleichbar bleiben. Fehlt eine Grundlage, ist das Feld ``None`` und der Grund
-steht in ``warnings``.
+Every definition is deterministic, so values stay comparable across shots. If a
+basis is missing the field is ``None`` and the reason is given in ``warnings``.
 
-Einheiten: Druck bar, Fluss ml/s, Gewicht g, Temperatur Grad Celsius, Zeit s.
+Units: pressure bar, flow ml/s, weight g, temperature degrees Celsius, time s.
 """
 
 from __future__ import annotations
@@ -14,33 +13,33 @@ import math
 from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any
 
-if TYPE_CHECKING:  # pragma: no cover - nur fuer Typpruefer
+if TYPE_CHECKING:  # pragma: no cover - for type checkers only
     from .db import Database
 
 log = logging.getLogger(__name__)
 
-#: Wird mit dem Cache gespeichert. Hochzaehlen, sobald sich eine Definition
-#: aendert - dann rechnet der naechste Zugriff neu.
-#: 1 -> 2: Waagen-Plausibilitaet (untarierte Waage macht t_first_drops
-#:         ungueltig, Mittelfluss <= 0 macht flow_stability ungueltig).
-#: 2 -> 3: Quelle von pi_end. Decaid meldet den Maschinenzustand im Klartext
-#:         (``substate``) statt als Rechteckwelle; damit ist das Ende der
-#:         Praeinfusion abgelesen statt erschlossen (SPEC ss20.5).
+#: Stored alongside the cache. Bump it as soon as a definition changes - the
+#: next access then recomputes.
+#: 1 -> 2: scale plausibility (an untared scale invalidates t_first_drops, a
+#:         mean flow <= 0 invalidates flow_stability).
+#: 2 -> 3: source of pi_end. Decaid reports the machine state in plain text
+#:         (``substate``) instead of as a square wave, so the end of
+#:         preinfusion is read off rather than inferred (SPEC §20.5).
 METRICS_VERSION = 3
 
 FIRST_DROPS_WEIGHT_G = 0.3
-#: Fenster, in dem eine tarierte Waage noch 0 anzeigen muss.
+#: Window within which a tared scale must still read 0.
 TARE_CHECK_WINDOW_S = 0.5
 PI_END_PRESSURE_FRACTION = 0.6
 INFUSION_WINDOW_TAIL_S = 2.0
 DIP_WINDOW_S = 4.0
 END_WINDOW_S = 2.0
 
-#: Der allererste Wechsel liegt bei t < 0.1 s und markiert den Shot-Start,
-#: keinen Phasenwechsel.
+#: The very first change sits at t < 0.1 s and marks the start of the shot,
+#: not a phase transition.
 START_MARKER_MAX_S = 0.5
 
-#: Zustand waehrend der Praeinfusion und danach, wie Decaid sie meldet.
+#: The states during and after preinfusion, as Decaid reports them.
 SUBSTATE_PREINFUSION = "preinfusion"
 SUBSTATE_POURING = "pouring"
 
@@ -51,9 +50,9 @@ def compute_metrics(
     dose_g: float | None = None,
     yield_g: float | None = None,
 ) -> dict[str, Any]:
-    """Metriken aus der Zeitreihe eines Shots.
+    """Metrics from a shot's time series.
 
-    ``series`` sind Zeilen aus ``shot_series`` (aufsteigend nach ``elapsed``).
+    ``series`` are rows from ``shot_series`` (ascending by ``elapsed``).
     """
     warnings: list[str] = []
     rows = sorted(series, key=lambda r: r["elapsed"])
@@ -70,15 +69,15 @@ def compute_metrics(
 
     max_pressure_global, t_max_global = _argmax(times, pressure)
     if max_pressure_global is None:
-        warnings.append("Keine Druckwerte - druckbasierte Metriken entfallen.")
+        warnings.append("No pressure readings - pressure metrics are dropped.")
 
     boundaries = phase_boundaries(rows)
     if not boundaries:
-        warnings.append("Keine Phasenmarken der Maschine - pi_end per Heuristik.")
+        warnings.append("No machine phase markers - pi_end from the heuristic.")
 
     pi_end, pi_end_source = _pi_end(rows, times, pressure, boundaries, max_pressure_global)
     if pi_end is None:
-        warnings.append("pi_end nicht bestimmbar - Bezugsphase bleibt offen.")
+        warnings.append("pi_end not determinable - the pour phase stays open.")
 
     # --- Infusionsmaximum (SPEC ss8 1.1) --------------------------------------
     peak_pressure_infusion: float | None = None
@@ -104,13 +103,13 @@ def compute_metrics(
     avg_flow_pour = _mean(pour_flow)
     flow_stability = _coefficient_of_variation(pour_flow)
     if avg_flow_pour is not None and avg_flow_pour <= 0:
-        # Ein Variationskoeffizient um einen Mittelwert <= 0 ist nicht
-        # interpretierbar (er wird negativ). Ursache ist praktisch immer eine
-        # Waage, die waehrend des Bezugs gesprungen ist.
+        # A coefficient of variation around a mean <= 0 cannot be interpreted
+        # (it turns negative). The cause is almost always a scale that jumped
+        # during the pour.
         flow_stability = None
         warnings.append(
-            f"Mittlerer Bezugsfluss ist {avg_flow_pour:.2f} ml/s (<= 0) - "
-            "flow_stability entfaellt, Waagenwerte pruefen."
+            f"Mean pour flow is {avg_flow_pour:.2f} ml/s (<= 0) - "
+            "flow_stability is dropped, check the scale readings."
         )
     pressure_trend_pour = _slope(
         [times[i] for i in pour], [pressure[i] for i in pour]
@@ -118,7 +117,7 @@ def compute_metrics(
     temp_basket_mean = _mean(pour_temp)
     temp_basket_std = _stdev(pour_temp)
     if not pour_temp:
-        warnings.append("Keine Korbtemperatur in der Bezugsphase.")
+        warnings.append("No basket temperature during the pour phase.")
 
     # --- Ende -----------------------------------------------------------------
     end_window = _slice(times, duration_s - END_WINDOW_S, duration_s)
@@ -138,28 +137,28 @@ def compute_metrics(
     )
     if t_first_drops is None:
         warnings.append(
-            f"Gewicht ueberschreitet nie {FIRST_DROPS_WEIGHT_G} g - keine Waage?"
+            f"Weight never exceeds {FIRST_DROPS_WEIGHT_G} g - no scale?"
         )
     elif tare_offset is not None and tare_offset > FIRST_DROPS_WEIGHT_G:
-        # In der ersten halben Sekunde kann noch nichts in der Tasse sein - die
-        # Maschine praeinfundiert sekundenlang. Zeigt die Waage dort schon
-        # Gewicht, war sie nicht tariert, und t_first_drops waere eine Aussage
-        # ueber die Tasse statt ueber den Bezug (SPEC ss8: fehlende Grundlage
-        # -> null plus Warnung).
+        # Nothing can be in the cup in the first half second - the machine
+        # preinfuses for seconds. If the scale already shows weight there it
+        # was not tared, and t_first_drops would say something about the cup
+        # rather than the shot (SPEC §8: a missing basis
+        # -> null plus a warning).
         t_first_drops = None
         warnings.append(
-            f"Waage zeigt in der ersten Sekunde bereits {tare_offset:.1f} g "
-            "(nicht tariert) - t_first_drops nicht bestimmbar."
+            f"Scale already reads {tare_offset:.1f} g in the first second "
+            "(not tared) - t_first_drops not determinable."
         )
     if measured and min(measured) < 0:
         warnings.append(
-            f"Gewicht wird negativ (min {min(measured):.1f} g) - "
-            "Waage vermutlich angestossen; flussbasierte Werte unsicher."
+            f"Weight goes negative (min {min(measured):.1f} g) - "
+            "the scale was probably knocked; flow-based values are unreliable."
         )
 
     ratio = round(yield_g / dose_g, 3) if dose_g and yield_g else None
     if ratio is None:
-        warnings.append("Dosis oder Bezugsgewicht fehlt - ratio entfaellt.")
+        warnings.append("Dose or yield missing - ratio is dropped.")
 
     return {
         "metrics_version": METRICS_VERSION,
@@ -185,10 +184,10 @@ def compute_metrics(
 
 
 def metrics_for_shot(db: Database, shot_id: str, *, refresh: bool = False) -> dict[str, Any] | None:
-    """Metriken aus dem Cache, sonst berechnen und ablegen (SPEC ss8).
+    """Metrics from the cache, otherwise computed and stored (SPEC §8).
 
-    ``None``, wenn der Shot nicht existiert. Der Cache verfaellt automatisch,
-    sobald ``METRICS_VERSION`` steigt oder der Shot neu geschrieben wurde.
+    ``None`` if the shot does not exist. The cache expires on its own as soon
+    as ``METRICS_VERSION`` rises or the shot is rewritten.
     """
     basics = db.shot_basics(shot_id)
     if basics is None:
@@ -218,8 +217,8 @@ def warm_metrics_cache(db: Database) -> int:
     return len(pending)
 
 
-#: SPEC ss9.1 - Kanalnamen in der kompakten Kurvenausgabe. Kurz, weil jeder
-#: Buchstabe pro Messpunkt einmal im Antwortbudget landet.
+#: SPEC §9.1 - channel names in the compact curve output. Short, because every
+#: letter lands in the response budget once per data point.
 CURVE_CHANNELS = {
     "p": "pressure",
     "fi": "flow_in",
@@ -241,19 +240,20 @@ def downsample_curve(
 ) -> dict[str, list[float | None]]:
     """Zeitreihe auf ``max_points`` ausduennen (SPEC ss9.1).
 
-    Gleichmaessig ueber die **Zeit**, nicht ueber den Index - bei ungleichen
-    Abtastabstaenden bliebe sonst ein dicht abgetasteter Abschnitt
-    ueberrepraesentiert. Garantiert enthalten sind erster und letzter Punkt
-    sowie jeder Zeitpunkt aus ``keep_times`` (die beiden Druckmaxima).
+    Evenly across **time**, not across the index - with uneven sampling a
+    densely sampled stretch would otherwise stay over-represented. The first
+    and last point are guaranteed, as is every moment in ``keep_times`` (the
+    two pressure maxima).
 
-    Diese Pflichtpunkte haben Vorrang vor ``max_points``: ist das Budget
-    kleiner als ihre Anzahl, kommen trotzdem alle zurueck. Andernfalls koennte
-    ein ``max_points=2`` den Druckpeak wegschneiden, obwohl er als garantiert
-    beschrieben ist. Die Kurve ist damit hoechstens vier Punkte laenger als
+    These mandatory points take precedence over ``max_points``: if the budget
+    is smaller than their number they all come back anyway. Otherwise a
+    ``max_points=2`` could cut away the pressure peak even though it is
+    described as guaranteed. The curve is thus at most four points longer than
     angefordert.
 
     Rueckgabe sind parallele Arrays (``t``, ``p``, ``fi``, ``fo``, ``w``,
-    ``tb``) statt einer Objektliste - das spart rund 60 % Zeichen. Kanaele
+    ``tb``) rather than a list of objects - that saves about 60 % of the
+    characters. Channels
     ohne einen einzigen Messwert fehlen ganz.
     """
     if not rows:
@@ -267,7 +267,7 @@ def downsample_curve(
         if wanted is not None:
             mandatory.add(min(range(len(times)), key=lambda i: abs(times[i] - wanted)))
 
-    # Pflichtpunkte duerfen nie wegfallen - notfalls wird das Budget angehoben.
+    # Mandatory points must never drop out - the budget is raised if need be.
     effective = max(budget, len(mandatory))
 
     if len(ordered) <= effective:
@@ -280,8 +280,8 @@ def downsample_curve(
             for step in range(slots):
                 target = times[0] + span * step / max(1, slots - 1)
                 picked.add(min(range(len(times)), key=lambda i: abs(times[i] - target)))
-        # Die Rasterpunkte koennen auf Pflichtpunkte fallen; dann bleibt die
-        # Auswahl kleiner als das Budget, nie groesser.
+        # Grid points can coincide with mandatory ones; the selection then stays
+        # smaller than the budget, never larger.
         chosen = sorted(picked)[:effective]
 
     curve: dict[str, list[float | None]] = {
@@ -300,14 +300,14 @@ def downsample_curve(
 
 # --------------------------------------------------------------- Kurvenform
 #
-# SPEC ss17: fuer die meisten Fragen genuegt die *Form* des Verlaufs. Sie kostet
-# rund ein Zehntel der Punktarrays und laesst sich ohne Rechnen lesen.
+# SPEC §17: for most questions the *shape* of the curve is enough. It costs
+# about a tenth of the point arrays and can be read without arithmetic.
 
-#: Unterhalb dieser Aenderung ueber einen Abschnitt gilt der Verlauf als konstant.
+#: Below this change across a segment the curve counts as steady.
 FLAT_THRESHOLD = {"p": 0.2, "fo": 0.15}
 
-#: Maximale Abweichung von der Geraden zwischen Anfangs- und Endpunkt, als
-#: Anteil der Spannweite im Abschnitt. Darueber heisst der Verlauf nicht linear.
+#: Maximum deviation from the straight line between start and end point, as a
+#: fraction of the range in that segment. Above it the curve is not linear.
 LINEARITY_TOLERANCE = 0.15
 
 SHAPE_CHANNELS = {"p": "pressure", "fo": "flow_out"}
@@ -316,14 +316,14 @@ SHAPE_CHANNELS = {"p": "pressure", "fo": "flow_out"}
 def curve_shape(
     rows: Sequence[Mapping[str, Any]], metrics: Mapping[str, Any] | None = None
 ) -> dict[str, Any]:
-    """Abschnittsweise Beschreibung des Verlaufs statt roher Messpunkte.
+    """A segment-by-segment description of the curve instead of raw data points.
 
-    Die Abschnittsgrenzen sind die Phasenmarken der Maschine - dieselbe Quelle
-    wie ``pi_end``. Hat ein Bezug keine Marken, dienen ``pi_end`` und das Ende
-    als Grenzen; ``source`` haelt fest, welcher Weg griff.
+    The segment boundaries are the machine's phase markers - the same source as
+    ``pi_end``. If a shot has no markers, ``pi_end`` and the end of the shot
+    serve as boundaries; ``source`` records which path was taken.
 
-    Je Abschnitt und Kanal: Anfangs- und Endwert, Richtung und ob der Verlauf
-    linear ist. ``p`` ist der Druck in bar, ``fo`` der aus der Waage abgeleitete
+    Per segment and channel: starting and ending value, direction, and whether
+    the curve is linear. ``p`` is pressure in bar, ``fo`` the scale-derived
     Fluss in ml/s.
     """
     ordered = sorted(rows, key=lambda r: r["elapsed"])
@@ -373,7 +373,7 @@ def curve_shape(
 def _describe(
     times: Sequence[float], values: Sequence[float | None], channel: str
 ) -> dict[str, Any] | None:
-    """Anfang, Ende, Richtung und Linearitaet eines Kanals im Abschnitt."""
+    """Start, end, direction and linearity of one channel within a segment."""
     pairs = [(t, v) for t, v in zip(times, values, strict=True) if v is not None]
     if len(pairs) < 2:
         return None
@@ -381,7 +381,7 @@ def _describe(
     first, last = pairs[0][1], pairs[-1][1]
     delta = last - first
     flat = FLAT_THRESHOLD[channel]
-    direction = "flat" if abs(delta) < flat else ("rising" if delta > 0 else "falling")
+    direction = "steady" if abs(delta) < flat else ("rising" if delta > 0 else "falling")
 
     digits = 1 if channel == "p" else 2
     return {
@@ -393,10 +393,10 @@ def _describe(
 
 
 def _is_linear(pairs: Sequence[tuple[float, float]], flat: float) -> bool:
-    """Weicht der Verlauf nennenswert von der Geraden zwischen den Enden ab?
+    """Does the curve deviate noticeably from the straight line between its ends?
 
-    Ein flacher Abschnitt gilt immer als linear - dort waere die relative
-    Abweichung durch die winzige Spannweite sonst beliebig gross.
+    A flat segment always counts as linear - the tiny range there would
+    otherwise make the relative deviation arbitrarily large.
     """
     if len(pairs) < 3:
         return True
@@ -413,11 +413,11 @@ def _is_linear(pairs: Sequence[tuple[float, float]], flat: float) -> bool:
 
 
 def substate_change(rows: Sequence[Mapping[str, Any]], target: str) -> float | None:
-    """Erster Zeitpunkt, an dem die Maschine ``target`` meldet.
+    """The first moment at which the machine reports ``target``.
 
-    ``state.substate`` ist Decaids Klartextzustand des Bezugs
-    (``preparingForShot`` -> ``preinfusion`` -> ``pouring``). Das ist eine
-    Ansage der Maschine, kein Schwellwert.
+    ``state.substate`` is Decaid's plain-text state of the shot
+    (``preparingForShot`` -> ``preinfusion`` -> ``pouring``). That is the
+    machine speaking, not a threshold.
     """
     for row in rows:
         if str(row.get("substate") or "") == target:
@@ -426,11 +426,11 @@ def substate_change(rows: Sequence[Mapping[str, Any]], target: str) -> float | N
 
 
 def frame_boundaries(rows: Sequence[Mapping[str, Any]]) -> list[float]:
-    """Wechsel der Profilschrittnummer, ohne den Rest des Vorgaengers.
+    """Changes of the profile step number, without the predecessor's leftovers.
 
-    Nachgemessen am 2026-09-14: ``profileFrame`` steht auf dem ersten Messpunkt
-    noch auf dem Wert des vorangegangenen Bezugs - der Wechsel bei t < 0.5 s ist
-    also kein Schrittwechsel, sondern das Aufraeumen. Er wird verworfen (SPEC
+    Measured on 2026-09-14: on the first data point ``profileFrame`` still
+    holds the value of the preceding shot - so the change at t < 0.5 s is not a
+    step change but the cleanup. It is discarded (SPEC
     ss20.5).
     """
     boundaries: list[float] = []
@@ -444,11 +444,11 @@ def frame_boundaries(rows: Sequence[Mapping[str, Any]]) -> list[float]:
 
 
 def phase_boundaries(rows: Sequence[Mapping[str, Any]]) -> list[float]:
-    """Phasengrenzen der Maschine, beste verfuegbare Quelle zuerst.
+    """The machine's phase boundaries, best available source first.
 
-    ``substate`` benennt die Phase, ``profile_frame`` nur den Schritt. Wo beides
-    da ist, gilt der Zustand: er sagt, *was* passiert, nicht bloss *dass*
-    gewechselt wurde.
+    ``substate`` names the phase, ``profile_frame`` only the step. Where both
+    are present the state wins: it says *what* is happening, not merely *that*
+    something changed.
     """
     ordered = sorted(rows, key=lambda r: r["elapsed"])
     marks: list[float] = []
@@ -471,18 +471,19 @@ def _pi_end(
     boundaries: Sequence[float],
     max_pressure_global: float | None,
 ) -> tuple[float | None, str | None]:
-    """Ende der Praeinfusion (SPEC ss8 1.1, ss20.5).
+    """End of preinfusion (SPEC §8 1.1, §20.5).
 
-    Drei Quellen, in dieser Reihenfolge; ``pi_end_source`` nennt die tatsaechlich
-    genutzte:
+    Three sources, in this order; ``pi_end_source`` names the one actually
+    used:
 
-    ``substate``       Die Maschine meldet den Uebergang nach ``pouring``
-                       im Klartext. Abgelesen, nicht erschlossen.
-    ``profile_frame``  Ohne Zustandsangabe die letzte Schrittgrenze vor dem
-                       Druckanker. Werte vor dem Shot-Start zaehlen nicht.
-    ``heuristic``      Ohne beides der Zeitpunkt, an dem der Druck erstmals
-                       ``0.6 x max_pressure_global`` erreicht. Eine Naeherung -
-                       nicht auf die Zehntelsekunde vergleichbar.
+    ``substate``       The machine reports the change to ``pouring`` in plain
+                       text. Read off, not inferred.
+    ``profile_frame``  Without a state report, the last step boundary before
+                       the pressure anchor. Values before the shot start do
+                       not count.
+    ``heuristic``      Without either, the moment pressure first reaches
+                       ``0.6 x max_pressure_global``. An approximation - not
+                       comparable down to a tenth of a second.
     """
     ordered = sorted(rows, key=lambda r: r["elapsed"])
     pouring = substate_change(ordered, SUBSTATE_POURING)

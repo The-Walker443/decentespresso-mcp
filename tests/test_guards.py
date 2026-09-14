@@ -1,8 +1,8 @@
-"""Waechter ueber dem Archiv (SPEC ss20.7).
+"""Guards over the archive (SPEC §20.7).
 
-Reine Funktionen, deshalb reine Tests: Zeilen rein, Befunde raus, kein Netz und
-keine Datenbank. Die Uhr wird uebergeben - sonst haengt das Ergebnis am Tag, an
-dem der Test laeuft.
+Pure functions, therefore pure tests: rows in, findings out, no network and no
+database. The clock is handed in - otherwise the result would depend on the
+day the test runs.
 """
 
 from __future__ import annotations
@@ -47,7 +47,7 @@ def batch(bid: str = "b1", *, roast: str | None = "2026-09-01",
             "frozen": 1 if frozen else 0, "unfreeze_date": thaw}
 
 
-# ------------------------------------------- Regel 1: Mahlgrad
+# -------------------------------------------- Rule 1: grind setting
 
 
 def test_a_batch_change_without_a_grind_change_is_flagged() -> None:
@@ -68,7 +68,7 @@ def test_a_batch_change_with_a_grind_change_is_fine() -> None:
 
 
 def test_only_the_shot_at_the_change_is_flagged() -> None:
-    """Sonst meldete jede Charge so lange, bis jemand die Muehle anfasst."""
+    """Otherwise every batch would keep reporting until someone touches the grinder."""
     findings = grind_not_adjusted([
         shot("a", at="2026-09-10T08:00:00Z", batch="b1"),
         shot("b", at="2026-09-11T08:00:00Z", batch="b2"),
@@ -78,7 +78,7 @@ def test_only_the_shot_at_the_change_is_flagged() -> None:
 
 
 def test_an_unknown_batch_does_not_count_as_a_change() -> None:
-    """Aus der de1app importierte Bezuege haben oft keine Charge."""
+    """Shots imported from the de1app often have no batch."""
     assert grind_not_adjusted([
         shot("a", at="2026-09-10T08:00:00Z", batch="b1"),
         shot("b", at="2026-09-11T08:00:00Z", batch=None),
@@ -90,7 +90,7 @@ def test_a_single_shot_cannot_be_a_change() -> None:
     assert grind_not_adjusted([shot("a", at="2026-09-10T08:00:00Z")]) == []
 
 
-# ------------------------------------------- Regel 2: Bohnenalter
+# ----------------------------------------------- Rule 2: bean age
 
 
 def test_plain_age_without_freezing() -> None:
@@ -99,7 +99,7 @@ def test_plain_age_without_freezing() -> None:
 
 
 def test_freezing_stops_the_clock() -> None:
-    """Zehn Tage nach der Roestung eingefroren - dabei bleibt es."""
+    """Frozen ten days after roasting - and there it stays."""
     age, certain = bean_age_days(
         batch(roast="2026-08-01", freeze="2026-08-11", frozen=True), NOW
     )
@@ -116,9 +116,9 @@ def test_a_known_thaw_date_is_subtracted() -> None:
 
 
 def test_an_unknown_thaw_date_yields_an_upper_bound() -> None:
-    """Decaid fuehrt kein Auftaudatum (am 2026-09-14 gegen die API geprueft).
+    """Decaid keeps no thaw date (checked against the API on 2026-09-14).
 
-    Eine Zahl, die man nicht belegen kann, wird nicht als sicher ausgegeben.
+    A number that cannot be substantiated is not reported as certain.
     """
     age, certain = bean_age_days(
         batch(roast="2026-08-01", freeze="2026-08-11", frozen=False), NOW
@@ -128,7 +128,7 @@ def test_an_unknown_thaw_date_yields_an_upper_bound() -> None:
 
 
 def test_age_is_measured_at_the_shot_not_today() -> None:
-    """Sonst altern alte Bezuege rueckwirkend in die Warnung hinein."""
+    """Otherwise old shots would age retroactively into the warning."""
     age, _ = bean_age_days(
         batch(roast="2026-08-01"), NOW,
         started=datetime(2026, 8, 5, tzinfo=UTC),
@@ -153,7 +153,7 @@ def test_stale_beans_reports_the_shot() -> None:
     assert len(findings) == 1
     assert findings[0].rule == RULE_BEAN_AGE
     assert findings[0].detail["certain"] is True
-    assert "75 Tage" in findings[0].message
+    assert "75 days" in findings[0].message
 
 
 def test_an_uncertain_age_says_so_in_the_message() -> None:
@@ -162,7 +162,7 @@ def test_an_uncertain_age_says_so_in_the_message() -> None:
         {"b1": batch(roast="2026-07-01", freeze="2026-07-10", frozen=False)},
         at=NOW, warn_days=42,
     )
-    assert "mindestens" in findings[0].message
+    assert "at least" in findings[0].message
     assert findings[0].detail["certain"] is False
 
 
@@ -175,12 +175,12 @@ def test_a_fresh_bean_is_not_flagged() -> None:
 
 def test_a_shot_without_a_known_batch_is_skipped() -> None:
     assert stale_beans(
-        [shot("a", at="2026-09-14T08:00:00Z", batch="gibt-es-nicht")],
+        [shot("a", at="2026-09-14T08:00:00Z", batch="does-not-exist")],
         {"b1": batch()}, at=NOW,
     ) == []
 
 
-# ------------------------------------------- Regel 3: fehlende Bewertung
+# ----------------------------------------- Rule 3: missing rating
 
 
 def test_an_unrated_shot_inside_the_window_is_flagged() -> None:
@@ -194,11 +194,11 @@ def test_an_unrated_shot_inside_the_window_is_flagged() -> None:
 
 
 def test_a_long_past_shot_is_left_alone() -> None:
-    """Am Bestand sind 145 von 169 Bezuegen unbewertet.
+    """145 of the 169 shots in the archive are unrated.
 
-    Ohne Obergrenze meldete die Regel 83 Prozent des Archivs - und was so
-    oft anschlaegt, wird im Ganzen ignoriert. Wer einen Bezug von vorletzter
-    Woche nicht bewertet hat, tut es nicht mehr.
+    Without an upper bound the rule reported 83 percent of the archive - and
+    what fires that often gets ignored wholesale. Whoever has not rated a shot
+    from the week before last will not do so now.
     """
     assert missing_rating(
         [shot("alt", at="2026-07-01T08:00:00Z", enjoyment=None)],
@@ -207,7 +207,7 @@ def test_a_long_past_shot_is_left_alone() -> None:
 
 
 def test_a_recent_unrated_shot_is_left_alone() -> None:
-    """Man trinkt ja erst - direkt danach ist keine Bewertung normal."""
+    """One drinks it first - right afterwards no rating is normal."""
     assert missing_rating(
         [shot("a", at="2026-09-14T08:00:00Z", enjoyment=None)],
         at=NOW, grace_hours=36,
@@ -221,22 +221,22 @@ def test_a_rated_shot_is_never_flagged() -> None:
 
 
 def test_a_zero_rating_counts_as_rated() -> None:
-    """Haengt an der Normalisierung: im Archiv ist 0 eine Eingabe, nie ein
-    Vorgabewert (SPEC ss20.4). Sonst meldete die Regel 75 Bezuege der
-    Import-Aera."""
+    """Depends on the normalisation: in the archive 0 is an input, never a
+    default (SPEC §20.4). Otherwise the rule would report 75 shots of the
+    import era."""
     assert missing_rating(
         [shot("a", at="2026-08-01T08:00:00Z", enjoyment=0.0)], at=NOW
     ) == []
 
 
-# ------------------------------------------- Regel 4: Dosis
+# ------------------------------------------------- Rule 4: weights
 
 
 def test_a_yield_far_from_the_target_is_flagged() -> None:
-    """Die Dosis ist in dieser Maschine der Sollwert - das Gewicht misst.
+    """On this machine the dose *is* the target - the yield is what gets measured.
 
-    Am Bestand gemessen: in allen 165 Faellen ist die Dosis exakt gleich dem
-    Soll. Ein Vergleich beider verglich eine Zahl mit sich selbst.
+    Measured against the archive: in all 165 cases the dose exactly equals the
+    target. Comparing the two compared a number with itself.
     """
     findings = dose_outliers(
         [shot("a", at="2026-09-14T08:00:00Z", yielded=29.5, target_yield=45.0)],
@@ -245,17 +245,17 @@ def test_a_yield_far_from_the_target_is_flagged() -> None:
     assert len(findings) == 1
     assert findings[0].rule == RULE_DOSE_OUTLIER
     assert findings[0].detail["delta_g"] == -15.5
-    assert findings[0].detail["basis"] == "Soll"
+    assert findings[0].detail["basis"] == "target"
 
 
 def test_an_impossible_dose_is_a_scale_fault() -> None:
-    """0 g heisst: die Waage war nicht verbunden. Am Bestand kommt das vor."""
+    """0 g means the scale was not connected. That occurs in the archive."""
     findings = dose_outliers(
         [shot("a", at="2026-09-14T08:00:00Z", dose=0.0)]
     )
     assert len(findings) == 1
-    assert "unmoeglich" in findings[0].message
-    assert "Waage" in findings[0].message
+    assert "impossible" in findings[0].message
+    assert "scale" in findings[0].message
 
 
 def test_a_yield_inside_the_tolerance_is_fine() -> None:
@@ -274,11 +274,11 @@ def test_without_a_target_the_batch_median_is_the_yardstick() -> None:
     ] + [shot("weit", at="2026-09-10T08:00:00Z", yielded=20.0, target_yield=None)]
     findings = dose_outliers(shots, tolerance_g=1.0)
     assert [f.shot_id for f in findings] == ["weit"]
-    assert findings[0].detail["basis"] == "Median der Charge"
+    assert findings[0].detail["basis"] == "batch median"
 
 
 def test_too_few_shots_make_no_yardstick() -> None:
-    """Sonst bestimmte ein einzelner Fehlgriff selbst den Massstab."""
+    """Otherwise a single mishap would set the yardstick itself."""
     assert dose_outliers([
         shot("a", at="2026-09-10T08:00:00Z", yielded=45.0, target_yield=None),
         shot("b", at="2026-09-11T08:00:00Z", yielded=20.0, target_yield=None),
@@ -291,7 +291,7 @@ def test_a_shot_without_weights_is_skipped() -> None:
     ) == []
 
 
-# ------------------------------------------- Zusammenspiel
+# ------------------------------------------------- All together
 
 
 def test_run_rules_applies_every_enabled_rule() -> None:
@@ -339,10 +339,10 @@ def test_the_limit_caps_the_answer() -> None:
 
 @pytest.mark.parametrize("rule", ALL_RULES)
 def test_no_finding_ever_carries_free_text(rule: str) -> None:
-    """Befunde gehen per ntfy aus dem Haus - Notizen bleiben hier.
+    """Findings leave the house over ntfy - notes stay here.
 
-    Die Eingabe traegt absichtlich eine Notiz und einen Bohnennamen; beides
-    darf in keinem Feld des Befunds auftauchen.
+    The input deliberately carries a note and a bean name; neither may appear
+    in any field of the finding.
     """
     secret = "streng-vertraulich"
     shots = [
@@ -355,6 +355,6 @@ def test_no_finding_ever_carries_free_text(rule: str) -> None:
     findings = run_rules(shots, {"b1": batch("b1", roast="2026-01-01"),
                                  "b2": batch("b2", roast="2026-01-01")},
                          at=NOW, enabled=[rule])
-    assert findings, "sonst prueft der Test nichts"
+    assert findings, "otherwise the test checks nothing"
     for finding in findings:
         assert secret not in str(finding.as_dict())
