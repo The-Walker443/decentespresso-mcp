@@ -33,19 +33,28 @@ RECENT = RECENT_ID
 # wenn etwas zurueckwaechst, nicht erst bei einer Verdopplung. Gemessen am
 # Archiv aus den Fixtures.
 
-#: Alle neun Tool-Definitionen zusammen, wie sie in jeder Anfrage mitgehen.
-#: Vor M6: 10399 B. Jetzt: 6876 B. Davon sind rund 3600 B JSON-Schema der
-#: Parameter - das ist der Boden, tiefer geht es nur ueber weniger Parameter.
-MAX_TOOL_DEFINITIONS = 7_200
+#: Alle lesenden Tool-Definitionen zusammen, wie sie in jeder Anfrage
+#: mitgehen. Vor M6: 10399 B bei 9 Tools. Nach M6: 6876 B. Mit M8 kommen
+#: audit_archive und get_workflow dazu: 9323 B bei 11 Tools.
+#:
+#: Der aussagekraeftige Wert ist der **je Tool**, nicht die Summe - mehr
+#: Faehigkeiten kosten zwangslaeufig mehr, Geschwaetzigkeit nicht. Je Tool:
+#: 1155 B vor M6, 764 B nach M6, 848 B jetzt. Der Zuwachs steckt im
+#: JSON-Schema der neuen Parameter, nicht in den Beschreibungen.
+MAX_TOOL_DEFINITIONS = 9_800
+MAX_BYTES_PER_TOOL = 900
 
 #: get_shot("latest") ohne Punktarrays.
 #: Vor M6: 5021 B (Arrays waren Default). Jetzt: 2092 B.
 MAX_GET_SHOT_LEAN = 2_300
 
-#: Mit WRITE_ENABLED kommt update_shot dazu (1568 B; der Docstring traegt die
-#: Verhaltensregeln fuer das Modell und die Feldliste, SPEC ss18.4). Gemessen:
-#: 8446 B. Der Aufschlag faellt nur an, wenn Schreiben eingeschaltet ist.
-MAX_TOOL_DEFINITIONS_WITH_WRITE = 8_800
+#: Mit WRITE_ENABLED kommen vier Schreibtools dazu (update_shot, update_bean,
+#: update_batch, set_workflow). Gemessen: 12267 B bei 15 Tools - 818 B je
+#: Tool und damit sparsamer als die 845 B, die M7 mit einem Schreibtool
+#: brauchte. Die Verhaltensregeln stehen seit M8 zentral in INSTRUCTIONS
+#: statt in jedem Docstring. Der Aufschlag faellt nur an, wenn Schreiben
+#: eingeschaltet ist.
+MAX_TOOL_DEFINITIONS_WITH_WRITE = 12_800
 
 #: compare_shots mit zwei Shots inklusive Profilen. Jetzt: 4234 B.
 #: Vor M6 brauchte derselbe Informationsstand drei Aufrufe: compare_shots

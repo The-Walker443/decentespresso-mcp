@@ -29,11 +29,18 @@ from starlette.responses import PlainTextResponse, Response
 from . import __version__, milestone
 from .config import Config
 from .db import Database
-from .decaid_client import DecaidClient, DecaidError
+from .decaid_client import (
+    VERIFIED_DECAID_VERSION,
+    DecaidClient,
+    DecaidError,
+    DecaidUnreachable,
+)
+from .guards import ALL_RULES, run_rules
 from .metrics import METRICS_VERSION, curve_shape, downsample_curve, metrics_for_shot
 from .sync import (
     QUICK_SYNC_MAX_AGE_S,
     STATE_BACKFILL_DONE,
+    STATE_DECAID_VERSION,
     STATE_LAST_REACHABLE,
     STATE_LAST_RESULT,
     STATE_LAST_SYNC,
@@ -42,7 +49,7 @@ from .sync import (
     periodic_sync,
 )
 from .telemetry import CallMetricsMiddleware
-from .writes import ValidationError, validate_fields
+from .writes import BATCH, BEAN, WORKFLOW, Ruleset, ValidationError, validate_fields
 
 log = logging.getLogger(__name__)
 
@@ -69,9 +76,14 @@ NOTES_PREVIEW_CHARS = 160
 READ_ONLY = {"readOnlyHint": True, "openWorldHint": False}
 
 INSTRUCTIONS = """\
-Lokales Archiv der Espresso-Bezuege einer Decent DE1. Quelle ist
-visualizer.coffee; dieser Server ist die vollstaendige Historie und die
-Grundlage fuer Analysen.
+Lokales Archiv der Espresso-Bezuege einer Decent DE1. Quelle ist Decaid auf
+dem Tablet an der Maschine, im eigenen Netz; dieser Server ist die
+vollstaendige Historie und die Grundlage fuer Analysen.
+
+TABLET AUS ist kein Fehler. Es laeuft nur, waehrend Kaffee gemacht wird.
+Meldet ein Tool `waiting_for_tablet` oder steht es im Status, heisst das:
+gerade nicht erreichbar, das Archiv antwortet trotzdem. Das so sagen und
+nicht als Stoerung darstellen.
 
 EINHEITEN (durchgaengig, nie mitgeliefert): Druck bar, Fluss ml/s,
 Gewicht und Dosis g, Temperatur Grad Celsius, Zeit s. Zeitstempel sind ISO8601
@@ -114,8 +126,8 @@ VERLAUF - zwei Darstellungen, und die erste reicht fast immer:
   Richtung (`rising` | `falling` | `flat`) und `linear` (ob der Verlauf
   zwischen den Enden gerade ist oder gekruemmt). `markers` nennt die markanten
   Zeitpunkte, `source` sagt, woher die Abschnittsgrenzen stammen
-  (`state_change` = Maschinenmarken, `markers` = ersatzweise aus `pi_end`,
-  `none` = nur ein Abschnitt). Damit lassen sich Fragen nach Anstieg, Abfall,
+  (`machine` = Phasenmarken der Maschine, `markers` = ersatzweise aus
+  `pi_end`, `none` = nur ein Abschnitt). Damit lassen sich Fragen nach Anstieg, Abfall,
   Plateau, Dauer einer Phase und Vergleich zweier Bezuege beantworten, ohne
   eine einzige Rohzahl.
 
@@ -124,7 +136,29 @@ VERLAUF - zwei Darstellungen, und die erste reicht fast immer:
   Sie sind rund zehnmal so gross wie `curve_shape`. Nur anfordern, wenn es um
   Formdetails geht, die `curve_shape` nicht hergibt - etwa Schwingungen
   innerhalb eines Abschnitts. Fehlt ein Kanal, gab es dafuer keinen einzigen
-  Messwert.\
+  Messwert.
+
+WAECHTER - `audit_archive` prueft vier Regeln. Was sie bedeuten:
+
+- `grind_not_adjusted` - die Charge wurde gewechselt, der Mahlgrad blieb
+  stehen. Jede Bohne mahlt anders; der erste Bezug danach geht meist daneben.
+- `bean_age` - die Bohne war beim Bezug ueber der Altersschwelle. Gefrierzeit
+  ist herausgerechnet. Steht im Befund `certain: false`, war die Charge
+  eingefroren und Decaid fuehrt kein Auftaudatum - das Alter ist dann eine
+  **Obergrenze** und als solche weiterzugeben, nicht als feste Zahl.
+- `missing_rating` - nach Ablauf der Frist keine Bewertung nachgetragen.
+- `dose_outlier` - Dosis weit weg vom Soll. `basis` sagt, woran gemessen
+  wurde: am Soll des Workflows oder ersatzweise am Median der Charge.
+
+Ein Befund ist ein Hinweis, kein Urteil. Er nennt immer die Zahlen, auf die
+er sich stuetzt - die mitliefern, statt nur die Meldung zu wiederholen.
+
+SCHREIBEN - alle `update_*`- und `set_*`-Tools nur auf ausdrueckliche
+Anweisung aufrufen, nie von sich aus und nie "zur Sicherheit". Genau die
+Felder setzen, die genannt wurden. Danach anhand der zurueckgelieferten
+Werte bestaetigen, nicht anhand dessen, was gesendet wurde: steht ein Feld
+unter `unchanged`, hat Decaid es nicht uebernommen - das sagen, statt Erfolg
+zu melden.\
 """
 
 
@@ -457,16 +491,62 @@ def build_mcp(
 
     @mcp.tool(annotations=READ_ONLY)
     async def status() -> dict[str, Any]:
-        """Zustand des Archivs: Bestand, letzter Sync, offene Warnungen.
+        """Zustand des Archivs: Bestand, letzter Abgleich, offene Warnungen.
 
-        Zeiten ISO8601 UTC. `warnings` meldet unter anderem einen zu lange
-        zurueckliegenden Sync - Visualizer Free haelt nur ein 1-Monats-Fenster
-        vor.
+        Zeiten ISO8601 UTC. `decaid` sagt, wann das Tablet zuletzt erreichbar
+        war; `waiting_for_tablet` heisst nicht Stoerung, sondern dass das
+        Tablet gerade aus ist - das ist zwischen zwei Kaffees der Normalfall
+        und sollte nicht als Fehler gemeldet werden.
         """
         return await asyncio.to_thread(_status_payload, config, db)
 
+    @mcp.tool(annotations=READ_ONLY)
+    async def audit_archive(
+        since: str | None = None, rule: str | None = None, limit: int = 20
+    ) -> dict[str, Any]:
+        """Prueft das Archiv auf Unstimmigkeiten (Regeln siehe Anleitung).
+
+        `since` als ISO-Datum oder Kurzform (`7d`, `2w`, `1m`), `rule`
+        filtert auf eine der vier Regeln.
+        """
+        cutoff = _parse_time(since, "since")
+        shots = await asyncio.to_thread(db.shots_for_guards, cutoff)
+        batches = await asyncio.to_thread(db.batches_by_id)
+        findings = run_rules(
+            shots, batches, at=datetime.now(UTC),
+            enabled=config.guard_rules,
+            warn_days=config.bean_age_warn_days,
+            grace_hours=config.rating_grace_hours,
+            tolerance_g=config.dose_tolerance_g,
+        )
+        if rule:
+            if rule not in ALL_RULES:
+                raise ToolError(
+                    f"invalid_argument: {rule!r} ist keine Regel. Erlaubt: "
+                    + ", ".join(ALL_RULES)
+                )
+            findings = [f for f in findings if f.rule == rule]
+
+        capped = findings[: max(1, min(int(limit), 50))]
+        return {
+            "checked_shots": len(shots),
+            "active_rules": list(config.guard_rules),
+            "thresholds": {
+                "bean_age_warn_days": config.bean_age_warn_days,
+                "rating_grace_hours": config.rating_grace_hours,
+                "dose_tolerance_g": config.dose_tolerance_g,
+            },
+            "total_findings": len(findings),
+            "findings": [f.as_dict() for f in capped],
+            "by_rule": _count_by_rule(findings),
+        }
+
+    if coordinator is not None:
+        _register_workflow_reader(mcp, coordinator)
+
     if config.write_enabled and coordinator is not None:
         _register_update_shot(mcp, db, coordinator)
+        _register_catalog_writes(mcp, db, coordinator)
 
     @mcp.custom_route("/healthz", methods=["GET"], include_in_schema=False)
     async def healthz(request: Request) -> Response:
@@ -475,6 +555,150 @@ def build_mcp(
         return PlainTextResponse("ok")
 
     return mcp
+
+
+def _register_workflow_reader(mcp: FastMCP, coordinator: SyncCoordinator) -> None:
+    """``get_workflow`` liest live vom Tablet - im Archiv steht es nicht."""
+
+    @mcp.tool(annotations=READ_ONLY)
+    async def get_workflow() -> dict[str, Any]:
+        """Die Einstellung, mit der der naechste Bezug laufen wuerde.
+
+        Kommt live vom Tablet - im Archiv steht nur, womit tatsaechlich
+        bezogen wurde.
+        """
+        try:
+            workflow = await coordinator.read_workflow()
+        except DecaidUnreachable as exc:
+            raise ToolError(f"waiting_for_tablet: {exc}") from exc
+        except DecaidError as exc:
+            raise ToolError(f"{exc.code}: {exc}") from exc
+
+        context = workflow.get("context") or {}
+        profile = workflow.get("profile") or {}
+        return {
+            "bean_batch_id": context.get("beanBatchId"),
+            "bean_name": context.get("coffeeName"),
+            "bean_roaster": context.get("coffeeRoaster"),
+            "grinder_model": context.get("grinderModel"),
+            "grinder_setting": context.get("grinderSetting"),
+            "target_dose_g": context.get("targetDoseWeight"),
+            "target_yield_g": context.get("targetYield"),
+            "profile": profile.get("title"),
+        }
+
+
+def _register_catalog_writes(
+    mcp: FastMCP, db: Database, coordinator: SyncCoordinator
+) -> None:
+    """Schreibtools fuer Bohne, Charge und Workflow (SPEC ss20.5).
+
+    Dieselben Leitplanken wie ``update_shot``: Whitelist vor dem Senden,
+    Read-back danach, und nur vorhanden, wenn ``WRITE_ENABLED`` gesetzt ist.
+    """
+
+    @mcp.tool(
+        annotations={"readOnlyHint": False, "idempotentHint": True,
+                     "destructiveHint": False, "openWorldHint": True},
+    )
+    async def update_bean(id: str, fields: dict[str, Any]) -> dict[str, Any]:
+        """Aendert Stammdaten einer Bohne in Decaid.
+
+        Kennung aus `list_beans`. Erlaubt: name, roaster, species,
+        processing, notes, decaf. Gilt rueckwirkend fuer alle Bezuege dieser
+        Bohne - das vorher sagen.
+        """
+        return await _write(coordinator.write_bean, BEAN, id, fields,
+                            what="bean")
+
+    @mcp.tool(
+        annotations={"readOnlyHint": False, "idempotentHint": True,
+                     "destructiveHint": False, "openWorldHint": True},
+    )
+    async def update_batch(id: str, fields: dict[str, Any]) -> dict[str, Any]:
+        """Aendert eine Bohnencharge (Roestdatum, Gefrierzustand).
+
+        Erlaubt: roastDate, buyDate, freezeDate (je ISO YYYY-MM-DD), frozen.
+        Decaid fuehrt kein Auftaudatum - beim Auftauen `frozen` auf false
+        setzen; das Bohnenalter ist danach nur noch nach oben begrenzt.
+        """
+        return await _write(coordinator.write_batch, BATCH, id, fields,
+                            what="batch")
+
+    @mcp.tool(
+        annotations={"readOnlyHint": False, "idempotentHint": True,
+                     "destructiveHint": False, "openWorldHint": True},
+    )
+    async def set_workflow(fields: dict[str, Any]) -> dict[str, Any]:
+        """Stellt ein, womit der naechste Bezug laufen soll.
+
+        Aendert die Maschine, nicht das Archiv. Erlaubt: grinderSetting,
+        grinderModel, targetDoseWeight, targetYield, beanBatchId. Ein
+        Profilwechsel ist nicht moeglich - der gehoert an die Maschine.
+        Danach nennen, was jetzt eingestellt ist.
+        """
+        return await _write(coordinator.write_workflow, WORKFLOW, None, fields,
+                            what="workflow")
+
+
+async def _write(
+    writer: Any, ruleset: Ruleset, target_id: str | None,
+    fields: dict[str, Any], *, what: str,
+) -> dict[str, Any]:
+    """Gemeinsamer Weg aller Schreibtools: pruefen, senden, nachlesen.
+
+    Ein Weg statt drei, damit Validierung, Read-back-Vergleich und
+    Protokollzeile nicht dreimal leicht verschieden ausfallen.
+    """
+    try:
+        payload = validate_fields(fields, ruleset)
+    except ValidationError as exc:
+        raise ToolError("invalid_argument: " + "; ".join(exc.problems)) from exc
+
+    started = time.perf_counter()
+    try:
+        args = (payload,) if target_id is None else (target_id, payload)
+        before, after = await writer(*args)
+    except DecaidUnreachable as exc:
+        raise ToolError(f"waiting_for_tablet: {exc}") from exc
+    except DecaidError as exc:
+        raise ToolError(f"{exc.code}: {exc}") from exc
+
+    changes = {
+        name: {"before": before.get(name), "after": after.get(name)}
+        for name in payload
+    }
+    ignored = [n for n, pair in changes.items() if pair["before"] == pair["after"]]
+
+    # Feldnamen ja, Werte nein - in Notizen kann Privates stehen.
+    log.info(
+        f"{what} updated",
+        extra={"fields": {
+            "target": target_id or what,
+            "wrote": ",".join(sorted(payload)),
+            "unchanged": ",".join(sorted(ignored)) or "-",
+            "dur_ms": round((time.perf_counter() - started) * 1000, 1),
+        }},
+    )
+
+    result: dict[str, Any] = {"changes": changes}
+    if target_id is not None:
+        result["id"] = target_id
+    if ignored:
+        result["unchanged"] = ignored
+        result["note"] = (
+            "Decaid hat diese Felder nicht uebernommen: " + ", ".join(ignored)
+            + ". Entweder war der neue Wert mit dem alten identisch, oder "
+            "die API hat ihn verworfen."
+        )
+    return result
+
+
+def _count_by_rule(findings: Any) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for finding in findings:
+        counts[finding.rule] = counts.get(finding.rule, 0) + 1
+    return counts
 
 
 def _register_update_shot(mcp: FastMCP, db: Database, coordinator: SyncCoordinator) -> None:
@@ -491,23 +715,11 @@ def _register_update_shot(mcp: FastMCP, db: Database, coordinator: SyncCoordinat
                      "destructiveHint": False, "openWorldHint": True},
     )
     async def update_shot(id: str, fields: dict[str, Any]) -> dict[str, Any]:
-        """Aendert Notiz oder Bewertung eines Bezugs in Decaid.
-
-        NUR auf ausdrueckliche Anweisung des Nutzers aufrufen, nie von sich aus
-        und nie "zur Sicherheit". Genau die Felder setzen, die der Nutzer
-        genannt hat - nichts ergaenzen, nichts korrigieren. Die Aenderung
-        danach woertlich bestaetigen, und zwar anhand der zurueckgelieferten
-        Werte, nicht anhand dessen, was gesendet wurde.
+        """Aendert Notiz, Bewertung oder Gewichte eines Bezugs in Decaid.
 
         `fields` ist eine Zuordnung Feldname -> neuer Wert; `null` loescht ein
-        Feld. Erlaubt sind ausschliesslich `espressoNotes` und `enjoyment`
-        (0-100). Alles andere wird abgewiesen; Zeitstempel, Telemetrie, Bohne
-        und Profil sind hier nicht aenderbar.
-
-        Geschrieben wird zuerst in Decaid, danach wird der Bezug neu geladen.
-        Die Antwort nennt je Feld `before` und `after` aus diesem Read-back.
-        Steht ein Feld unter `unchanged`, hat Decaid die Aenderung nicht
-        uebernommen - das dem Nutzer sagen, statt Erfolg zu melden.
+        Feld. Erlaubt: espressoNotes, enjoyment (0-100), actualDoseWeight,
+        actualYield (je g). Zeitstempel, Telemetrie und Profil nicht.
         """
         try:
             payload = validate_fields(fields)
@@ -833,6 +1045,16 @@ def _status_payload(config: Config, db: Database) -> dict[str, Any]:
         warnings.append(f"{missing_profiles} Shots ohne Profilversion.")
 
     last_reachable = db.get_state(STATE_LAST_REACHABLE)
+    decaid_version = db.get_state(STATE_DECAID_VERSION) or None
+    if decaid_version and decaid_version != VERIFIED_DECAID_VERSION:
+        # Kein Fehler, aber der Grund, warum eine Annahme ueber die API
+        # ploetzlich nicht mehr stimmen koennte.
+        warnings.append(
+            f"Decaid laeuft in Version {decaid_version}, verifiziert ist "
+            f"{VERIFIED_DECAID_VERSION} - Abweichungen im Verhalten der API "
+            "sind moeglich."
+        )
+
     last_result = db.get_json_state(STATE_LAST_RESULT, {}) or {}
     if last_result.get("waiting_for_tablet"):
         # Kein Fehler, nur eine Tatsache - das Tablet laeuft nur, waehrend
@@ -848,8 +1070,15 @@ def _status_payload(config: Config, db: Database) -> dict[str, Any]:
         "server": SERVER_NAME,
         "decaid": {
             "url": config.decaid_url,
+            "version": decaid_version,
+            "verified_version": VERIFIED_DECAID_VERSION,
             "last_reachable": last_reachable,
             "waiting_for_tablet": bool(last_result.get("waiting_for_tablet")),
+        },
+        "guards": {
+            "active_rules": list(config.guard_rules),
+            "findings": last_result.get("findings", 0),
+            "notifications": "an" if config.ntfy_url else "aus",
         },
         "version": __version__,
         "milestone": milestone(),

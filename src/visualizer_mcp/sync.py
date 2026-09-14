@@ -30,12 +30,14 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
+from .config import Config
 from .db import Database, utc_now_iso
 from .decaid_client import (
     MAX_PAGE_SIZE,
     DecaidClient,
     DecaidError,
     DecaidUnreachable,
+    ShotNotFound,
 )
 from .decaid_mapping import (
     batch_row_from_decaid,
@@ -44,7 +46,9 @@ from .decaid_mapping import (
     shot_row_from_decaid,
 )
 from .decaid_profile import profile_version
+from .guards import run_rules
 from .metrics import metrics_for_shot, warm_metrics_cache
+from .notify import send as notify
 
 log = logging.getLogger(__name__)
 
@@ -71,6 +75,9 @@ class SyncResult:
     metrics_computed: int = 0
     beans: int = 0
     bean_batches: int = 0
+    #: Befunde der Waechter (SPEC ss20.7) und davon versandte Nachrichten.
+    findings: int = 0
+    notified: int = 0
     duration_ms: int = 0
     mode: str = "incremental"
     #: Tablet nicht erreichbar. Kein Fehler - siehe Modul-Docstring.
@@ -105,8 +112,13 @@ async def run_sync(
     db: Database,
     *,
     full: bool = False,
+    config: Config | None = None,
 ) -> SyncResult:
-    """Ein Abgleichlauf. ``full=True`` holt jeden Bezug neu."""
+    """Ein Abgleichlauf. ``full=True`` holt jeden Bezug neu.
+
+    ``config`` schaltet die Waechter frei; ohne sie laeuft nur der Abgleich.
+    Das haelt die Tests der Ingestion frei von Waechterlogik und umgekehrt.
+    """
     started = time.monotonic()
     result = SyncResult(mode="backfill" if full else "incremental")
 
@@ -153,6 +165,8 @@ async def run_sync(
 
     result.metrics_computed = await asyncio.to_thread(warm_metrics_cache, db)
     await asyncio.to_thread(db.link_shots_to_beans)
+    if config is not None:
+        await _run_guards(db, config, result)
     result.duration_ms = int((time.monotonic() - started) * 1000)
     await asyncio.to_thread(_persist, db, result, complete=not result.pending)
 
@@ -163,10 +177,36 @@ async def run_sync(
             "unchanged": result.unchanged, "points": result.series_points,
             "profiles": result.new_profile_versions, "beans": result.beans,
             "metrics": result.metrics_computed, "pending": result.pending,
+            "findings": result.findings, "notified": result.notified,
             "errors": len(result.errors), "dur_ms": result.duration_ms,
         }},
     )
     return result
+
+
+async def _run_guards(db: Database, config: Config, result: SyncResult) -> None:
+    """Waechter laufen lassen und melden, was neu ist (SPEC ss20.7).
+
+    Ein Fehler hier darf den Abgleich nicht kippen: die Bezuege sind dann
+    schon archiviert, und ein nicht gemeldeter Befund ist kein Datenverlust.
+    """
+    if not config.guard_rules:
+        return
+    try:
+        shots = await asyncio.to_thread(db.shots_for_guards)
+        batches = await asyncio.to_thread(db.batches_by_id)
+        findings = run_rules(
+            shots, batches, at=datetime.now(UTC),
+            enabled=config.guard_rules,
+            warn_days=config.bean_age_warn_days,
+            grace_hours=config.rating_grace_hours,
+            tolerance_g=config.dose_tolerance_g,
+        )
+        result.findings = len(findings)
+        result.notified = await notify(config, findings, db)
+    except Exception as exc:  # noqa: BLE001 - Waechter kippen den Lauf nicht
+        result.warnings.append(f"guards_failed: {type(exc).__name__}: {exc}")
+        log.warning("guards failed", extra={"fields": {"error": type(exc).__name__}})
 
 
 async def _ingest_shot(
@@ -230,7 +270,15 @@ async def _link_profile(
 
 
 async def _sync_beans(client: DecaidClient, db: Database, result: SyncResult) -> None:
-    """Bohnen und Chargen. Beide Listen sind klein und kommen unpaginiert."""
+    """Bohnen und Chargen. Beide Listen sind klein und kommen unpaginiert.
+
+    Nebenbei wird Decaids Version notiert: ``status()`` arbeitet nur auf der
+    Datenbank und kann selbst nicht nachfragen.
+    """
+    info = await client.info()
+    await asyncio.to_thread(
+        db.set_state, STATE_DECAID_VERSION, str(info.get("version") or "")
+    )
     synced_at = utc_now_iso()
     beans = [bean_row_from_decaid(b, synced_at) for b in await client.beans()]
     batches = [batch_row_from_decaid(b, synced_at) for b in await client.bean_batches()]
@@ -314,9 +362,11 @@ class SyncCoordinator:
     wegnehmen.
     """
 
-    def __init__(self, client: DecaidClient, db: Database) -> None:
+    def __init__(self, client: DecaidClient, db: Database,
+                 config: Config | None = None) -> None:
         self._client = client
         self._db = db
+        self._config = config
         self._lock = asyncio.Lock()
 
     async def run(self, *, full: bool | None = None) -> SyncResult:
@@ -325,7 +375,8 @@ class SyncCoordinator:
                 full = await asyncio.to_thread(
                     lambda: not self._db.get_state(STATE_BACKFILL_DONE)
                 )
-            return await run_sync(self._client, self._db, full=full)
+            return await run_sync(self._client, self._db, full=full,
+                                  config=self._config)
 
     async def ensure_fresh(self, max_age_s: int = QUICK_SYNC_MAX_AGE_S) -> SyncResult | None:
         """Gleicht ab, wenn der letzte Lauf zu lange her ist. Sonst ``None``."""
@@ -357,6 +408,64 @@ class SyncCoordinator:
             await self._client.update_shot(shot_id, {"annotations": dict(fields)})
             after = await refresh_shot(self._client, self._db, shot_id)
         return (before.get("annotations") or {}), (after.get("annotations") or {})
+
+    async def write_bean(
+        self, bean_id: str, fields: dict[str, Any]
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Bohne aendern, mit Read-back. Der Bestand wird danach mitgezogen."""
+        async with self._lock:
+            before = await self._find(self._client.beans(), bean_id)
+            await self._client.update_bean(bean_id, dict(fields))
+            after = await self._find(self._client.beans(), bean_id)
+            await asyncio.to_thread(
+                self._db.upsert_beans, [bean_row_from_decaid(after, utc_now_iso())]
+            )
+        return before, after
+
+    async def write_batch(
+        self, batch_id: str, fields: dict[str, Any]
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Charge aendern, mit Read-back."""
+        async with self._lock:
+            before = await self._find(self._client.bean_batches(), batch_id)
+            await self._client.update_bean_batch(batch_id, dict(fields))
+            after = await self._find(self._client.bean_batches(), batch_id)
+            await asyncio.to_thread(
+                self._db.upsert_bean_batches,
+                [batch_row_from_decaid(after, utc_now_iso())],
+            )
+            await asyncio.to_thread(self._db.link_shots_to_beans)
+        return before, after
+
+    async def write_workflow(
+        self, fields: dict[str, Any]
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Workflow-Kontext aendern, mit Read-back.
+
+        Der Workflow ist die Einstellung fuer den *naechsten* Bezug; im Archiv
+        steht er erst, wenn danach wirklich bezogen wurde. Es gibt hier also
+        nichts lokal nachzuziehen.
+        """
+        async with self._lock:
+            before = (await self._client.workflow()).get("context") or {}
+            await self._client.update_workflow({"context": dict(fields)})
+            after = (await self._client.workflow()).get("context") or {}
+        return before, after
+
+    async def read_workflow(self) -> dict[str, Any]:
+        return await self._client.workflow()
+
+    @staticmethod
+    async def _find(pending: Any, wanted: str) -> dict[str, Any]:
+        """Einen Eintrag aus einer Listenantwort holen.
+
+        Decaid hat fuer Bohnen und Chargen keinen Einzelabruf (T16) - die Liste
+        ist die einzige Quelle, auch fuer den Read-back.
+        """
+        for item in await pending:
+            if str(item.get("id")) == wanted:
+                return item
+        raise ShotNotFound(f"Kein Eintrag mit der Kennung {wanted!r}")
 
     async def aclose(self) -> None:
         await self._client.aclose()

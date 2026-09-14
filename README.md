@@ -1,12 +1,16 @@
 # visualizer-mcp
 
-MCP-Server, der Espresso-Bezuege der Decent DE1 von
-[visualizer.coffee](https://visualizer.coffee) lokal archiviert (SQLite) und Claude
-per Custom Connector zur Analyse bereitstellt.
+MCP-Server, der Espresso-Bezuege der Decent DE1 lokal archiviert (SQLite)
+und Claude per Custom Connector zur Analyse bereitstellt.
+
+Quelle ist seit M8 **Decaid auf dem Tablet an der Maschine**, angesprochen
+ueber das eigene Netz. Damit laeuft kein Teil der Archivkette mehr ueber
+eine fremde Cloud. Der Upload nach [visualizer.coffee](https://visualizer.coffee)
+kann als Community-Schaufenster weiterlaufen, ist aber nicht mehr noetig.
 
 Vollstaendige Spezifikation: [SPEC_visualizer-mcp.md](SPEC_visualizer-mcp.md).
 
-## Stand: Milestone M7 (Schreibende Tools)
+## Stand: Milestone M8 (Quelle = Decaid, alles lokal)
 
 Vorhanden:
 
@@ -14,19 +18,22 @@ Vorhanden:
 - Strukturiertes key=value-Logging auf stdout mit Secret-Redaction (`logging_setup.py`)
 - FastMCP-Server (Streamable HTTP) unter `/<MCP_PATH_SECRET>/mcp`, `/healthz`,
   alle anderen Pfade `404` ohne Body (`server.py`)
-- Visualizer-Client mit Basic Auth, Ratelimiter, ETag und Backoff
-  (`visualizer_client.py`)
+- Decaid-Client im LAN mit Backoff; ein ausgeschaltetes Tablet ist kein
+  Fehlerzustand (`decaid_client.py`)
+- Normalisierung der Quelldaten: alles in UTC, Bewertungen ohne die
+  Scheinnullen der Import-Aera (`decaid_mapping.py`)
 - SQLite mit Migrationsrunner, Upserts, Sync-Zustand (`db.py`)
-- Sync-Worker: Backfill ueber alle Seiten, inkrementell via `updated_after`,
+- Abgleich: vollstaendige Bezugsliste, Details nur fuer Geaendertes,
   Hintergrundschleife alle `SYNC_INTERVAL_MIN` (`sync.py`)
-- TCL-Profilparser auf Basis von `tkinter.Tcl()`, Versionierung ueber den
-  sha256 des normalisierten Roh-TCL, Verknuepfung Shot -> Profilversion
-  (`tcl_profile.py`)
-- Abgeleitete Metriken nach SPEC ss8 (Fassung 1.1) mit Cache in `shot_metrics`
+- Profilversionierung aus dem eingebetteten Workflow-JSON
+  (`decaid_profile.py`); der TCL-Parser bleibt nur fuer Altbestand lesbar
+- Abgeleitete Metriken nach SPEC ss8 mit Cache in `shot_metrics`
   (`metrics.py`)
-- Alle neun Tools aus SPEC ss9.2, dazu `curve_shape` und die Antwortoekonomie
-  aus SPEC ss17 (`server.py`, `telemetry.py`)
-- Schreibendes `update_shot` hinter `WRITE_ENABLED` (SPEC ss18, `writes.py`)
+- Vier Waechterregeln ueber dem Bestand mit ntfy-Benachrichtigung
+  (`guards.py`, `notify.py`)
+- Alle Tools aus SPEC ss9.2 und ss20, dazu `curve_shape` und die
+  Antwortoekonomie aus SPEC ss17 (`server.py`, `telemetry.py`)
+- Vier Schreibtools hinter `WRITE_ENABLED` (SPEC ss18, ss20.5, `writes.py`)
 - Haertung, Abnahmetests und Portainer-Deployment (SPEC ss16)
 
 Noch nicht vorhanden: die optionalen MCP-Prompts aus SPEC ss9.3
@@ -43,12 +50,17 @@ Noch nicht vorhanden: die optionalen MCP-Prompts aus SPEC ss9.3
 | `compare_shots(ids[2..4], include_profile, include_curves)` | Gegenueberstellung mit Differenz zum ersten, Profilen und Abweichungshinweis |
 | `list_profiles()` | Profile mit ihren Versionen |
 | `get_profile(shot_id? \| name? \| version_hash?)` | vollstaendige Sollwerte |
-| `sync_now()` | sofortiger Abgleich mit Visualizer, idempotent |
-| `status()` | Bestand, letzter Sync, Warnungen |
-| `update_shot(id, fields)` | aendert Angaben zu einem Bezug — **nur mit `WRITE_ENABLED=true`** |
+| `sync_now()` | sofortiger Abgleich mit dem Tablet, idempotent |
+| `status()` | Bestand, letzter Abgleich, Decaid-Zustand, Warnungen |
+| `audit_archive(since?, rule?, limit?)` | Befunde der Waechter samt geltender Schwellen |
+| `get_workflow()` | Einstellung fuer den naechsten Bezug, live vom Tablet |
+| `update_shot(id, fields)` | Notiz, Bewertung, Gewichte — **nur mit `WRITE_ENABLED=true`** |
+| `update_bean(id, fields)` | Stammdaten einer Bohne — **nur mit `WRITE_ENABLED=true`** |
+| `update_batch(id, fields)` | Roestdatum, Gefrierzustand — **nur mit `WRITE_ENABLED=true`** |
+| `set_workflow(fields)` | Mahlgrad, Ziele, Charge — **nur mit `WRITE_ENABLED=true`** |
 
 Filter sind Teilstrings ohne Beachtung der Gross-/Kleinschreibung. `bean` trifft
-Marke *oder* Sorte, `roaster` nur die Marke. `since`/`until` nehmen ISO8601 oder
+Bohnenname *oder* Roesterei, `roaster` nur die Roesterei. `since`/`until` nehmen ISO8601 oder
 relative Kuerzel (`12h`, `7d`, `2w`, `1m`, `1y`).
 
 ### Was die Docstrings leisten muessen
@@ -103,43 +115,87 @@ Rest unveraendert. Mit dem Bestand waechst nur `list_beans` (Zahl
 **verschiedener Bohnen**, nicht der Bezuege) und `total_matching` in
 `list_shots` — die Schranken tragen also auch im Betrieb.
 
-### Schreiben (SPEC ss18)
+### Waechter (SPEC ss20.7)
 
-Standardmaessig **aus**. `WRITE_ENABLED=true` schaltet ein einziges zusaetzliches
-Tool frei: `update_shot(id, fields)`. Ist der Schalter aus, taucht es nicht in
-der Tool-Liste auf — es lehnt nicht ab, es existiert nicht.
+Vier Regeln pruefen nach jedem Abgleich, ob etwas nicht zusammenpasst. Sie
+sind reine Funktionen ueber Tabellenzeilen - kein Netz, keine Datenbank, die
+Uhr wird uebergeben. Jede ist ueber `GUARD_RULES` einzeln abschaltbar.
+
+| Regel | Prueft |
+|---|---|
+| `grind_not_adjusted` | Chargenwechsel ohne Mahlgradaenderung |
+| `bean_age` | Bohnenalter beim Bezug, Gefrierzeit herausgerechnet |
+| `missing_rating` | Bewertung nach Ablauf der Frist nicht nachgetragen |
+| `dose_outlier` | Gewichte passen nicht zum Soll des Workflows |
+
+Zwei Befunde aus dem echten Bestand haben die Regeln geformt:
+
+- **Die Dosis ist nicht pruefbar.** In allen 165 Faellen ist
+  `actualDoseWeight` exakt gleich `targetDoseWeight` - die DE1 wiegt die
+  Dosis nicht, sie uebernimmt den Sollwert. Die Regel prueft deshalb das
+  **Bezugsgewicht** gegen sein Soll und die Dosis nur noch auf
+  Plausibilitaet (0 g heisst: Waage nicht verbunden).
+- **Eine offene Frist waere wertlos.** 145 von 169 Bezuegen sind unbewertet;
+  ohne Obergrenze meldete `missing_rating` 83 Prozent des Archivs. Sie meldet
+  darum nur zwischen 36 Stunden und sieben Tagen.
+
+Die Benachrichtigung ueber ntfy hat drei Deckel, damit die Meldungen gelesen
+bleiben: hoechstens eine Nachricht je Bezug, nur Bezuege der letzten 48
+Stunden, hoechstens fuenf Nachrichten je Lauf. Gemessen am Bestand zeigt
+`audit_archive` 63 Befunde, ntfy wuerde 2 melden. Ein Befund nennt nie
+Freitext - die Nachrichten verlassen das Haus.
+
+### Schreiben (SPEC ss18, ss20.5)
+
+Standardmaessig **aus**. `WRITE_ENABLED=true` schaltet vier zusaetzliche
+Tools frei: `update_shot`, `update_bean`, `update_batch`, `set_workflow`.
+Aufgenommen ist in jede Whitelist nur, was gegen die echte API geschrieben
+**und wieder gelesen** wurde. Ein Profilwechsel ist ausdruecklich nicht
+moeglich - der gehoert an die Maschine.
+
+Bei der Verifikation am 2026-09-14 zeigte sich, dass Decaid den
+**Bezugszeitstempel annimmt**, waehrend es `id` und `createdAt` mit 400
+abweist. Fuer die Telemetriefelder ist die Blockliste in `writes.py` damit
+nicht die zweite Sicherung, sondern die einzige.
+
+Ist der Schalter aus, tauchen die Tools nicht in
+der Tool-Liste auf — sie lehnen nicht ab, sie existieren nicht.
 
 Erlaubt sind ausschliesslich diese Felder; alles andere wird mit der
 vollstaendigen Liste abgewiesen:
 
-| Gruppe | Felder |
+| Tool | Felder |
 |---|---|
-| Bohne | `bean_brand`, `bean_type`, `roast_date`, `roast_level`, `bean_notes` |
-| Zubereitung | `grinder_setting`, `bean_weight`, `drink_weight` |
-| Bewertung | `espresso_enjoyment` (0–100), `espresso_notes`, `private_notes`, `drink_tds`, `drink_ey` |
-| Sonstiges | `barista` |
+| `update_shot` | `espressoNotes`, `enjoyment` (0–100), `actualDoseWeight`, `actualYield` |
+| `update_bean` | `name`, `roaster`, `species`, `processing`, `notes`, `decaf` |
+| `update_batch` | `roastDate`, `buyDate`, `freezeDate`, `frozen` |
+| `set_workflow` | `grinderSetting`, `grinderModel`, `targetDoseWeight`, `targetYield`, `beanBatchId` |
 
-Kennung, Zeitstempel, Telemetrie und Profil sind gesperrt. Geloescht wird nie —
-die API kann es, dieses Projekt baut es nicht.
+Kennungen, Zeitstempel, Telemetrie und das Profil sind gesperrt. Geloescht
+wird nie — die API kann es, dieses Projekt baut es nicht.
 
-**Write-through:** Geschrieben wird immer zuerst bei Visualizer, danach wird der
-Bezug frisch geladen, lokal upserted und seine Metriken neu gerechnet (eine
-Dosisaenderung aendert die Ratio). Die Antwort nennt je Feld `before` und
-`after` aus diesem Read-back — nicht aus der Annahme, was gesendet wurde.
+**Write-through:** Geschrieben wird immer zuerst in Decaid, danach wird
+frisch nachgelesen, lokal upserted und der Metrik-Cache neu gefuellt. Die
+Antwort nennt je Feld `before` und `after` aus diesem Read-back — nicht aus
+der Annahme, was gesendet wurde. Steht ein Feld unter `unchanged`, hat Decaid
+es nicht uebernommen.
 
-Drei Eigenheiten der API, die das Design bestimmen (am 2026-08-01 gegen
-v1.17.1 verifiziert, alle drei undokumentiert):
+Zwei Eigenheiten, die das Design bestimmen (am 2026-09-14 gegen Decaid 0.8.5
+verifiziert, jede Probe sofort zurueckgesetzt):
 
-1. `PATCH` braucht `Accept: application/json`, sonst `422 "Request must be JSON."`
-2. Nicht erlaubte Felder werden **stillschweigend verworfen**; `400` kommt nur,
-   wenn nichts Erlaubtes uebrig bleibt. Ein Aufruf mit `private_notes` plus
-   einem erlaubten Feld meldet also Erfolg, ohne die Notiz zu schreiben — nur
-   der Read-back deckt das auf, und das Tool meldet es unter `unchanged`.
-3. Die API prueft **keine** Wertebereiche (`espresso_enjoyment: 999` wurde
-   gespeichert). Die Validierung in `writes.py` ist der einzige Schutz.
+1. Decaid weist `id` und `createdAt`/`updatedAt` mit `400` ab — besser als
+   das stillschweigende Verwerfen, das Visualizer betrieb. **Den
+   Bezugszeitstempel nimmt es aber an**: ein `PUT` mit `timestamp` kam mit
+   `200` zurueck und der Wert stand danach wirklich so da. Fuer die
+   Telemetriefelder ist die Blockliste damit die einzige Sicherung.
+2. Die API prueft **keine** Wertebereiche. Die Validierung in `writes.py`
+   ist der einzige Schutz gegen einen Tippfehler im Archiv.
 
-`private_notes` verlangt ein Visualizer-Premium-Konto; auf Free-Tier wird es
-still verworfen und im Ergebnis als `unchanged` gemeldet.
+**Kein Auftaudatum.** Decaid fuehrt kein `unfreezeDate`. Beim Auftauen
+`frozen` auf false setzen; das Bohnenalter rechnet ab da weiter, und
+`audit_archive` kann es fuer spaetere Bezuege nur noch nach oben begrenzen
+(`certain: false`). Wer es genau braucht, notiert den Tag in den
+Bohnennotizen.
 
 Beim Roestdatum wird ISO (`YYYY-MM-DD`) erwartet, die DE1-App schreibt
 `TT.MM.JJJJ` — im Bestand koennen dadurch beide Formate stehen.
@@ -186,28 +242,42 @@ eine Antwort aus dem Archiv, mit Hinweis: veraltete Daten sind besser als keine.
 Hintergrundschleife, `sync_now` und der Frische-Check teilen sich ein Lock, damit
 nie zwei Laeufe gleichzeitig schreiben.
 
-### Metriken: `state_change` und `pi_end`
+### Metriken: Phasenmarken und `pi_end`
 
-`espresso_state_change` ist **keine** Phasennummer, wie SPEC ss8 urspruenglich
-annahm, sondern eine Rechteckwelle: sie springt bei jedem Phasenwechsel zwischen
-zwei Sentinelwerten (`-10000000` und `+10000000`). Nicht der Wert traegt
-Information, sondern der **Wechsel**. An den Echtdaten geprueft: die Zahl der
-Wechsel ist `Schritte - 1`, und die Zeitpunkte decken sich exakt mit den
-Schrittdauern des Profils. Der erste Wechsel liegt bei t < 0.1 s und markiert
-den Shot-Start, nicht einen Phasenwechsel.
+Decaid meldet den Maschinenzustand im Klartext: `state.substate` laeuft
+`preparingForShot` -> `preinfusion` -> `pouring`. Das Ende der Praeinfusion ist
+damit **abgelesen statt erschlossen** - der Zeitpunkt, an dem die Maschine
+`pouring` meldet.
 
-Daraus folgt fuer `pi_end`: die Marken sagen *dass* gewechselt wurde, nicht
-*wozu*. Welche Grenze die Praeinfusion beendet, geht aus ihnen allein nicht
-hervor. Der Druckanstieg dient deshalb als **Anker**, nicht als Ergebnis:
+Drei Quellen in dieser Reihenfolge; `pi_end_source` nennt die tatsaechlich
+genutzte:
 
-> `pi_end` = die letzte Phasengrenze vor dem Moment, in dem der Druck erstmals
-> `0.6 x max_pressure_global` erreicht.
+| Quelle | Woher | Guete |
+|---|---|---|
+| `substate` | Zustandsangabe der Maschine | abgelesen |
+| `profile_frame` | letzte Schrittgrenze vor dem Druckanker | erschlossen |
+| `heuristic` | Druck erreicht erstmals `0.6 x max_pressure_global` | Naeherung |
 
-Der zurueckgegebene Wert ist damit immer ein von der Maschine gemeldeter
-Phasenwechsel. Ohne Marken faellt es auf den Ankerzeitpunkt selbst zurueck (die
-Heuristik der urspruenglichen SPEC); welcher Weg griff, steht in
-`pi_end_source` (`state_change` | `heuristic`). Im gesamten Archiv griff bisher
-ausschliesslich `state_change`.
+Die Hierarchie ist kein Vorratsbeschluss. Die de1app hat den Maschinenzustand
+nie aufgezeichnet, Decaid tut es - und das Archiv enthaelt beides:
+
+| Herkunft | `substate` | `profile_frame` | Heuristik |
+|---|---|---|---|
+| importiert (88) | — | 84 | 3 |
+| nativ (81) | 77 | 2 | 2 |
+
+Ohne die zweite Stufe haetten 84 Bezuege einen geratenen `pi_end`. Bei
+`heuristic` ist der Wert eine Naeherung und taugt nicht fuer Vergleiche auf die
+Zehntelsekunde; die Metrik sagt das ueber `warnings` auch selbst.
+
+`profileFrame` steht auf dem ersten Messpunkt noch auf dem Wert des
+vorangegangenen Bezugs - dieser Wechsel wird verworfen.
+
+Die Rechteckwelle der Visualizer-Aera (`espresso_state_change`, Sprung zwischen
+`-10000000` und `+10000000` bei jedem Wechsel) wird nicht mehr gelesen. Sie
+sagte *dass* gewechselt wurde, nicht *wozu*; ein Test auf den alten Fixtures
+haelt fest, dass sie ignoriert wird und diese Bezuege ueber den Heuristikpfad
+laufen.
 
 ### Metriken: Plausibilitaet der Waage
 
@@ -269,7 +339,11 @@ Ein nicht parsebares Profil bricht nichts ab: `raw_tcl` wird trotzdem
 gespeichert, `parsed_json` bekommt `parse_ok: false` samt Fehlertext, und Titel
 und Notizen kommen aus einem toleranten Zeilenscan.
 
-## Visualizer-API — verifizierter Stand
+## Visualizer-API — verifizierter Stand (historisch)
+
+> Seit M8 ist Decaid die Quelle; dieser Abschnitt beschreibt die Aera davor.
+> Er bleibt, weil der Upload nach visualizer.coffee als Schaufenster
+> weiterlaufen kann und die Fixtures dazu im Repo sind.
 
 Gegen <https://apidocs.visualizer.coffee/> geprueft am 2026-08-01
 (OpenAPI 3.1, Visualizer API v1.15.0), zusaetzlich mit echten Requests bestaetigt:

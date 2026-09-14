@@ -48,6 +48,10 @@ class FakeDecaid:
         self.detail_calls: list[str] = []
         self.page_calls = 0
 
+    async def info(self):
+        self._check()
+        return load("info.json")
+
     async def beans(self):
         self._check()
         return load("beans.json")

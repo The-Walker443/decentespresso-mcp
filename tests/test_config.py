@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from visualizer_mcp.config import Config, ConfigError
+from visualizer_mcp.guards import ALL_RULES
 
 from .conftest import TEST_PASSWORD, TEST_SECRET
 
@@ -204,3 +205,59 @@ def test_ntfy_url_without_topic_is_refused(valid_env: dict[str, str]) -> None:
 
 def test_ntfy_is_optional(config: Config) -> None:
     assert config.ntfy_url is None and config.ntfy_topic is None
+
+
+# ------------------------------------------------------ Waechterregeln
+
+
+def test_guard_rules_default_to_all(valid_env: dict[str, str]) -> None:
+    assert Config.from_env(valid_env).guard_rules == ALL_RULES
+
+
+def test_an_empty_setting_is_not_an_off_switch(valid_env: dict[str, str]) -> None:
+    """Wer .env.example kopiert, laesst die Zeile leer stehen.
+
+    Das als "keine Waechter" zu lesen haette sie stillschweigend abgeschaltet -
+    zum Abschalten gibt es das ausdrueckliche "none".
+    """
+    assert Config.from_env({**valid_env, "GUARD_RULES": ""}).guard_rules == ALL_RULES
+    assert Config.from_env({**valid_env, "GUARD_RULES": "  "}).guard_rules == ALL_RULES
+
+
+def test_none_switches_the_guards_off(valid_env: dict[str, str]) -> None:
+    assert Config.from_env({**valid_env, "GUARD_RULES": "none"}).guard_rules == ()
+
+
+def test_a_selection_is_kept(valid_env: dict[str, str]) -> None:
+    config = Config.from_env({**valid_env, "GUARD_RULES": "bean_age, dose_outlier"})
+    assert config.guard_rules == ("bean_age", "dose_outlier")
+
+
+def test_a_typo_in_a_rule_name_is_refused(valid_env: dict[str, str]) -> None:
+    """Sonst glaubte man, eine Regel laufe, die es nicht gibt."""
+    with pytest.raises(ConfigError) as excinfo:
+        Config.from_env({**valid_env, "GUARD_RULES": "bean_age,bohnenalter"})
+    assert "bohnenalter" in str(excinfo.value)
+    assert "bean_age" in str(excinfo.value), "die Meldung nennt die gueltigen Namen"
+
+
+def test_thresholds_have_sensible_defaults(valid_env: dict[str, str]) -> None:
+    config = Config.from_env(valid_env)
+    assert config.bean_age_warn_days == 42
+    assert config.rating_grace_hours == 36
+    assert config.dose_tolerance_g == 1.0
+
+
+def test_a_german_decimal_comma_is_accepted(valid_env: dict[str, str]) -> None:
+    assert Config.from_env({**valid_env, "DOSE_TOLERANCE_G": "0,5"}).dose_tolerance_g == 0.5
+
+
+@pytest.mark.parametrize(("name", "value"), [
+    ("BEAN_AGE_WARN_DAYS", "0"),
+    ("RATING_GRACE_HOURS", "0"),
+    ("DOSE_TOLERANCE_G", "99"),
+    ("DOSE_TOLERANCE_G", "keine"),
+])
+def test_an_impossible_threshold_is_refused(valid_env: dict[str, str], name, value) -> None:
+    with pytest.raises(ConfigError):
+        Config.from_env({**valid_env, name: value})

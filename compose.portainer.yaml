@@ -35,6 +35,10 @@ services:
       NTFY_URL: ${NTFY_URL:-}
       NTFY_TOPIC: ${NTFY_TOPIC:-}
       NTFY_TOKEN: ${NTFY_TOKEN:-}
+      GUARD_RULES: ${GUARD_RULES:-}
+      BEAN_AGE_WARN_DAYS: ${BEAN_AGE_WARN_DAYS:-42}
+      RATING_GRACE_HOURS: ${RATING_GRACE_HOURS:-36}
+      DOSE_TOLERANCE_G: ${DOSE_TOLERANCE_G:-1.0}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       TZ: ${TZ:-Europe/Berlin}
       DB_PATH: /data/shots.db

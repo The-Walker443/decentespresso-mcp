@@ -240,6 +240,29 @@ class Database:
             self._conn.commit()
             return cur.rowcount
 
+    def shots_for_guards(self, since: str | None = None) -> list[dict[str, Any]]:
+        """Bezuege aufsteigend nach Zeit - die Eingabe der Waechter.
+
+        Aufsteigend, weil die Mahlgradregel den Vorgaenger braucht. Nur die
+        Felder, auf die eine Regel schaut; Notizen bleiben aussen vor, damit
+        ein Befund gar nicht erst Freitext enthalten kann.
+        """
+        clause = "WHERE started_at >= ?" if since else ""
+        params = [since] if since else []
+        with self._lock:
+            return [dict(row) for row in self._conn.execute(
+                f"SELECT id, started_at, bean_id, bean_batch_id, grinder_setting, "
+                f"       dose_g, target_dose_g, yield_g, target_yield_g, enjoyment "
+                f"FROM shots {clause} ORDER BY started_at ASC", params,
+            )]
+
+    def batches_by_id(self) -> dict[str, dict[str, Any]]:
+        with self._lock:
+            return {
+                row["id"]: dict(row)
+                for row in self._conn.execute("SELECT * FROM bean_batches")
+            }
+
     def count_beans(self) -> tuple[int, int]:
         with self._lock:
             beans = self._conn.execute("SELECT COUNT(*) AS n FROM beans").fetchone()["n"]

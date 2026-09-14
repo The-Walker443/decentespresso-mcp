@@ -60,10 +60,12 @@ async def test_all_spec_tools_are_exposed(config: Config, db: Database) -> None:
     async with Client(build_mcp(config, db)) as client:
         tools = {tool.name: tool for tool in await client.list_tools()}
 
-    # SPEC ss9.2
+    # SPEC ss9.2 plus audit_archive aus ss20.7. get_workflow und die
+    # Schreibtools haengen am Koordinator bzw. an WRITE_ENABLED und fehlen hier.
     assert set(tools) == {
         "list_beans", "list_shots", "get_shot", "get_shot_metrics",
         "compare_shots", "list_profiles", "get_profile", "sync_now", "status",
+        "audit_archive",
     }
     # Alles ausser sync_now ist read-only (SPEC ss9).
     for name, tool in tools.items():

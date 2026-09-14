@@ -17,6 +17,12 @@ from pathlib import PurePosixPath, PureWindowsPath
 from urllib.parse import urlparse
 
 from . import __version__
+from .guards import (
+    ALL_RULES,
+    BEAN_AGE_WARN_DAYS,
+    DOSE_TOLERANCE_G,
+    RATING_GRACE_HOURS,
+)
 
 #: MCP_PATH_SECRET ersetzt die Authentifizierung (SPEC ss10.1) und muss daher
 #: nicht ratbar sein. ``openssl rand -hex 24`` liefert 48 Zeichen.
@@ -27,6 +33,7 @@ _LOG_LEVELS = {"CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"}
 
 #: Platzhalter aus .env.example - wer die uebernimmt, hat die Datei nicht gelesen.
 _PLACEHOLDERS = {"change-me", "you@example.com", "<openssl rand -hex 24>"}
+
 
 
 class ConfigError(ValueError):
@@ -59,6 +66,14 @@ class Config:
     ntfy_url: str | None
     ntfy_topic: str | None
     ntfy_token: str | None
+    #: Eingeschaltete Waechterregeln (SPEC ss20.7). Jede einzeln
+    #: abschaltbar - eine Regel, die zu oft anschlaegt, wuerde sonst im
+    #: Ganzen ignoriert und naehme die anderen mit.
+    guard_rules: tuple[str, ...]
+    #: Schwellen der Regeln.
+    bean_age_warn_days: int
+    rating_grace_hours: int
+    dose_tolerance_g: float
 
     @property
     def mcp_path(self) -> str:
@@ -190,6 +205,14 @@ class Config:
         if ntfy_url and not ntfy_topic:
             problems.append("NTFY_URL ist gesetzt, aber NTFY_TOPIC fehlt")
 
+        guard_rules = _rules(src, problems)
+        bean_age_warn_days = _int_in_range(src, "BEAN_AGE_WARN_DAYS",
+                                          BEAN_AGE_WARN_DAYS, 1, 3650, problems)
+        rating_grace_hours = _int_in_range(src, "RATING_GRACE_HOURS",
+                                          RATING_GRACE_HOURS, 1, 24 * 90, problems)
+        dose_tolerance_g = _float_in_range(src, "DOSE_TOLERANCE_G",
+                                          DOSE_TOLERANCE_G, 0.1, 10.0, problems)
+
         if problems:
             raise ConfigError(problems)
 
@@ -209,7 +232,50 @@ class Config:
             ntfy_url=ntfy_url,
             ntfy_topic=ntfy_topic,
             ntfy_token=ntfy_token,
+            guard_rules=guard_rules,
+            bean_age_warn_days=bean_age_warn_days,
+            rating_grace_hours=rating_grace_hours,
+            dose_tolerance_g=dose_tolerance_g,
         )
+
+
+def _rules(src, problems: list[str]) -> tuple[str, ...]:
+    """``GUARD_RULES`` als Liste von Regelnamen; leer heisst: keine Waechter.
+
+    Ohne Angabe laufen alle. Ein Tippfehler wird abgewiesen statt still
+    ignoriert - sonst glaubte man, eine Regel laufe, die es nicht gibt.
+    """
+    # Leer heisst nicht "keine" - wer .env.example kopiert, hat die Zeile leer
+    # stehen und will damit die Vorgabe, nicht die Abschaltung. Zum Abschalten
+    # gibt es das ausdrueckliche "none".
+    raw = (src.get("GUARD_RULES") or "").strip()
+    if not raw:
+        return ALL_RULES
+    names = tuple(n.strip() for n in raw.split(",") if n.strip())
+    if names == ("none",):
+        return ()
+    unknown = [n for n in names if n not in ALL_RULES]
+    if unknown:
+        problems.append(
+            "GUARD_RULES kennt " + ", ".join(unknown) + " nicht - erlaubt sind "
+            + ", ".join(ALL_RULES) + " oder none"
+        )
+    return names
+
+
+def _float_in_range(src, name: str, default: float, low: float, high: float,
+                    problems: list[str]) -> float:
+    raw = (src.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw.replace(",", "."))
+    except ValueError:
+        problems.append(f"{name} ist keine Zahl: {raw!r}")
+        return default
+    if not low <= value <= high:
+        problems.append(f"{name}={value} liegt ausserhalb von {low} bis {high}")
+    return value
 
 
 def _lan_url_problems(url: str) -> list[str]:

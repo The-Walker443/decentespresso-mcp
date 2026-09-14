@@ -1008,6 +1008,20 @@ eigene Messung an der echten API.
 | T18 | `enjoyment`-Skala | **0–100 als Float** (beobachtet: 40.0, 50.0, 80.0, 100.0). Keine Sterne-Skala, also **kein ×20-Mapping nötig** |
 | T19 | Retention / Pruning | Kein Hinweis: Bestand reicht lückenlos bis 2026-06-24 zurück, kein Endpunkt dafür |
 
+**Schreibpfade, nachverifiziert am 2026-09-14** (jede Änderung sofort zurückgesetzt und die Wiederherstellung nachgelesen):
+
+| # | Pfad | Befund |
+|---|---|---|
+| T20 | `PUT /shots/<id>` `annotations` | `actualDoseWeight`, `actualYield` werden übernommen (Read-back bestätigt) |
+| T21 | `PUT /beans/<id>` | `notes`, `processing` werden übernommen |
+| T22 | `PUT /bean-batches/<id>` | `frozen`, `freezeDate`, `roastDate` werden übernommen. Datumsangaben kommen mit angehängter Uhrzeit zurück (`2026-09-01T00:00:00.000`), die Eingabe `2026-09-01` wird akzeptiert |
+| T23 | **`unfreezeDate`** | **Existiert nicht.** Decaid führt kein Auftaudatum — siehe §20.7 |
+| T24 | `PUT /workflow` | `context.grinderSetting`, `context.targetDoseWeight`, `context.beanBatchId` werden übernommen |
+| T25 | Geschützt | `id` → 400 („ID in path does not match"), `createdAt`/`updatedAt` → 400 („system-managed") |
+| T26 | **`timestamp`** | **Nicht geschützt.** `PUT` mit `timestamp` kam mit **200** zurück und der Wert stand danach wirklich so da |
+
+T26 ändert die Rolle der Blockliste in `writes.py`: für die Telemetriefelder ist sie nicht die zweite Sicherung, sondern **die einzige**. Ein eigener Test hält das fest.
+
 **Abweichungen vom Auftrag** — gemeldet statt still umgebaut:
 
 1. **Pfade** (T1): der Auftrag nennt `/shots/ids`, `/shots/latest`, `/shots/<id>`
@@ -1020,6 +1034,8 @@ eigene Messung an der echten API.
 4. **`enjoyment`** (T18): bereits 0–100. Die im Auftrag vorsorglich erwähnte
    Umrechnung Sterne×20 entfällt.
 5. **`pi_end` aus `profileFrame`** — siehe §20.4, die Ableitung trägt so nicht.
+6. **Ingestion in einem Verfahren statt zweien** — siehe §20.3.
+7. **Dosis-Ausreißer** — siehe §20.7, die Regel ist so nicht prüfbar.
 
 ### 20.3 Ingestion
 
@@ -1187,17 +1203,34 @@ ausschließlich der Weg, auf dem Claude den MCP-Endpoint erreicht.
 
 ### 20.7 Wächter und Audit
 
-Post-Shot-Prüfregeln als eigenes Modul im Sync-Worker, jede Regel einzeln
-abschaltbar:
+Vier Prüfregeln als eigenes Modul (`guards.py`), reine Funktionen über
+Zeilen — ohne Netz, ohne Datenbank, mit übergebener Uhr. Jede Regel ist
+über `GUARD_RULES` einzeln abschaltbar; eine Regel, die zu oft anschlägt,
+würde sonst im Ganzen ignoriert und nähme die anderen mit.
 
-- Bohnen- oder Batchwechsel ohne Mahlgradänderung
-- Bohnenalter aus `roastDate` des Batches, **eingefrorene Zeit zählt nicht als
-  Alterung** (`freezeDate`/`unfreezeDate`/`frozen`)
-- fehlendes `enjoyment` nach konfigurierbarer Frist
-- Dosis-Ausreißer gegenüber dem Workflow-Sollwert
+| Regel | Prüft | Am Bestand (169 Bezüge) |
+|---|---|---|
+| `grind_not_adjusted` | Chargenwechsel ohne Mahlgradänderung | 5 Befunde |
+| `bean_age` | Bohnenalter beim Bezug, Gefrierzeit herausgerechnet | 0 — 6 von 8 Chargen haben kein `roastDate` |
+| `missing_rating` | `enjoyment` nach Frist nicht nachgetragen | 29 |
+| `dose_outlier` | Gewichte gegen das Soll des Workflows | 29 |
 
-Benachrichtigung über ntfy (`NTFY_URL`, `NTFY_TOPIC`, optional Token),
-**höchstens eine Nachricht je Bezug**, keine sensiblen Inhalte im Text.
+**Abweichung 7: die Dosis ist nicht prüfbar.** Der Auftrag nennt Dosis-Ausreißer gegenüber dem Workflow-Sollwert. Die Messung zeigt, dass es die nicht geben kann: in **allen 165** Fällen mit beiden Werten ist `actualDoseWeight` **exakt** gleich `targetDoseWeight`. Die DE1 wiegt die Dosis nicht, sie übernimmt den Sollwert; der Vergleich verglich eine Zahl mit sich selbst. Die Streuung steckt im **Bezugsgewicht** — dort misst die Waage wirklich, im Mittel 8,9 g neben dem Soll, im Extremfall 497 g. Die Regel behält ihren Namen und ihre Absicht, prüft aber das Bezugsgewicht gegen sein Soll und die Dosis nur noch auf Plausibilität (0 g heißt: Waage nicht verbunden).
 
-Neues Tool `audit_archive(since?)` wendet dieselben Regeln auf den Bestand an
-und liefert einen kompakten Bericht.
+**Das Bohnenalter ohne Auftaudatum.** Eingefrorene Zeit zählt nicht als Alterung. Decaid führt aber kein `unfreezeDate` (T23): steht `frozen` auf false und ist trotzdem ein `freezeDate` gesetzt, wurde die Charge irgendwann aufgetaut — wann, weiß niemand. Der Befund trägt dann `certain: false`, und das Alter ist ausdrücklich eine **Obergrenze**. Eine Zahl, die sich nicht belegen lässt, wird nicht als sicher ausgegeben.
+
+**Zwei Fenster statt einer Frist.** `missing_rating` meldet nur zwischen `RATING_GRACE_HOURS` (36 h; vorher trinkt man ja erst) und sieben Tagen. Ohne Obergrenze meldete die Regel 140 der 169 Bezüge — 83 Prozent des Archivs, weil nur etwa jeder sechste Bezug bewertet wird. Wer einen Bezug von vorletzter Woche nicht bewertet hat, tut es nicht mehr.
+
+**Benachrichtigung** über ntfy (`NTFY_URL`, `NTFY_TOPIC`, optional Token), mit drei Deckeln, die alle demselben Zweck dienen — dass die Meldungen gelesen bleiben:
+
+- **höchstens eine Nachricht je Bezug**, auch wenn vier Regeln anschlagen;   welcher Bezug schon gemeldet wurde, steht im Sync-Zustand und übersteht   einen Neustart
+- **nur Bezüge der letzten 48 Stunden** — eine Benachrichtigung sagt „eben   ist etwas schiefgegangen"; was länger her ist, steht in `audit_archive`
+- **höchstens fünf Nachrichten je Lauf**, neueste zuerst
+
+Gemessen am Bestand: `audit_archive` zeigt 63 Befunde, ntfy würde 2 melden.
+
+**Keine Inhalte in Befunden.** Ein Befund nennt Kennung, Regel und die Zahlen, auf die er sich stützt — nie den Text einer Notiz oder einen Bohnennamen. Die Befunde verlassen per ntfy das Haus; was einmal dort war, ist dort. Ein Test prüft das je Regel gegen eine Eingabe mit Freitext.
+
+**Ausbleiben ist kein Fehler.** Geht ntfy nicht, wird das protokolliert und der Abgleich läuft weiter; nur erfolgreich Gemeldetes gilt als gemeldet. Eine Benachrichtigung ist kein Teil der Archivierung.
+
+Das Tool `audit_archive(since?, rule?, limit?)` wendet dieselben Regeln auf den Bestand an und liefert Befunde **mitsamt den geltenden Schwellen** — ein Befund ohne seinen Maßstab lässt sich nicht einordnen.
