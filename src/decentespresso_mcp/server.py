@@ -37,6 +37,13 @@ from .decaid_client import (
 )
 from .guards import ALL_RULES, run_rules
 from .metrics import METRICS_VERSION, curve_shape, downsample_curve, metrics_for_shot
+from .stats import _iso as _stats_iso
+from .stats import (
+    batch_usage,
+    compare,
+    parse_period,
+    summarise,
+)
 from .sync import (
     QUICK_SYNC_MAX_AGE_S,
     STATE_BACKFILL_DONE,
@@ -213,7 +220,15 @@ DETAIL LEVELS - `get_shot`, `get_shot_metrics` and `compare_shots` take
 - `detailed` for shape detail: adds the point arrays, as `include_curve` does.
 
 Start at `summary`. Going deeper costs roughly twice the size each step, and on
-a comparison of four shots `detailed` is near the response budget.\
+a comparison of four shots `detailed` is near the response budget.
+
+STATISTICS - `stats(period)` leaves out cleaning and calibration profiles and
+shots that produced under 5 g (aborts, which often run under an ordinary
+profile name). `busiest_day` is the exception and counts everything, giving
+the split - a day of flushes was still a day at the machine. Top lists carry
+`rated` next to `shots`, because a mean over one rating is not the claim a
+mean over ten is. Batches report what was used, not what is left: Decaid
+stores no weight on a batch, so a remainder would be invented.\
 """
 
 
@@ -600,6 +615,44 @@ def build_mcp(
             "findings": [f.as_dict() for f in capped],
             "by_rule": _count_by_rule(findings),
         }
+
+
+    @mcp.tool(annotations=READ_ONLY)
+    async def stats(period: str = "30d", compare_previous: bool = True) -> dict[str, Any]:
+        """What was pulled in a period, from what, and how it tasted.
+
+        `period` is an ISO date ("since then") or a shorthand like `30d`, `12h`,
+        `4w`. `compare_previous` adds the same figures for the period of equal
+        length before it, plus the deltas.
+
+        Cleaning and calibration profiles are left out, as are shots that
+        produced almost nothing - see the server instructions for what counts.
+        `busiest_day` is the exception and counts everything, because a day of
+        flushes was still a day at the machine.
+        """
+        try:
+            since, until = parse_period(period, now=datetime.now(UTC))
+        except ValueError as exc:
+            raise ToolError(f"invalid_argument: {exc}") from exc
+
+        rows = await asyncio.to_thread(
+            db.shots_for_stats, _stats_iso(since), _stats_iso(until))
+        batches = await asyncio.to_thread(db.batches_by_id)
+
+        payload: dict[str, Any] = {
+            "period": period,
+            **summarise(rows, since=since, until=until),
+            "batches": batch_usage(rows, batches, at=datetime.now(UTC)),
+        }
+
+        if compare_previous:
+            span = until - since
+            before_rows = await asyncio.to_thread(
+                db.shots_for_stats, _stats_iso(since - span), _stats_iso(since))
+            previous = summarise(before_rows, since=since - span, until=since)
+            payload["comparison"] = compare(payload, previous)
+
+        return payload
 
     if coordinator is not None:
         _register_workflow_reader(mcp, coordinator)

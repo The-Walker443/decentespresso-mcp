@@ -458,8 +458,10 @@ class SyncCoordinator:
     async def _find(pending: Any, wanted: str) -> dict[str, Any]:
         """Pick one entry out of a list response.
 
-        Decaid has no single-item endpoint for beans and batches (T16) - the
-        list is the only source, for the read-back as well.
+        Both catalogues are a handful of rows, so one request serves the lookup
+        and the read-back alike. ``GET /api/v1/beans/<id>`` and
+        ``/api/v1/bean-batches/<id>`` do exist (T16) - an earlier comment here
+        claimed they did not, which was an assumption nobody had checked.
         """
         for item in await pending:
             if str(item.get("id")) == wanted:

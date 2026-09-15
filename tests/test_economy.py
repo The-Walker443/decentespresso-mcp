@@ -34,15 +34,15 @@ RECENT = RECENT_ID
 # something grows back, not only on a doubling. Measured against the archive
 # built from the fixtures.
 
-#: All read-only tool definitions together, as they travel with every
-#: request. Measured over time: 10399 B across 9 tools, then 6876 B after the
-#: economy pass, now 9241 B across 11 tools.
+#: All read-only tool definitions together, as they travel with every request.
+#: Measured over time: 10399 B across 9 tools, then 6876 B after the economy
+#: pass, now 10303 B across 12.
 #:
 #: The telling figure is the one **per tool**, not the sum - more capability
 #: necessarily costs more, verbosity does not. Per tool: 1155 B, then 764 B,
-#: now 840 B. The growth sits in the JSON schema of the new
-#: parameters, not in the descriptions.
-MAX_TOOL_DEFINITIONS = 9_800
+#: now 858 B. What growth there is sits in the JSON schema of the new
+#: parameters rather than in the descriptions.
+MAX_TOOL_DEFINITIONS = 10_600
 MAX_BYTES_PER_TOOL = 900
 
 #: get_shot("latest") without point arrays.
@@ -55,8 +55,9 @@ MAX_GET_SHOT_LEAN = 2_400
 #: update_batch, set_workflow). Measured: 12123 B across 15 tools - 808 B per
 #: tool and therefore leaner than the 845 B a single write tool once cost,
 #: because the behavioural rules live centrally in INSTRUCTIONS rather than in
-#: every docstring. The surcharge only applies when writing is on.
-MAX_TOOL_DEFINITIONS_WITH_WRITE = 12_800
+#: every docstring. Now 13185 B across 16 tools - 824 B each, still below the
+#: read-only average. The surcharge only applies when writing is on.
+MAX_TOOL_DEFINITIONS_WITH_WRITE = 13_600
 
 #: compare_shots with two shots including profiles. Now: 4234 B.
 #: The same information once took three calls: compare_shots (1680 B) plus

@@ -98,7 +98,7 @@ relevant constant in the code.
 | T13 | `PUT` semantics | Deep merge: sending one annotation leaves the others and all measurements untouched |
 | T14 | Protected fields | `createdAt`, `measurements`, `id` → **400**, nothing changed |
 | T15 | `updatedAt` | Set server-side on a content change; `createdAt` untouched |
-| T16 | Batches path | `/api/v1/bean-batches` or `/api/v1/beans/<id>/batches`. `/api/v1/batches` → 404 |
+| T16 | Beans and batches | `/api/v1/bean-batches` or `/api/v1/beans/<id>/batches`; `/api/v1/batches` → 404. Single-item fetches **do** exist: `/api/v1/beans/<id>` and `/api/v1/bean-batches/<id>` both return 200 |
 | T17 | WebSocket | `/ws/v1/machine/shotState` → 101 Upgrade. `/ws/v1/machine/state` → 404 |
 | T18 | `enjoyment` scale | 0–100 as a float. No star scale |
 | T19 | Retention | No pruning endpoint; the archive reaches back without gaps |
@@ -109,6 +109,7 @@ relevant constant in the code.
 | T24 | Writable on the workflow | `context.grinderSetting`, `context.grinderModel`, `context.targetDoseWeight`, `context.targetYield`, `context.beanBatchId` |
 | T25 | Protected on write | `id` → 400 ("ID in path does not match"), `createdAt`/`updatedAt` → 400 ("system-managed") |
 | T26 | **`timestamp`** | **Not protected.** A `PUT` carrying it returns 200 and the value stands |
+| T27 | **Weight on a batch** | **Does not exist.** A batch carries `id`, `beanId`, `roastDate`, `buyDate`, `freezeDate`, `frozen`, `archived` and the two timestamps, and nothing else - checked against the list and the single-item endpoint. There is no `weightRemaining` to estimate a remaining stock from |
 
 T26 is why the block list in `writes.py` is not a second line of defence but the
 only one for the telemetry fields.
@@ -484,6 +485,7 @@ is read-only except `sync_now` and the write tools from §11.
 | `sync_now()` | an immediate sync, idempotent |
 | `status()` | archive contents, last sync, Decaid state, warnings |
 | `audit_archive(since?, rule?, limit?)` | guard findings with the thresholds in force |
+| `stats(period, compare_previous)` | what was pulled in a period, and how it tasted |
 
 Filters are case-insensitive substrings. Dates take ISO8601 or a relative
 shorthand (`12h`, `7d`, `2w`, `1m`, `1y`).
@@ -549,6 +551,44 @@ necessarily costs more, verbosity does not.
 `telemetry.py` logs `tool`, `dur_ms` and `bytes` for every call - and **no**
 parameter values, no URL, no path. Arguments are the likeliest route by which
 something confidential eventually reaches a log line.
+
+### 9.4 Statistics
+
+`stats(period, compare_previous)` answers what was pulled in a period, from
+what, and how it tasted. Deliberately lean: shot counts overall and per day, the
+top beans and profiles by count and mean rating, the averages for dose, yield,
+ratio and duration, how the grind moved per bean, and what each batch was used
+for. `compare_previous` adds the same figures for the period of equal length
+before it, plus the deltas.
+
+`period` takes an ISO date ("since then") or a shorthand: `12h`, `7d`, `4w`,
+`1m`, `1y`.
+
+**What counts as a shot.** Excluding cleaning profiles by name is not enough:
+across 171 shots, 22 produced under 5 g, and only 12 of those carry a
+maintenance name (`Cleaning/Forward Flush x5`, `Test/temperature calibration`).
+The other 10 ran under `Default` or `D-Flow` and are aborts. So there are two
+criteria - the profile name must not match `clean`, `flush`, `rinse`, `descal`,
+`calibrat` or `purge`, and the shot must have produced at least 5 g. A shot with
+no recorded yield still counts: the scale may simply have been off, and dropping
+those would shrink the archive quietly.
+
+`busiest_day` is the exception and counts everything, maintenance included,
+reporting the split. A day with thirty flushes was still a day at the machine,
+and hiding that would make the number confusing rather than clean.
+
+**Grind settings are free text** typed on a tablet, and the archive holds "2.7",
+"2.70" and "2,8" for one grinder. They are reported as written, but two
+spellings of the same number are not a change - comparing the strings reported
+13 changes on a bean that was moved 11 times.
+
+**No remaining-stock estimate.** A remainder would need a starting weight, and a
+batch carries none (T27). What is reported instead is what was actually used:
+shots pulled from the batch, coffee consumed, mean dose, days since roasting.
+
+**Top lists carry their rating coverage.** A mean over one rating out of twenty
+is not the same claim as one over ten, so `rated` sits next to `shots`.
+
 
 ## 10. Guards and audit
 

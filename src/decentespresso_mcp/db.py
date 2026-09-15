@@ -256,6 +256,22 @@ class Database:
                 f"FROM shots {clause} ORDER BY started_at ASC", params,
             )]
 
+    def shots_for_stats(self, since: str, until: str) -> list[dict[str, Any]]:
+        """Shots in a window, with the fields statistics reads.
+
+        Includes the profile name: deciding what counts as a real shot needs it
+        (SPEC §9.4), and doing that filtering in SQL would put the rule in two
+        places.
+        """
+        with self._lock:
+            return [dict(row) for row in self._conn.execute(
+                "SELECT id, started_at, bean_name, bean_id, bean_batch_id, "
+                "       profile_name, grinder_setting, dose_g, yield_g, ratio, "
+                "       duration_s, enjoyment "
+                "FROM shots WHERE started_at >= ? AND started_at < ? "
+                "ORDER BY started_at ASC", (since, until),
+            )]
+
     def batches_by_id(self) -> dict[str, dict[str, Any]]:
         with self._lock:
             return {
