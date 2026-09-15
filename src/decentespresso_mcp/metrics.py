@@ -638,8 +638,10 @@ RESISTANCE_BANDS = ((1.0, "very_low"), (2.5, "low"), (5.0, "moderate"),
                     (9.0, "high"))
 
 #: Change of resistance across the settled window, per second. A bed that loses
-#: resistance while the pressure is held is opening up. Measured: p50 = -0.11,
-#: p90 = +0.05, and the steepest 15 % sit below -0.45.
+#: resistance while the pressure is held is opening up. Measured over the 142
+#: shots with a measurable trend: p50 = -0.11, p90 = +0.05, and -0.45 is p13
+#: (18 shots). Below it the tail steepens fast - p15 is -0.39, p20 already
+#: -0.32 - so the cut separates a declining bed from one that merely settles.
 TREND_STEEP_DECLINE = -0.45
 TREND_FLAT = 0.15
 

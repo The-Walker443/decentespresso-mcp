@@ -406,12 +406,27 @@ passing - a knocked scale must never read as good news.
 | `flow_instability` | flow would not settle while a constant target was held | ≥ 0.10 ml/s (p90) | 9 |
 | `flow_divergence` | the pump delivered more than the scale received | ≥ +0.30 ml/s (p99) | 2 |
 | `early_drops` | liquid arrived before preinfusion ended | ≥ 5.0 s (p90) | 12 |
-| `resistance_trend` | the bed lost resistance while pressure was held | ≤ −0.45/s | 18 |
+| `resistance_trend` | the bed lost resistance while pressure was held | ≤ −0.45/s (p13) | 18 |
 
 `flow_instability` is measured only inside stretches where the machine asks for
 a constant pressure or a constant flow, so a profile that ramps on purpose is
 not mistaken for an unstable puck. `flow_divergence` and `early_drops` depend on
 the scale and are skipped when the scale warnings fire.
+
+**Why −0.45 per second.** The trend distribution sits just below zero - median
+−0.11, p90 +0.05 - because a bed compacts slightly during any pour, so mere
+settling must not count. Across the 142 shots with a measurable trend, −0.45 is
+p13 and the tail steepens quickly beneath it (p15 −0.39, p20 −0.32), which puts
+the cut where ordinary settling stops and a bed opening up begins. It is
+deliberately no tighter: of the three worst-rated shots the two steepest
+(−1.06, −1.92) fire and the third (−0.25) does not. The indicator reports a bed
+losing resistance, not a bad shot, and the percentages above are the count of
+shots where that happened - not a claim about how many tasted wrong.
+
+The "fires on" column counts shots where the indicator could be **computed**.
+For `resistance_trend` that is 18 of 142, not of 171: a shot without a settled
+pour has no trend, and counting it as passing would be the same mistake as
+reading a knocked scale as good news.
 
 **Why five rather than the four originally specified.** Measured against the
 operator's own notes across 165 shots, the four fire on 4 of the 10 worst-rated

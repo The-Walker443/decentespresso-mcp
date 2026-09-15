@@ -1121,7 +1121,7 @@ def _profile_brief(db: Database, profile_id: int | None) -> dict[str, Any] | Non
     """Summary for ``compare_shots`` - headline targets, no step list.
 
     Enough for the question "did these shots run on the same profile"; the
-    vollstaendigen Schritte liefert ``get_profile``.
+    complete steps come from ``get_profile``.
     """
     if profile_id is None:
         return None
