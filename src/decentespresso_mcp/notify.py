@@ -1,4 +1,4 @@
-"""Notification over ntfy (SPEC §20.7).
+"""Notification over ntfy (SPEC §10).
 
 Three rules, all serving the same purpose - that the messages keep being
 read:

@@ -1,4 +1,4 @@
-"""Whitelist and validation of write access (SPEC §18.2, §20.5)."""
+"""Whitelist and validation of write access (SPEC §11.2)."""
 
 from __future__ import annotations
 

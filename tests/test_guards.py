@@ -1,4 +1,4 @@
-"""Guards over the archive (SPEC §20.7).
+"""Guards over the archive (SPEC §10).
 
 Pure functions, therefore pure tests: rows in, findings out, no network and no
 database. The clock is handed in - otherwise the result would depend on the
@@ -222,7 +222,7 @@ def test_a_rated_shot_is_never_flagged() -> None:
 
 def test_a_zero_rating_counts_as_rated() -> None:
     """Depends on the normalisation: in the archive 0 is an input, never a
-    default (SPEC §20.4). Otherwise the rule would report 75 shots of the
+    default (SPEC §5). Otherwise the rule would report 75 shots of the
     import era."""
     assert missing_rating(
         [shot("a", at="2026-08-01T08:00:00Z", enjoyment=0.0)], at=NOW

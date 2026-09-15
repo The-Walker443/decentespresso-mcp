@@ -1,7 +1,6 @@
-"""Decaid responses -> archive rows (SPEC §20.4).
+"""Decaid responses -> archive rows (SPEC §5).
 
-Two normalisations are binding here, both arising from the migration in M8
-(2/n) and measured against the real 168 shots:
+Two normalisations are binding here, both measured against the whole archive:
 
 **Time.** The archive keeps UTC throughout. Decaid does not do so uniformly:
 shots imported from the de1app already carry their timestamp in UTC, natively
@@ -56,7 +55,7 @@ MACHINE_FIELDS = {
     "flow_in": "flow",                          # pump flow
     "temp_mix": "mixTemperature",
     "temp_basket": "groupTemperature",
-    "target_pressure": "targetPressure",        # new in M8: target per data point
+    "target_pressure": "targetPressure",        # the target at each data point
     "target_flow": "targetFlow",
     "target_temp_mix": "targetMixTemperature",
     "target_temp_basket": "targetGroupTemperature",

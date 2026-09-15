@@ -1,4 +1,4 @@
-"""Sync with Decaid (SPEC §20.4).
+"""Sync with Decaid (SPEC §5).
 
 The stand-in client counts *how often* something was fetched - the statements
 that give the sync its point hang on that: the list suffices for the decision,
@@ -381,7 +381,7 @@ async def test_write_shot_reads_back(db):
 
 
 async def test_import_era_zeros_never_reach_the_archive(db):
-    """The binding rule from M8 (3/n), here against the finished archive."""
+    """The binding rule from SPEC §5.3, here against the finished archive."""
     shots = [
         decaid_detail("de1app-1785525360", timestamp="2026-08-01T05:32:50",
                       updated_at="2026-09-01T10:00:00Z", enjoyment=0.0),

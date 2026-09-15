@@ -1,4 +1,4 @@
-"""Shared test data for the Decaid era (SPEC §20).
+"""Shared test data for the Decaid era (SPEC §4).
 
 A module of its own rather than conftest: the tests import the helpers by
 name, and pytest loads conftest separately - nothing can be imported from

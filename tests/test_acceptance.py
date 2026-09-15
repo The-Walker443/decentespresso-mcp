@@ -1,4 +1,4 @@
-"""Acceptance criteria from SPEC §13, each with its number.
+"""Acceptance criteria from SPEC §15, each with its number.
 
 Four of the six criteria run automatically here. Criterion 2 (a new shot
 appears in time) and 5 (the container survives a restart) need the real
@@ -78,7 +78,7 @@ async def test_criterion_3_latest_is_complete_and_within_budget(
             "get_shot", {"id": "latest", "include_curve": True}
         )).data
 
-    # Four parts in one response. Since SPEC §17 the curve comes as
+    # Four parts in one response. Since SPEC §9.1 the curve comes as
     # curve_shape; the point arrays are the exception.
     assert lean["shot"]["id"] == REFERENCE
     assert lean["metrics"]["pi_end"] is not None

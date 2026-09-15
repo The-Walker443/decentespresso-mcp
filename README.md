@@ -213,26 +213,25 @@ One log line per write with the shot id, the field names and the duration —
 
 ### Which build is running?
 
-`status()` answers that with three fields:
+`status()` answers that with two fields:
 
 | Field | Origin |
 |---|---|
 | `version` | package metadata from `pyproject.toml` (`importlib.metadata`) |
-| `milestone` | derived from the minor version: `0.7.x` -> `M7` |
 | `build_ref` | commit SHA, baked in as `BUILD_REF` when the image is built |
 
-The occasion was a misstep during the M7 deployment: `status()` reported version
-`0.1.0` and `M6` while M7 code was running — both numbers were maintained by
-hand and stale. Whether the old image was running or only the field lagged
-behind could not be told apart.
+One source for the version, not two - the second is the one that gets
+forgotten. A deployment once reported a version and a milestone that were both
+maintained by hand and both stale, and whether the old image was running or only
+the fields lagged behind could not be told apart.
 
-The rule now: if `build_ref` does not match the expected commit, Portainer did
-not re-pull (**Re-pull image** forgotten). If `build_ref` is `null`, the server
-is not running from a built image.
+If `build_ref` does not match the expected commit, the registry image was not
+re-pulled (**Re-pull image** forgotten in Portainer). If `build_ref` is `null`,
+the server is not running from a built image.
 
-**Bump the version at each milestone** — minor version = milestone number. A
-test compares it against the highest milestone listed in SPEC §14 and fails when
-the bump is missing.
+The specification states the version it describes, and a test enforces that it
+matches `pyproject.toml`. That is the whole convention.
+
 
 ### Measurement per call
 

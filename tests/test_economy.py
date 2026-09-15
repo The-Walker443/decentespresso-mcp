@@ -1,7 +1,7 @@
-"""Response economy per SPEC §17.
+"""Response economy per SPEC §9.1.
 
-Records what M6 achieved: the size of the tool definitions, the response sizes
-of the typical calls, and that every call is measurable. The bounds are
+Records the size of the tool definitions, the response sizes of the typical
+calls, and that every call is measurable. The bounds are
 deliberately tight - they should fire when something grows back, not only when
 it gets out of hand.
 """
@@ -34,31 +34,30 @@ RECENT = RECENT_ID
 # built from the fixtures.
 
 #: All read-only tool definitions together, as they travel with every
-#: request. Before M6: 10399 B across 9 tools. After M6: 6876 B. M8 adds
-#: audit_archive and get_workflow: 9241 B across 11 tools (English texts came
-#: out marginally leaner than the German ones - 82 B less).
+#: request. Measured over time: 10399 B across 9 tools, then 6876 B after the
+#: economy pass, now 9241 B across 11 tools.
 #:
 #: The telling figure is the one **per tool**, not the sum - more capability
-#: necessarily costs more, verbosity does not. Per tool: 1155 B before M6,
-#: 764 B after M6, 840 B now. The growth sits in the JSON schema of the new
+#: necessarily costs more, verbosity does not. Per tool: 1155 B, then 764 B,
+#: now 840 B. The growth sits in the JSON schema of the new
 #: parameters, not in the descriptions.
 MAX_TOOL_DEFINITIONS = 9_800
 MAX_BYTES_PER_TOOL = 900
 
 #: get_shot("latest") without point arrays.
-#: Before M6: 5021 B (arrays were the default). Now: 2092 B.
+#: Was 5021 B while the arrays were the default. Now 2092 B.
 MAX_GET_SHOT_LEAN = 2_300
 
 #: With WRITE_ENABLED four write tools join in (update_shot, update_bean,
 #: update_batch, set_workflow). Measured: 12123 B across 15 tools - 808 B per
-#: tool and therefore leaner than the 845 B M7 needed with a single write
-#: tool. Since M8 the behavioural rules live centrally in INSTRUCTIONS rather
-#: than in every docstring. The surcharge only applies when writing is on.
+#: tool and therefore leaner than the 845 B a single write tool once cost,
+#: because the behavioural rules live centrally in INSTRUCTIONS rather than in
+#: every docstring. The surcharge only applies when writing is on.
 MAX_TOOL_DEFINITIONS_WITH_WRITE = 12_800
 
 #: compare_shots with two shots including profiles. Now: 4234 B.
-#: Before M6 the same information took three calls: compare_shots (1680 B)
-#: plus get_profile twice (1013 B each) = 3706 B across three round trips.
+#: The same information once took three calls: compare_shots (1680 B) plus
+#: get_profile twice (1013 B each) = 3706 B across three round trips.
 MAX_COMPARE_TWO = 4_500
 
 
@@ -168,7 +167,7 @@ async def test_compare_two_with_profiles_is_small(mcp) -> None:
 
 
 async def test_lean_answers_beat_the_old_defaults(mcp) -> None:
-    """Der Kern von M6: dieselbe Frage, weniger Kontext."""
+    """The heart of it: the same question, less context."""
     lean = await call(mcp, "get_shot", {"id": REFERENCE})
     with_arrays = await call(mcp, "get_shot", {"id": REFERENCE, "include_curve": True})
     assert size_of(lean) * 2 < size_of(with_arrays)
@@ -271,7 +270,7 @@ async def test_log_never_carries_arguments(mcp, caplog) -> None:
 
 
 async def test_write_tool_costs_what_it_is_worth(valid_env, db) -> None:
-    """Write mode must not blow up the tool list (SPEC §17.3/§18.4)."""
+    """Write mode must not blow up the tool list (SPEC §9.1/§11)."""
     from decentespresso_mcp.decaid_client import DecaidClient
     from decentespresso_mcp.sync import SyncCoordinator
 

@@ -1,13 +1,18 @@
-"""Version, milestone and build identity (SPEC §19).
+"""Version and build identity.
 
-Anlass war ein konkreter Fehlgriff: beim M7-Deployment meldete ``status()``
-version 0.1.0 and milestone M6 while M7 code was running. Both numbers were
-hand-maintained and stale for exactly that reason - indistinguishable from
-"the old image is still running".
+One source for the version and one for the commit. The occasion was a
+deployment that reported a version and a milestone which were both maintained
+by hand and both stale - whether the old image was running or only the fields
+lagged behind could not be told apart from the response.
+
+The milestone counter is gone with the development narrative it belonged to.
+What is left is the mechanism that actually caught that bug: the version comes
+from the package metadata, and a test keeps the specification honest about it.
 """
 
 from __future__ import annotations
 
+import json
 import pathlib
 import re
 import subprocess
@@ -16,30 +21,20 @@ import sys
 import pytest
 from fastmcp import Client
 
-from decentespresso_mcp import __version__, milestone
+from decentespresso_mcp import __version__
 from decentespresso_mcp.config import Config
 from decentespresso_mcp.db import Database
 from decentespresso_mcp.server import build_mcp
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-
-
-@pytest.fixture
-def db(tmp_path: pathlib.Path):
-    database = Database(tmp_path / "version.db")
-    database.migrate()
-    yield database
-    database.close()
+SPEC = ROOT / "SPEC_decentespresso-mcp.md"
 
 
 def pyproject_version() -> str:
     text = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    match = re.search(r'^version = "([^"]+)"', text, re.MULTILINE)
+    match = re.search(r'^version = "([^"]+)"', text, re.M)
     assert match, "pyproject.toml has no version field"
     return match.group(1)
-
-
-# ----------------------------------------------------------------- Kopplung
 
 
 def test_version_comes_from_the_package_metadata() -> None:
@@ -48,104 +43,109 @@ def test_version_comes_from_the_package_metadata() -> None:
     assert __version__ != "0+unknown", "package not installed?"
 
 
-def test_no_hardcoded_release_version_in_the_source() -> None:
-    """Frueher stand ``__version__ = "0.1.0"`` im Quelltext - sieben
-    Meilensteine lang unveraendert.
+def test_no_module_hardcodes_a_release_number() -> None:
+    """The sentinel for the uninstalled case stays allowed.
 
-    The sentinel ``0+unknown`` for the uninstalled case stays allowed; what is
-    forbidden is a spelled-out release number.
+    What is forbidden is a spelled-out release number anywhere in the source.
     """
-    hardcoded = re.compile(r'__version__\s*=\s*"\d+\.\d+')
-    for path in (ROOT / "src").rglob("*.py"):
+    hardcoded = re.compile(r'__version__\s*=\s*["\']\d+\.\d+')
+    for path in (ROOT / "src" / "decentespresso_mcp").glob("*.py"):
         text = path.read_text(encoding="utf-8")
         assert not hardcoded.search(text), f"{path.name} sets the version by hand"
 
 
-def test_version_is_readable_in_a_fresh_interpreter() -> None:
+def test_version_is_readable_without_the_source_tree() -> None:
     # importlib.metadata reads the installed metadata - that has to work
     # without the source tree on the path too, as in the container.
     result = subprocess.run(
-        [sys.executable, "-c", "import decentespresso_mcp; print(decentespresso_mcp.__version__)"],
-        capture_output=True, text=True, cwd=str(ROOT.parent), check=True,
+        [sys.executable, "-c",
+         "import decentespresso_mcp as m; print(m.__version__)"],
+        cwd=ROOT.parent, capture_output=True, text=True, check=True,
     )
     assert result.stdout.strip() == __version__
 
 
-# --------------------------------------------------------------- Meilenstein
+def test_the_spec_states_the_version_it_describes() -> None:
+    """The one convention left, and the only one that can go stale silently.
+
+    A specification that names a version it no longer describes is worse than
+    one that names none, because it invites trusting the wrong document.
+    """
+    text = SPEC.read_text(encoding="utf-8")
+    match = re.search(r"\*\*Applies to version ([0-9][^.\s]*\.[^.\s]*\.[^.\s]*)\.\*\*",
+                      text)
+    assert match, "the spec does not state which version it applies to"
+    assert match.group(1) == __version__, (
+        f"the spec says {match.group(1)}, the package is {__version__}"
+    )
 
 
-def test_milestone_is_derived_from_the_minor_version() -> None:
-    minor = int(__version__.split(".")[1])
-    assert milestone() == f"M{minor}"
-
-
-@pytest.mark.parametrize(("version", "expected"), [
-    ("0.0.1", "M0"),
-    ("0.7.0", "M7"),
-    ("0.7.3", "M7"),      # a patch level does not change the milestone
-    ("0.12.0", "M12"),
-    ("1.0.0", None),      # from 1.0 on the milestone count is over
-    ("2.4.1", None),
-    ("0+unknown", None),
-    ("kaputt", None),
-])
-def test_milestone_derivation(monkeypatch, version: str, expected: str | None) -> None:
-    import decentespresso_mcp
-
-    monkeypatch.setattr(decentespresso_mcp, "__version__", version)
-    assert decentespresso_mcp.milestone() == expected
-
-
-# -------------------------------------------------------------------- status
-
-
-async def test_status_reports_version_milestone_and_build(
-    config: Config, db: Database, monkeypatch
+async def test_status_reports_version_and_build(
+    config: Config, archive: Database, monkeypatch
 ) -> None:
-    monkeypatch.setenv("BUILD_REF", "abc1234def5678")
-
-    async with Client(build_mcp(config, db)) as client:
+    monkeypatch.setenv("BUILD_REF", "0123456789abcdef")
+    async with Client(build_mcp(config, archive)) as client:
         payload = (await client.call_tool("status", {})).data
 
-    assert payload["version"] == pyproject_version()
-    assert payload["milestone"] == milestone()
-    assert payload["build_ref"] == "abc1234def5678"
+    assert payload["version"] == __version__
+    assert payload["build_ref"] == "0123456789abcdef"
+    assert "milestone" not in payload, "the milestone counter is gone"
 
 
-async def test_build_ref_is_null_outside_a_built_image(
-    config: Config, db: Database, monkeypatch
+async def test_build_ref_is_null_outside_an_image(
+    config: Config, archive: Database, monkeypatch
 ) -> None:
-    # Started locally there is no commit - better null than a
-    # erfundene Angabe.
+    # Started locally there is no commit - better null than a made-up value.
     monkeypatch.delenv("BUILD_REF", raising=False)
-
-    async with Client(build_mcp(config, db)) as client:
+    async with Client(build_mcp(config, archive)) as client:
         payload = (await client.call_tool("status", {})).data
-
     assert payload["build_ref"] is None
 
 
-async def test_user_agent_carries_the_real_version(config: Config) -> None:
-    # SPEC §4 wants an identifiable User-Agent; with a frozen version it would
-    # only nominally be one.
+def test_the_user_agent_carries_the_real_version(config: Config) -> None:
+    # An identifiable User-Agent is only identifiable while it tracks the
+    # version it actually runs.
     assert config.user_agent.startswith(f"decentespresso-mcp/{pyproject_version()} ")
 
 
-# ------------------------------------------------------- Meilenstein gepflegt
+@pytest.mark.parametrize("path", ["README.md", "SPEC_decentespresso-mcp.md"])
+def test_the_docs_do_not_name_a_stale_version(path: str) -> None:
+    """A version number in prose is a second place to forget.
 
-
-def test_version_matches_the_last_milestone_in_the_spec() -> None:
-    """Der Bump gehoert zum Meilenstein - dieser Test erinnert daran.
-
-    Finds the highest milestone listed in SPEC §14 and compares it with the
-    minor version.
+    Only the one line the test above checks is allowed to carry it.
     """
-    spec = (ROOT / "SPEC_decentespresso-mcp.md").read_text(encoding="utf-8")
-    section = spec.split("## 14.")[1].split("---")[0]
-    milestones = [int(m) for m in re.findall(r"\*\*M(\d+)\*\*", section)]
-    assert milestones, "SPEC ss14 listet keine Meilensteine mehr"
+    text = (ROOT / path).read_text(encoding="utf-8")
+    stale = [
+        line for line in text.splitlines()
+        if re.search(r"\b0\.\d+\.\d+\b", line)
+        and "Applies to version" not in line   # the one place it belongs
+        and "Decaid" not in line               # their version, not ours
+        and "0.0.0.0" not in line              # a bind address
+    ]
+    assert not stale, f"{path} names a version in prose: {stale[:3]}"
 
-    assert milestone() == f"M{max(milestones)}", (
-        f"pyproject.toml says {__version__} ({milestone()}), SPEC §14 is "
-        f"aber bis M{max(milestones)} gebaut. Version pro Meilenstein bumpen."
-    )
+
+def test_metrics_version_is_an_integer_that_only_grows() -> None:
+    """The cache key. A definition change that forgets it serves stale numbers."""
+    from decentespresso_mcp.metrics import METRICS_VERSION
+
+    assert isinstance(METRICS_VERSION, int)
+    assert METRICS_VERSION >= 3
+
+
+def test_verified_decaid_version_is_pinned() -> None:
+    """status() warns when the tablet reports something else."""
+    from decentespresso_mcp.decaid_client import VERIFIED_DECAID_VERSION
+
+    assert re.fullmatch(r"\d+\.\d+\.\d+", VERIFIED_DECAID_VERSION)
+
+
+def test_the_spec_and_the_readme_are_not_empty() -> None:
+    for path in (SPEC, ROOT / "README.md"):
+        assert len(path.read_text(encoding="utf-8")) > 2000, path.name
+
+
+def test_status_payload_is_json_serialisable(config: Config, archive: Database) -> None:
+    from decentespresso_mcp.server import _status_payload
+
+    json.dumps(_status_payload(config, archive), default=str)

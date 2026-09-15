@@ -513,7 +513,7 @@ class Database:
     # ------------------------------------------------------------------ Profile
 
     def shot_ids_without_profile(self) -> list[str]:
-        """Shots still missing a profile version (SPEC §6.4)."""
+        """Shots still missing a profile version (SPEC §7)."""
         with self._lock:
             return [
                 row["id"]
@@ -617,7 +617,7 @@ class Database:
         self.set_state(key, json.dumps(value, ensure_ascii=False))
 
     def record_errors(self, errors: Iterable[str], keep: int = 20) -> None:
-        """Appends errors to ``sync_state['last_errors']`` (SPEC §6.5, max 20)."""
+        """Appends errors to ``sync_state['last_errors']`` (SPEC §6, max 20)."""
         new = list(errors)
         if not new:
             return

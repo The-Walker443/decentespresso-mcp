@@ -1,4 +1,4 @@
-"""The write tool: visibility, write-through chain, read-back (SPEC §18).
+"""The write tool: visibility, write-through chain, read-back (SPEC §11).
 
 The stand-in Decaid reproduces what was measured against the real API on
 2026-09-14: protected fields are refused with 400 rather than silently
@@ -103,7 +103,7 @@ async def call(mcp, name: str, args: dict | None = None):
 
 
 async def test_tool_is_absent_without_the_switch(config: Config, db: Database) -> None:
-    """SPEC §18.4: off means absent, not "refuses"."""
+    """SPEC §11: off means absent, not "refuses"."""
     fake = FakeDecaid(reference_detail())
     async with Client(build_mcp(config, db, make_coordinator(fake, db))) as client:
         names = {t.name for t in await client.list_tools()}

@@ -1,4 +1,4 @@
-"""Env parsing and startup validation (SPEC §11.3).
+"""Env parsing and startup validation (SPEC §14).
 
 Principle: anything that can be missing or nonsense shows up at startup - not
 at the first sync at three in the morning. ``Config.from_env`` therefore
@@ -23,7 +23,7 @@ from .guards import (
     RATING_GRACE_HOURS,
 )
 
-#: MCP_PATH_SECRET stands in for authentication (SPEC §10.1) and must
+#: MCP_PATH_SECRET stands in for authentication (SPEC §12) and must
 #: therefore not be guessable. ``openssl rand -hex 24`` yields 48 characters.
 MIN_SECRET_LEN = 32
 _SECRET_CHARSET = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -54,17 +54,17 @@ class Config:
     display_tz: str
     host: str
     port: int
-    #: SPEC §18.4. When off, the write tools do not exist at all - they do not
+    #: SPEC §11. When off, the write tools do not exist at all - they do not
     #: refuse, they are absent from the tool list.
     write_enabled: bool
-    #: SPEC §20: Decaid on the local network is the source from M8 on. Private
-    #: addresses only.
+    #: SPEC §4: Decaid on the local network is the source. Private addresses
+    #: only.
     decaid_url: str
-    #: Guard notifications (SPEC §20.7); empty means none.
+    #: Guard notifications (SPEC §10); empty means none.
     ntfy_url: str | None
     ntfy_topic: str | None
     ntfy_token: str | None
-    #: Enabled guard rules (SPEC §20.7). Each can be switched off on its own -
+    #: Enabled guard rules (SPEC §10). Each can be switched off on its own -
     #: a rule that fires too often would otherwise be ignored wholesale and
     #: take the others with it.
     guard_rules: tuple[str, ...]
@@ -179,8 +179,8 @@ class Config:
         decaid_url = (src.get("DECAID_URL") or "").strip()
         if not decaid_url:
             problems.append(
-                "DECAID_URL is missing - from M8 on Decaid on the local "
-                "network is the source "
+                "DECAID_URL is missing - Decaid on the local network is the "
+                "source "
                 "(z. B. http://10.100.100.171:8080)"
             )
         else:
@@ -265,7 +265,7 @@ def _float_in_range(src, name: str, default: float, low: float, high: float,
 
 
 def _lan_url_problems(url: str) -> list[str]:
-    """Checks that DECAID_URL points at a private address (SPEC §20.6).
+    """Checks that DECAID_URL points at a private address (SPEC §12).
 
     Only IP literals are accepted, no hostnames. A name can be repointed later
     without the configuration changing - and then the shot traffic might run
@@ -290,7 +290,7 @@ def _lan_url_problems(url: str) -> list[str]:
     if not (address.is_private or address.is_loopback or address.is_link_local):
         return [
             f"DECAID_URL points at the public address {address}. Decaid is "
-            "addressed on the local network only (SPEC §20.6)."
+            "addressed on the local network only (SPEC §12)."
         ]
     return []
 

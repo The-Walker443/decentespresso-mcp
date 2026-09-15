@@ -1,11 +1,11 @@
-"""Whitelists and validation for write access (SPEC §18, §20.5).
+"""Whitelists and validation for write access (SPEC §11).
 
 Deliberately its own module: the rules for *what* may be written should be
 testable without a server, without a network and without a database.
 
 There are four rulesets - shot, bean, batch, workflow - one per endpoint. A
 field is listed only if it was written against the real API and read back
-afterwards (verification 2026-08-01 and 2026-09-14, SPEC §20.2). Better one
+afterwards (verification 2026-08-01 and 2026-09-14, SPEC §4.2). Better one
 field too few than one that gets silently discarded.
 
 WHY THE BLOCK LIST CARRIES WEIGHT. The verification on 2026-09-14 showed that
@@ -183,7 +183,7 @@ WORKFLOW = Ruleset(
 
 RULESETS = {r.name: r for r in (SHOT, BEAN, BATCH, WORKFLOW)}
 
-#: Backwards-compatible names - until M8 there was only the shot ruleset.
+#: Backwards-compatible aliases from when the shot was the only ruleset.
 ALLOWED_FIELDS = SHOT.allowed
 BLOCKED_FIELDS = SHOT.blocked
 

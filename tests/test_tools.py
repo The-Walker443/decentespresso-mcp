@@ -1,4 +1,4 @@
-"""MCP tools per SPEC §9.2, against an archive filled with real data."""
+"""MCP tools per SPEC §9, against an archive filled with real data."""
 
 from __future__ import annotations
 
@@ -217,7 +217,7 @@ async def test_get_shot_by_id(mcp) -> None:
     assert result["profile"]["title"] == "D-Flow"
     assert result["profile"]["steps"]
 
-    # SPEC §17.1: shape always, point arrays only on request.
+    # SPEC §9.1: shape always, point arrays only on request.
     assert result["curve_shape"]["segments"]
     assert "curve" not in result
 
@@ -244,7 +244,7 @@ async def test_get_shot_unknown_id(mcp) -> None:
 
 
 async def test_shape_is_much_smaller_than_the_point_arrays(mcp) -> None:
-    """The reasoning behind the default change in SPEC §17.1."""
+    """The reasoning behind the default change in SPEC §9.1."""
     lean = await call(mcp, "get_shot", {"id": REFERENCE})
     full = await call(mcp, "get_shot", {"id": REFERENCE, "include_curve": True})
 

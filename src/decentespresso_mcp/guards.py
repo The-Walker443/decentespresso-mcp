@@ -1,4 +1,4 @@
-"""Guards over the archive (SPEC §20.7).
+"""Guards over the archive (SPEC §10).
 
 Four rules that check after every shot whether something does not add up. The
 aim is not completeness but the small set of mistakes one actually makes while
@@ -232,7 +232,7 @@ def missing_rating(
 
     ``enjoyment IS NULL`` means "not rated" - that ingestion turns the zeros of
     the import era into NULL is exactly what makes this rule say anything at
-    all (SPEC §20.4).
+    all (SPEC §5).
     """
     newest = at - timedelta(hours=grace_hours)
     oldest = at - timedelta(hours=window_hours)

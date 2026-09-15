@@ -1,4 +1,4 @@
-"""Measurement per tool call (SPEC §17.4).
+"""Measurement per tool call (SPEC §9.2).
 
 Response economy cannot be judged without numbers. What gets logged is the
 tool name, the duration and the response size - **no** parameter values, no

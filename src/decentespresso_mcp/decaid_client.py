@@ -1,11 +1,11 @@
-"""HTTP client for the Decaid REST API on the local network (SPEC §20).
+"""HTTP client for the Decaid REST API on the local network (SPEC §4).
 
 Verified against the running instance on 2026-09-14, Decaid 0.8.5+2624. The
-findings are tabulated as T1-T19 in SPEC §20.2; whichever of them shapes the
+findings are tabulated as T1-T19 in SPEC §4.2; whichever of them shapes the
 behaviour of this module is noted at the relevant constant or method.
 
 Unlike the Visualizer client there are no credentials here: Decaid runs on the
-local network without authentication. In exchange the rule from SPEC §20.6
+local network without authentication. In exchange the rule from SPEC §12
 applies - this connection must never go through the Cloudflare tunnel.
 """
 
@@ -46,7 +46,7 @@ class DecaidError(RuntimeError):
 class DecaidUnreachable(DecaidError):
     """Tablet not reachable.
 
-    Per SPEC §20.3 this is **not an error state**: the tablet is asleep, being
+    Per SPEC §6 this is **not an error state**: the tablet is asleep, being
     carried around, or struggling with the Wi-Fi. The caller waits and catches
     up later.
     """
@@ -75,7 +75,7 @@ class ShotPage:
 
 
 class DecaidClient:
-    """Access to Decaid. Only ``update_*`` writes anything (SPEC §20.5)."""
+    """Access to Decaid. Only ``update_*`` writes anything (SPEC §11)."""
 
     def __init__(
         self,

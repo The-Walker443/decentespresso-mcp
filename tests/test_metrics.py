@@ -283,7 +283,7 @@ def _without_machine_phases(rows: list[dict]) -> list[dict]:
 
 
 def test_heuristic_fallback_on_a_real_series_without_markers() -> None:
-    """SPEC §13: a test of its own for the heuristic path.
+    """SPEC §15: a test of its own for the heuristic path.
 
     The same real shot, only without any phase report from the machine - which
     is what it would look like if the firmware provided neither state nor step

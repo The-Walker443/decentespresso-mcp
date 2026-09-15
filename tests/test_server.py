@@ -60,7 +60,7 @@ async def test_all_spec_tools_are_exposed(config: Config, db: Database) -> None:
     async with Client(build_mcp(config, db)) as client:
         tools = {tool.name: tool for tool in await client.list_tools()}
 
-    # SPEC §9.2 plus audit_archive from §20.7. get_workflow and the write tools
+    # SPEC §9 plus audit_archive from §10. get_workflow and the write tools
     # depend on the coordinator and on WRITE_ENABLED, so they are absent here.
     assert set(tools) == {
         "list_beans", "list_shots", "get_shot", "get_shot_metrics",

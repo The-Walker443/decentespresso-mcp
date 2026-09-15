@@ -1,6 +1,6 @@
 """Structured key=value logging on stdout with secret redaction.
 
-SPEC §12 calls for structured logs, SPEC §10.3 for credentials and complete
+SPEC §14 calls for structured logs, SPEC §12 for credentials and complete
 secret URLs never falling out. The redaction deliberately sits in the
 *formatter* rather than in a ``logging.Filter``: that way it also catches
 tracebacks, ``extra`` fields and everything third-party libraries (httpx,

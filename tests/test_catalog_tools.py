@@ -1,4 +1,4 @@
-"""audit_archive, get_workflow and the catalogue write tools (SPEC §20.5, §20.7)."""
+"""audit_archive, get_workflow and the catalogue write tools (SPEC §11, §10)."""
 
 from __future__ import annotations
 

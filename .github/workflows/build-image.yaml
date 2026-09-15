@@ -93,12 +93,12 @@ jobs:
           docker run --rm decentespresso-mcp:smoke python - <<'PY'
           import os
 
-          from decentespresso_mcp import __version__, milestone
+          from decentespresso_mcp import __version__
           from decentespresso_mcp.decaid_profile import profile_version
 
           assert __version__ != "0+unknown", "package metadata missing from the image"
           assert os.environ.get("BUILD_REF"), "BUILD_REF was not passed through"
-          print(f"version {__version__} ({milestone()}), build {os.environ['BUILD_REF'][:8]}")
+          print(f"version {__version__}, build {os.environ['BUILD_REF'][:8]}")
 
           # A profile the way Decaid embeds it in a workflow.
           row = profile_version({

@@ -26,7 +26,7 @@ from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse, Response
 
-from . import __version__, milestone
+from . import __version__
 from .config import Config
 from .db import Database
 from .decaid_client import (
@@ -61,11 +61,11 @@ STALE_SYNC_WARN_DAYS = 7
 
 DEFAULT_LIMIT = 10
 MAX_LIMIT = 50
-#: SPEC §17.1: the point arrays are the exception, not the rule - hence lower
+#: SPEC §9.1: the point arrays are the exception, not the rule - hence lower
 #: than the 120 suggested in §9.1.
 DEFAULT_MAX_POINTS = 60
 
-#: Points shared between *all* compared shots together. SPEC §9.2 names a flat
+#: Points shared between *all* compared shots together. SPEC §9 names a flat
 #: 60 per shot - four shots with curves blow the response budget that way
 #: (measured 18.2 kB). Split up, even the worst case stays below it.
 COMPARE_POINT_BUDGET = 100
@@ -556,7 +556,7 @@ def build_mcp(
     @mcp.custom_route("/healthz", methods=["GET"], include_in_schema=False)
     async def healthz(request: Request) -> Response:
         # Deliberately without the secret path: the Docker health check does not
-        # know it. Reveals nothing, but per SPEC §10.1 must not reach the tunnel
+        # know it. Reveals nothing, but per SPEC §12 must not reach the tunnel
         # ingress.
         return PlainTextResponse("ok")
 
@@ -597,7 +597,7 @@ def _register_workflow_reader(mcp: FastMCP, coordinator: SyncCoordinator) -> Non
 def _register_catalog_writes(
     mcp: FastMCP, db: Database, coordinator: SyncCoordinator
 ) -> None:
-    """Write tools for bean, batch and workflow (SPEC §20.5).
+    """Write tools for bean, batch and workflow (SPEC §11).
 
     The same guard rails as ``update_shot``: whitelist before sending, read-back
     afterwards, and present only when ``WRITE_ENABLED`` is set.
@@ -708,7 +708,7 @@ def _count_by_rule(findings: Any) -> dict[str, int]:
 
 
 def _register_update_shot(mcp: FastMCP, db: Database, coordinator: SyncCoordinator) -> None:
-    """Registers the write tool - only with ``WRITE_ENABLED`` (SPEC §18.4).
+    """Registers the write tool - only with ``WRITE_ENABLED`` (SPEC §11).
 
     Deliberately a separate function rather than a flag inside the tool: when
     the switch is off, ``update_shot`` does not appear in the tool list at all.
@@ -1088,7 +1088,6 @@ def _status_payload(config: Config, db: Database) -> dict[str, Any]:
             "notifications": "on" if config.ntfy_url else "off",
         },
         "version": __version__,
-        "milestone": milestone(),
         "build_ref": os.environ.get("BUILD_REF") or None,
         "shots": db.count_shots(),
         "series_points": db.count_series_points(),
@@ -1121,7 +1120,7 @@ def _age_days(iso_ts: str | None) -> float | None:
 
 
 async def _empty_404(request: Request, exc: Exception) -> Response:
-    """404 without a body (SPEC §10.1): a scanner should not even recognise Starlette."""
+    """404 without a body (SPEC §12): a scanner should not even recognise Starlette."""
     status_code = getattr(exc, "status_code", 404)
     if status_code == 404:
         return Response(status_code=404)

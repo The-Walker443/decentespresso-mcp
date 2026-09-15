@@ -1,7 +1,7 @@
-"""Normalisation of the Decaid data (SPEC §20.4).
+"""Normalisation of the Decaid data (SPEC §5).
 
-Two rules are at the centre here, both arising from the migration in M8
-(2/n): the zero rating of the import era and the wholesale conversion to UTC.
+Two rules are at the centre here: the zero rating of the import era and the
+wholesale conversion to UTC.
 """
 
 from __future__ import annotations

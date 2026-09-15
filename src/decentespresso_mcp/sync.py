@@ -1,4 +1,4 @@
-"""Sync with Decaid: beans, batches, shots, profiles (SPEC §20.4).
+"""Sync with Decaid: beans, batches, shots, profiles (SPEC §5).
 
 HOW A RUN WORKS. It first pages through the complete shot list. That list
 carries everything except the measurements, ``updatedAt`` in particular - so
@@ -75,7 +75,7 @@ class SyncResult:
     metrics_computed: int = 0
     beans: int = 0
     bean_batches: int = 0
-    #: Guard findings (SPEC §20.7) and the messages sent for them.
+    #: Guard findings (SPEC §10) and the messages sent for them.
     findings: int = 0
     notified: int = 0
     duration_ms: int = 0
@@ -184,7 +184,7 @@ async def run_sync(
 
 
 async def _run_guards(db: Database, config: Config, result: SyncResult) -> None:
-    """Run the guards and report what is new (SPEC §20.7).
+    """Run the guards and report what is new (SPEC §10).
 
     A failure here must not topple the sync: the shots are already archived by
     then, and an unreported finding is not data loss.
@@ -220,7 +220,7 @@ async def _ingest_shot(
         result.waiting_for_tablet = True
         return False
     except DecaidError as exc:
-        # One broken shot does not abort the run (SPEC §6.5).
+        # One broken shot does not abort the run (SPEC §6).
         result.errors.append(f"{shot_id}: {exc.code}: {exc}")
         log.warning("shot failed", extra={"fields": {"shot": shot_id, "error": exc.code}})
         return True
@@ -330,7 +330,7 @@ def _persist(db: Database, result: SyncResult, *, complete: bool = False) -> Non
 
 
 async def refresh_shot(client: DecaidClient, db: Database, shot_id: str) -> dict:
-    """Reload one shot and carry it forward locally (SPEC §18.3).
+    """Reload one shot and carry it forward locally (SPEC §11.1).
 
     The same path as in a sync run - fetch the detail, upsert, recompute the
     metrics. The upsert discards the shot's metrics cache anyway; the warm-up
@@ -348,7 +348,7 @@ async def refresh_shot(client: DecaidClient, db: Database, shot_id: str) -> dict
     return detail
 
 
-#: SPEC §9.2: get_shot("latest") checks freshness first. Two minutes is short
+#: SPEC §9: get_shot("latest") checks freshness first. Two minutes is short
 #: enough for a just-pulled shot to appear, and long enough that a run of
 #: questions does not sync on every one of them.
 QUICK_SYNC_MAX_AGE_S = 120
@@ -397,7 +397,7 @@ class SyncCoordinator:
     async def write_shot(
         self, shot_id: str, fields: dict[str, Any]
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """Writes annotations and returns ``(before, after)`` (SPEC §18.3).
+        """Writes annotations and returns ``(before, after)`` (SPEC §11.1).
 
         Both states come from a real request rather than from what was sent -
         that is the only way a field discarded by Decaid becomes visible.

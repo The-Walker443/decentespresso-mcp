@@ -1,4 +1,4 @@
-"""Guard notifications (SPEC §20.7).
+"""Guard notifications (SPEC §10).
 
 The three promises from the module docstring of ``notify`` are under test
 here: at most one message per shot, no content, and an ntfy outage topples

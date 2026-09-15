@@ -24,7 +24,7 @@ log = logging.getLogger(__name__)
 #:         mean flow <= 0 invalidates flow_stability).
 #: 2 -> 3: source of pi_end. Decaid reports the machine state in plain text
 #:         (``substate``) instead of as a square wave, so the end of
-#:         preinfusion is read off rather than inferred (SPEC §20.5).
+#:         preinfusion is read off rather than inferred (SPEC §11).
 METRICS_VERSION = 3
 
 FIRST_DROPS_WEIGHT_G = 0.3
@@ -300,7 +300,7 @@ def downsample_curve(
 
 # --------------------------------------------------------------- Kurvenform
 #
-# SPEC §17: for most questions the *shape* of the curve is enough. It costs
+# SPEC §9.1: for most questions the *shape* of the curve is enough. It costs
 # about a tenth of the point arrays and can be read without arithmetic.
 
 #: Below this change across a segment the curve counts as steady.
@@ -471,7 +471,7 @@ def _pi_end(
     boundaries: Sequence[float],
     max_pressure_global: float | None,
 ) -> tuple[float | None, str | None]:
-    """End of preinfusion (SPEC §8 1.1, §20.5).
+    """End of preinfusion (SPEC §8 1.1, §8.2).
 
     Three sources, in this order; ``pi_end_source`` names the one actually
     used:
