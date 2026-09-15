@@ -269,8 +269,7 @@ def _lan_url_problems(url: str) -> list[str]:
 
     Only IP literals are accepted, no hostnames. A name can be repointed later
     without the configuration changing - and then the shot traffic might run
-    out onto the open internet. The tablet's address
-    steht ohnehin fest.
+    out onto the open internet. The tablet's address is fixed anyway.
     """
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):

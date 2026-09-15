@@ -15,6 +15,7 @@ from collections.abc import Iterator
 
 import pytest
 from fastmcp import Client
+from fastmcp.exceptions import ToolError
 from helpers import RECENT_ID, REFERENCE_ID, corpus, store_shot_with_profile
 
 from decentespresso_mcp.config import Config
@@ -27,7 +28,7 @@ FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "decaid"
 REFERENCE = REFERENCE_ID
 RECENT = RECENT_ID
 
-# --- Schranken (SPEC ss17.4) -------------------------------------------------
+# --- Bounds (SPEC §9.1) ------------------------------------------------------
 #
 # Every bound sits just above the measured value - it should fire when
 # something grows back, not only on a doubling. Measured against the archive
@@ -45,8 +46,10 @@ MAX_TOOL_DEFINITIONS = 9_800
 MAX_BYTES_PER_TOOL = 900
 
 #: get_shot("latest") without point arrays.
-#: Was 5021 B while the arrays were the default. Now 2092 B.
-MAX_GET_SHOT_LEAN = 2_300
+#: Was 5021 B while the arrays were the default, then 2092 B. The puck
+#: diagnostics add ~200 B at summary level: a band, a risk and a
+#: temperature verdict, which is what triage needs.
+MAX_GET_SHOT_LEAN = 2_400
 
 #: With WRITE_ENABLED four write tools join in (update_shot, update_bean,
 #: update_batch, set_workflow). Measured: 12123 B across 15 tools - 808 B per
@@ -79,6 +82,15 @@ def _relink(db: Database, per_shot: dict[str, dict]) -> None:
         db.link_shot_profile(shot_id, pid)
 
 
+#: SPEC §9.1 - the response budget these levels have to fit inside.
+BUDGET_BYTES = 15_000
+
+
+def shot_ids(db: Database) -> list[str]:
+    return [r["id"] for r in db._conn.execute(
+        "SELECT id FROM shots ORDER BY started_at DESC")]
+
+
 def size_of(payload: object) -> int:
     return len(json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8"))
 
@@ -109,14 +121,14 @@ async def call(mcp, name: str, args: dict | None = None):
         return (await client.call_tool(name, args or {})).data
 
 
-# ------------------------------------------------- (3) Tool-Definitionen
+# --------------------------------------------------- (3) Tool definitions
 
 
 async def test_tool_definitions_stay_small(mcp) -> None:
     """The definitions travel with *every* request - duplicated semantics cost.
 
-    The full glossary lives in the server instructions; the
-    Docstrings verweisen nur darauf.
+    The full glossary lives in the server instructions; the docstrings only
+    point at it.
     """
     async with Client(mcp) as client:
         tools = await client.list_tools()
@@ -124,7 +136,7 @@ async def test_tool_definitions_stay_small(mcp) -> None:
     definitions = [t.model_dump(mode="json", exclude_none=True) for t in tools]
     total = size_of(definitions)
     assert total <= MAX_TOOL_DEFINITIONS, (
-        f"Tool-Definitionen sind auf {total} B gewachsen, erlaubt sind "
+        f"the tool definitions have grown to {total} B, allowed is "
         f"{MAX_TOOL_DEFINITIONS}. Does the new text belong in INSTRUCTIONS?"
     )
 
@@ -137,10 +149,10 @@ async def test_no_tool_repeats_the_glossary(mcp) -> None:
     # Terms that used to be spelled out across several docstrings.
     for phrase in ("60 % of its maximum", "building the puck", "not 0"):
         carriers = [t.name for t in tools if phrase in (t.description or "")]
-        assert not carriers, f"{phrase!r} steht wieder in {carriers}"
+        assert not carriers, f"{phrase!r} is back in {carriers}"
 
 
-# --------------------------------------------------- (1)/(2) Antwortgroessen
+# ----------------------------------------------------- (1)/(2) Response sizes
 
 
 async def test_get_shot_lean_is_small(mcp) -> None:
@@ -166,18 +178,29 @@ async def test_compare_two_with_profiles_is_small(mcp) -> None:
     )
 
 
-async def test_lean_answers_beat_the_old_defaults(mcp) -> None:
-    """The heart of it: the same question, less context."""
+async def test_the_shape_costs_a_fraction_of_the_arrays(mcp) -> None:
+    """The heart of it: the same question, less context.
+
+    Measured on the curve itself rather than on the whole response - the
+    diagnostics that ride along at summary level would otherwise dilute the
+    comparison and hide the thing being claimed.
+    """
     lean = await call(mcp, "get_shot", {"id": REFERENCE})
     with_arrays = await call(mcp, "get_shot", {"id": REFERENCE, "include_curve": True})
-    assert size_of(lean) * 2 < size_of(with_arrays)
+
+    shape = size_of(lean["curve_shape"])
+    arrays = size_of(with_arrays["curve"])
+    assert arrays > shape * 3, (
+        f"the arrays are {arrays} B against {shape} B of shape - the point of "
+        "sending the shape by default is that the difference is large"
+    )
 
 
-# --------------------------------------------------------- (2) Profilhinweis
+# ------------------------------------------------------ (2) Profile notice
 
 
 async def test_same_profile_needs_no_notice(db: Database, config: Config) -> None:
-    # Beide Shots auf dieselbe Version haengen.
+    # Hang both shots on the same version.
     profile_id = db.get_shot_row(REFERENCE)["profile_id"]
     db.link_shot_profile(RECENT, profile_id)
 
@@ -290,3 +313,101 @@ async def test_write_tool_costs_what_it_is_worth(valid_env, db) -> None:
         f"tool definitions with write mode: {total} B, allowed "
         f"{MAX_TOOL_DEFINITIONS_WITH_WRITE}"
     )
+
+
+# ------------------------------------------------------- Detail levels
+
+
+#: Measured on the fixture archive. Each step roughly doubles, which is the
+#: point: the cost of looking closer should be visible in the number.
+MAX_BY_DETAIL = {
+    "get_shot": {"summary": 2_400, "per_phase": 4_100, "detailed": 6_200},
+    "get_shot_metrics": {"summary": 900, "per_phase": 2_600, "detailed": 2_600},
+    "compare_shots": {"summary": 4_200, "per_phase": 5_700, "detailed": 9_200},
+}
+
+
+@pytest.mark.parametrize("detail", ["summary", "per_phase", "detailed"])
+async def test_each_detail_level_stays_within_its_bound(
+    config: Config, db: Database, detail: str
+) -> None:
+    """A level that quietly grows costs every conversation that uses it."""
+    ids = shot_ids(db)
+    async with Client(build_mcp(config, db)) as client:
+        for tool, args in (
+            ("get_shot", {"id": ids[0], "detail": detail}),
+            ("get_shot_metrics", {"id": ids[0], "detail": detail}),
+            ("compare_shots", {"ids": ids[:2], "detail": detail}),
+        ):
+            payload = (await client.call_tool(tool, args)).data
+            actual = size_of(payload)
+            allowed = MAX_BY_DETAIL[tool][detail]
+            assert actual <= allowed, (
+                f"{tool}(detail={detail}) is {actual} B, allowed is {allowed}"
+            )
+
+
+async def test_the_worst_case_comparison_stays_in_budget(
+    config: Config, db: Database
+) -> None:
+    """Four shots, deepest detail, curves attached.
+
+    This is the combination that blew the budget at 19 kB before the phase
+    tables were dropped from comparisons.
+    """
+    ids = shot_ids(db)
+    four = (ids * 2)[:4]
+    async with Client(build_mcp(config, db)) as client:
+        payload = (await client.call_tool("compare_shots", {
+            "ids": four, "detail": "detailed", "include_curves": True,
+        })).data
+    assert size_of(payload) <= BUDGET_BYTES, (
+        f"compare_shots(4, detailed, curves) is {size_of(payload)} B"
+    )
+
+
+async def test_summary_carries_the_verdicts_not_the_workings(
+    config: Config, db: Database
+) -> None:
+    """Triage needs a band and a risk, not five raw indicator values."""
+    ids = shot_ids(db)
+    async with Client(build_mcp(config, db)) as client:
+        payload = (await client.call_tool(
+            "get_shot", {"id": ids[0], "detail": "summary"})).data
+
+    metrics = payload["metrics"]
+    assert set(metrics["puck_resistance"]) == {"median", "band", "trend"}
+    assert "indicators" not in metrics["channeling"]
+    assert "profile_compliance" not in metrics
+
+
+async def test_per_phase_carries_the_workings(config: Config, db: Database) -> None:
+    ids = shot_ids(db)
+    async with Client(build_mcp(config, db)) as client:
+        payload = (await client.call_tool(
+            "get_shot", {"id": ids[0], "detail": "per_phase"})).data
+
+    metrics = payload["metrics"]
+    assert metrics["channeling"]["indicators"], "the raw values belong here"
+    assert metrics["profile_compliance"]["phases"], "so do the phases"
+
+
+async def test_the_indicator_glossary_lives_in_the_instructions() -> None:
+    """The same sentence five times per shot, four times over in a comparison.
+
+    It is identical every time, so it belongs where it is in context once.
+    """
+    from decentespresso_mcp.metrics import CHANNELING_INDICATORS
+    from decentespresso_mcp.server import INSTRUCTIONS
+
+    for name in CHANNELING_INDICATORS:
+        assert name in INSTRUCTIONS, f"{name} is not explained anywhere"
+
+
+async def test_an_unknown_detail_level_is_refused(config: Config, db: Database) -> None:
+    ids = shot_ids(db)
+    async with Client(build_mcp(config, db)) as client:
+        with pytest.raises(ToolError) as excinfo:
+            await client.call_tool("get_shot", {"id": ids[0], "detail": "everything"})
+    assert "invalid_argument" in str(excinfo.value)
+    assert "per_phase" in str(excinfo.value), "the message names the levels"

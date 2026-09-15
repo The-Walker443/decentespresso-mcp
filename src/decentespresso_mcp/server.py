@@ -161,7 +161,59 @@ WRITING - call the `update_*` and `set_*` tools only on an explicit instruction,
 never on your own initiative and never "just to be safe". Set exactly the fields
 that were named. Confirm afterwards from the values that come back, not from
 what was sent: if a field appears under `unchanged`, Decaid did not take it -
-say so instead of reporting success.\
+say so instead of reporting success.
+
+DIAGNOSIS - what the machine measured about the coffee bed itself:
+
+- `puck_resistance` - pressure divided by flow squared, over the stretch where
+  the machine was holding its target. A simplified Darcy analogue: it stays
+  near-constant while the bed does. `band` places it against this archive;
+  `trend` is what matters more - a bed that loses resistance while the pressure
+  is held is opening up, and `steep_decline` is the clearest sign of channeling
+  in this data. It is not an absolute physical quantity: compare shots on this
+  machine, and above all watch one shot change within itself.
+
+- `channeling` - five independent signs, each with its own signature. `risk` is
+  `low`, `elevated` or `high`; `fired` names the ones that tripped, `based_on`
+  the ones that could be computed at all. An indicator missing from `based_on`
+  was **not** checked - most often because the scale readings were unreliable -
+  and that is not the same as passing. What each one means:
+
+  `pressure_dip`      pressure fell away after the infusion peak: the bed gave
+                      way and the pump briefly lost against it.
+  `flow_instability`  flow would not settle while the machine held a constant
+                      target. Measured only inside target-constant stretches,
+                      so a profile that ramps on purpose is not blamed.
+  `flow_divergence`   the pump delivered more than the scale received. Kept up,
+                      that is liquid going somewhere other than the cup.
+  `early_drops`       liquid reached the cup before preinfusion was over.
+                      Nothing should come through a properly wetted bed then.
+  `resistance_trend`  the bed lost resistance while the pressure was held.
+
+  Two or more fired means `high`, one means `elevated`. Report the raw values,
+  not just the band: a single indicator is a hint, not a diagnosis.
+
+- `profile_compliance` / `temperature_vs_target` - what the machine was asked
+  for against what it did, per data point. Each channel is judged only where it
+  is the one being held. `temperature` is judged throughout, because the group
+  is meant to hold its target whatever else is happening; `direction` says
+  whether it ran above or below. A shot can follow its profile perfectly and
+  still taste wrong - compliance tells you whether to look at the machine or at
+  the coffee.
+
+DETAIL LEVELS - `get_shot`, `get_shot_metrics` and `compare_shots` take
+`detail`:
+
+- `summary` (default) for triage: every metric, the curve shape, the resistance
+  band and the channeling risk. Enough to say whether a shot is worth a closer
+  look.
+- `per_phase` to locate a cause: the raw value behind every indicator, and the
+  compliance per phase of the profile. This is the level for "why did this taste
+  wrong".
+- `detailed` for shape detail: adds the point arrays, as `include_curve` does.
+
+Start at `summary`. Going deeper costs roughly twice the size each step, and on
+a comparison of four shots `detailed` is near the response budget.\
 """
 
 
@@ -265,6 +317,7 @@ def build_mcp(
     async def get_shot(
         id: str = "latest",
         bean: str | None = None,
+        detail: str = "summary",
         include_curve: bool = False,
         max_points: int = DEFAULT_MAX_POINTS,
     ) -> dict[str, Any]:
@@ -273,13 +326,11 @@ def build_mcp(
         `id` is a shot UUID or `"latest"` (with `bean`, the newest of that
         bean); for `"latest"` the server syncs beforehand if needed.
 
-        The `curve_shape` that comes along covers the vast majority of
-        questions. `include_curve=true` additionally attaches the point arrays,
-        thinned to `max_points` (default 60, maximum 400) - only for shape
-        detail the shape itself cannot give.
-
-        Curve, units and terms: see the server instructions.
+        `detail` picks how deep to go - see the server instructions.
+        `detailed` attaches the point arrays, thinned to `max_points` (default
+        60, maximum 400); `include_curve=true` does the same at any level.
         """
+        detail = _check_detail(detail)
         freshness = None
         if id == "latest" and coordinator is not None:
             freshness = await _refresh(coordinator)
@@ -301,31 +352,34 @@ def build_mcp(
         series = await asyncio.to_thread(_series, db, shot_id)
         payload: dict[str, Any] = {
             "shot": _full_shot(row),
-            "metrics": _public_metrics(metrics),
+            "detail": detail,
+            "metrics": _public_metrics(metrics, detail),
             "curve_shape": curve_shape(series, metrics),
             "profile": await asyncio.to_thread(_profile_summary, db, row["profile_id"]),
         }
         if freshness is not None:
             payload["freshness"] = freshness
-        if include_curve:
+        if include_curve or detail == "detailed":
             payload["curve"] = _curve(series, metrics, max_points)
         return payload
 
     @mcp.tool(annotations=READ_ONLY)
-    async def get_shot_metrics(id: str) -> dict[str, Any]:
+    async def get_shot_metrics(id: str, detail: str = "summary") -> dict[str, Any]:
         """Only the derived metrics of a shot - no shape, no curve, no profile.
 
-        The narrowest response when only numbers are needed. Units and
-        Begriffe: siehe Server-Anweisungen.
+        The narrowest response when only numbers are needed. `detail` picks how
+        deep the diagnostics go; see the server instructions.
         """
+        detail = _check_detail(detail)
         metrics = await asyncio.to_thread(metrics_for_shot, db, id)
         if metrics is None:
             raise ToolError(f"shot_not_found: no shot with the identifier {id!r}.")
-        return {"id": id, **_public_metrics(metrics)}
+        return {"id": id, "detail": detail, **_public_metrics(metrics, detail)}
 
     @mcp.tool(annotations=READ_ONLY)
     async def compare_shots(
         ids: list[str],
+        detail: str = "summary",
         include_profile: bool = True,
         include_curves: bool = False,
     ) -> dict[str, Any]:
@@ -337,14 +391,14 @@ def build_mcp(
         `include_profile` (default true) returns the profile summary per shot
         and sets `profile_notice` when the shots did not run on the same
         targets - that usually makes a separate `get_profile` call unnecessary.
-        `include_curves=true` attaches point arrays; the `curve_shape` that
-        comes along is normally enough.
-
-        Curve, units and terms: see the server instructions.
+        `detail` picks how deep the diagnostics go; `detailed` also attaches
+        the point arrays, as `include_curves=true` does at any level. See the
+        server instructions.
         """
+        detail = _check_detail(detail)
         if not 2 <= len(ids) <= 4:
             raise ToolError(
-                f"invalid_argument: compare_shots braucht 2 bis 4 Kennungen, "
+                f"invalid_argument: compare_shots takes 2 to 4 identifiers, "
                 f"got {len(ids)}."
             )
 
@@ -366,7 +420,7 @@ def build_mcp(
                 "grinder_setting": row["grinder_setting"],
                 "dose_g": row["dose_g"],
                 "yield_g": row["yield_g"],
-                **_public_metrics(metrics),
+                **_compare_metrics(metrics, detail),
                 "curve_shape": curve_shape(series, metrics),
             }
             profile = (
@@ -377,12 +431,13 @@ def build_mcp(
             profiles.append(profile)
             if profile is not None:
                 entry["profile"] = profile
-            if include_curves:
+            if include_curves or detail == "detailed":
                 entry["curve"] = _curve(series, metrics, per_shot_points)
             entries.append(entry)
 
         payload: dict[str, Any] = {
             "reference": ids[0],
+            "detail": detail,
             "shots": entries,
             "deltas": [_delta(entries[0], other) for other in entries[1:]],
         }
@@ -852,11 +907,91 @@ def _full_shot(row: Any) -> dict[str, Any]:
     }
 
 
-def _public_metrics(metrics: dict[str, Any] | None) -> dict[str, Any]:
-    """Cache internals (``metrics_version``, ``n_points``) do not belong in the response."""
+DETAIL_LEVELS = ("summary", "per_phase", "detailed")
+
+#: Fields that only earn their size once someone is looking for a cause.
+_DIAGNOSTIC_KEYS = ("puck_resistance", "channeling", "profile_compliance")
+
+
+def _public_metrics(
+    metrics: dict[str, Any] | None, detail: str = "summary"
+) -> dict[str, Any]:
+    """Project the cached metrics onto a detail level.
+
+    One cache entry serves all three levels - computing the diagnostics is
+    cheap next to fetching the series, so they are always computed and only the
+    answer is trimmed.
+
+    ``summary`` keeps every scalar metric and reduces the diagnostics to their
+    verdicts: a band for the resistance, a risk with the names of the
+    indicators that fired. That is enough to triage a shot and costs a few
+    hundred bytes. ``per_phase`` adds the raw value behind every indicator and
+    the per-phase compliance - what one needs to locate a cause rather than
+    notice one.
+    """
     if not metrics:
-        return {"warnings": ["Keine Metriken berechnet."]}
-    return {k: v for k, v in metrics.items() if k not in ("metrics_version", "n_points")}
+        return {"warnings": ["No metrics computed."]}
+
+    public = {
+        k: v for k, v in metrics.items()
+        if k not in ("metrics_version", "n_points")
+    }
+    if detail != "summary":
+        return public
+
+    resistance = public.get("puck_resistance")
+    if resistance:
+        public["puck_resistance"] = {
+            "median": resistance["median"],
+            "band": resistance["band"],
+            "trend": resistance["trend"],
+        }
+    risk = public.get("channeling")
+    if risk:
+        public["channeling"] = {
+            "risk": risk["risk"],
+            "fired": risk["fired"],
+            "based_on": risk["based_on"],
+            **({"note": risk["note"]} if "note" in risk else {}),
+        }
+    compliance = public.pop("profile_compliance", None)
+    if compliance:
+        # The one compliance number worth carrying at triage: a group that sits
+        # off its target explains a taste on its own.
+        temperature = compliance.get("temperature")
+        if temperature:
+            public["temperature_vs_target"] = {
+                "mean_deviation": temperature["mean_deviation"],
+                "band": temperature["band"],
+                "direction": temperature["direction"],
+            }
+    return public
+
+
+def _compare_metrics(metrics: dict[str, Any] | None, detail: str) -> dict[str, Any]:
+    """Like ``_public_metrics``, minus the per-phase table.
+
+    Four phase tables side by side is not what a comparison is for - and it is
+    what pushed compare_shots(4, per_phase) to 19 kB, well over budget. Anyone
+    who needs the phases of one shot asks for that shot.
+    """
+    public = _public_metrics(metrics, detail)
+    compliance = public.get("profile_compliance")
+    if isinstance(compliance, dict) and "phases" in compliance:
+        public["profile_compliance"] = {
+            k: v for k, v in compliance.items() if k != "phases"
+        }
+        public["profile_compliance"]["phases_omitted"] = len(compliance["phases"])
+    return public
+
+
+def _check_detail(detail: str) -> str:
+    if detail not in DETAIL_LEVELS:
+        raise ToolError(
+            f"invalid_argument: detail={detail!r} is not a level. "
+            f"Allowed: {', '.join(DETAIL_LEVELS)}"
+        )
+    return detail
 
 
 def _series(db: Database, shot_id: str) -> list[dict[str, Any]]:

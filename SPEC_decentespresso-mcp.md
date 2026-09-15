@@ -325,6 +325,147 @@ This answers questions about rise, fall, plateau, phase length and the
 comparison of two shots without a single raw number, at about a tenth of the
 size of the point arrays.
 
+### 8.5 The settled window
+
+Every diagnostic below is measured over the stretch in which the machine is
+holding its pressure target, not over `[pi_end, end]`.
+
+`pi_end` is where preinfusion ends *as the machine reports it*, and on some
+profiles that is the first second of the shot - the machine calls everything
+`pouring` from the start. A window anchored there still contains the pressure
+ramp, and a resistance trend measured over it comes out with the wrong sign: on
+the acceptance reference +0.09 per second (rising), while the flow at a
+constant 7.5 bar plainly says the bed is opening up.
+
+The window therefore starts where `|pressure − target| ≤ 0.6 bar` for a target
+above 1 bar, **plus 4 seconds** for the bed to finish compacting. That delay is
+measured: without it the robust trend and the plain first-to-last direction
+agree on only 40 % of shots; at 4 s they agree on 85 % and only 7 of 149 shots
+lose their window; 6 s reaches 92 % for one further shot lost, which is not
+worth the data.
+
+A shot that never settles - a flush, an abort, a profile that holds no
+pressure - gets no diagnosis rather than a wrong one. That is 29 of 171 shots.
+
+### 8.6 Puck resistance
+
+`pressure / flow²`, over the settled window, using the **pump** flow. A
+simplified Darcy analogue: for flow through a porous bed the pressure rises
+roughly with the square of the flow, so the quotient stays near-constant while
+the bed does. Unit bar·s²/ml².
+
+The pump flow rather than the scale: that is the water going *into* the puck,
+where the scale sees what comes out, seconds later and smoothed by the basket.
+Points below 0.4 ml/s are excluded - the error is squared in the denominator,
+so at 0.2 ml/s a sensor wobble of 0.05 moves the result by 60 %.
+
+The trend is a **median of pairwise slopes**, not a least-squares fit: the
+latter is at the mercy of its last points, where a collapsing flow sends the
+value towards infinity.
+
+| Band | Range | Measured share |
+|---|---|---|
+| `very_low` | < 1.0 | 10 of 171 |
+| `low` | < 2.5 | 33 |
+| `moderate` | < 5.0 | 48 |
+| `high` | < 9.0 | 37 |
+| `very_high` | ≥ 9.0 | 14 |
+
+These are this archive's own quartiles (p50 = 3.9, p90 = 8.5), not the bands
+gaggimate-mcp validated - on this grinder and these profiles their scale would
+call half of all shots "high". The figure is not absolute: use it to compare
+shots on this machine, and above all to watch one shot change within itself.
+
+| Trend | Slope per second |
+|---|---|
+| `rising` | > +0.15 |
+| `steady` | −0.15 … +0.15 |
+| `declining` | −0.45 … −0.15 |
+| `steep_decline` | ≤ −0.45 (the steepest 15 %) |
+
+### 8.7 Channeling: five independent indicators
+
+Each has its own physical signature and keeps its own raw value. An indicator
+that could not be computed is **absent from `based_on`** rather than counted as
+passing - a knocked scale must never read as good news.
+
+| Indicator | Signature | Threshold | Fires on |
+|---|---|---|---|
+| `pressure_dip` | the bed gave way and the pump briefly lost against it | ≥ 0.5 bar (p95) | 8 of 171 |
+| `flow_instability` | flow would not settle while a constant target was held | ≥ 0.10 ml/s (p90) | 9 |
+| `flow_divergence` | the pump delivered more than the scale received | ≥ +0.30 ml/s (p99) | 2 |
+| `early_drops` | liquid arrived before preinfusion ended | ≥ 5.0 s (p90) | 12 |
+| `resistance_trend` | the bed lost resistance while pressure was held | ≤ −0.45/s | 18 |
+
+`flow_instability` is measured only inside stretches where the machine asks for
+a constant pressure or a constant flow, so a profile that ramps on purpose is
+not mistaken for an unstable puck. `flow_divergence` and `early_drops` depend on
+the scale and are skipped when the scale warnings fire.
+
+**Why five rather than the four originally specified.** Measured against the
+operator's own notes across 165 shots, the four fire on 4 of the 10 worst-rated
+shots - and also on one rated 100. The resistance trend separates them: the
+three lowest-rated shots all combine a high resistance with a steep decline
+(7.4/−0.25, 18.3/−1.06, 32.7/−1.92), and the two the operator labelled
+"channeling" himself sit at the opposite extreme, at 0.6 and 1.7 against a
+median of 3.9. The four remain - they are physically sound and will matter on
+data where those failure modes occur - but leaving out the one signal that
+actually discriminates would make the aggregate worse than its parts.
+
+**Aggregation:** two or more fired is `high`, one is `elevated`, none is `low`.
+Measured across the archive: 94 `low`, 49 `elevated`, **0 `high`**, 28 not
+judged.
+
+That `high` never occurs is worth stating rather than hiding. The 49 elevated
+shots fire exactly one indicator each and **no two indicators ever coincide** -
+which is evidence that they are catching genuinely different things rather than
+correlated noise. Requiring two independent signatures is the right definition
+of a strong case; that this archive contains none means the setup is sound, not
+that the band is wrong.
+
+### 8.8 Profile compliance
+
+What the machine was asked for against what it did, per data point. This is the
+one thing this data allows that a pressure-only log does not: the target sits
+next to the reading.
+
+Each channel is judged **only where it is the one being held**. A
+pressure-controlled stretch leaves the flow target at 0 and vice versa; judging
+both everywhere produced a mean flow deviation of 1.7 ml/s across the archive,
+which is not a deviation but the absence of a target.
+
+| Channel | `close` | `loose` | `off` |
+|---|---|---|---|
+| pressure | < 0.25 bar | < 0.50 bar | ≥ 0.50 bar |
+| flow | < 0.30 ml/s | < 0.70 ml/s | ≥ 0.70 ml/s |
+
+Measured: pressure p50 = 0.09 bar, flow p50 = 0.26 ml/s. The pressure figure is
+reported to three decimals - rounding 0.028 to 0.0 would erase the scale the
+band sits on.
+
+**Temperature is judged throughout**, not only where a channel is held: the
+group is meant to hold its target whatever the pressure is doing. Bands follow
+the machine's specification (±1 °C) and the point at which a trained taster
+reliably notices (2 °C): `on_target` below 1 °C, `off_target` below 2 °C,
+`notable` beyond. `direction` says which way.
+
+Phases follow the machine's own `profile_frame`. 160 of 165 shots run through
+two to ten frames; the five that report a single one still get their aggregate
+compliance.
+
+### 8.9 Attribution
+
+The physics - resistance as `P/F²`, the idea of independent channeling
+signatures, temperature bands anchored on the machine specification and on
+tasting thresholds, and the three-level detail system - is informed by
+[gaggimate-mcp](https://github.com/julianleopold/gaggimate-mcp) (MIT), and in
+particular its threshold calibration document. No code was copied.
+
+The numbers are not theirs. Their sampling is 100 ms where this is ~250 ms, and
+their data carries no per-point targets, so every threshold above was read off
+this archive's own distribution. Where a threshold sits at a percentile, that
+percentile is the justification.
+
 ## 9. The MCP interface
 
 Server name `decentespresso`, streamable HTTP under the secret path. Every tool
@@ -350,7 +491,28 @@ shorthand (`12h`, `7d`, `2w`, `1m`, `1y`).
 Errors are structured tool errors with a code: `shot_not_found`,
 `waiting_for_tablet`, `invalid_argument`, `decaid_rejected`.
 
-### 9.1 Response economy
+### 9.1 Detail levels
+
+`get_shot`, `get_shot_metrics` and `compare_shots` take a `detail` parameter.
+One cached metrics row serves all three - computing the diagnostics is cheap
+next to fetching the series, so they are always computed and only the answer is
+trimmed. Defaults are unchanged, so existing calls behave as before.
+
+| Level | Carries | Measured |
+|---|---|---|
+| `summary` (default) | every scalar metric, the curve shape, the resistance band, the channeling risk, the temperature verdict | 2.3 kB |
+| `per_phase` | plus the raw value behind every indicator and the compliance per phase | 3.9 kB |
+| `detailed` | plus the point arrays | 6.0 kB |
+
+Triage, then locate a cause, then look at the shape. Each step roughly doubles,
+which is the point: the cost of looking closer should be visible.
+
+`compare_shots` drops the per-phase table at every level. Four phase tables side
+by side is not what a comparison is for, and it is what pushed
+`compare_shots(4, per_phase)` to 19 kB, well past the budget. With it gone the
+worst case - four shots, `detailed`, curves attached - is 14.7 kB.
+
+### 9.2 Response economy
 
 Every turn of a conversation reprocesses the whole context so far. Two things
 drive it: responses that deliver more than the question needs, and questions
@@ -382,7 +544,7 @@ definitions and checks that the glossary does not migrate back into them.
 The telling figure is the size **per tool**, not the sum: more capability
 necessarily costs more, verbosity does not.
 
-### 9.2 Measurement per call
+### 9.3 Measurement per call
 
 `telemetry.py` logs `tool`, `dur_ms` and `bytes` for every call - and **no**
 parameter values, no URL, no path. Arguments are the likeliest route by which
