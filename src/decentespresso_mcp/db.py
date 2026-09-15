@@ -478,7 +478,7 @@ class Database:
                 "SELECT id, dose_g, yield_g FROM shots WHERE id = ?", (shot_id,)
             ).fetchone()
 
-    # ------------------------------------------------------------------ Metriken
+    # ------------------------------------------------------------------- Metrics
 
     def get_cached_metrics(self, shot_id: str, version: int) -> dict[str, Any] | None:
         """A cache hit only when ``metrics_version`` matches."""

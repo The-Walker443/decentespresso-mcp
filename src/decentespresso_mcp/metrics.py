@@ -60,7 +60,7 @@ def compute_metrics(
     warnings: list[str] = []
     rows = sorted(series, key=lambda r: r["elapsed"])
     if not rows:
-        return _empty(["Keine Zeitreihe vorhanden."])
+        return _empty(["No time series recorded."])
 
     times = [float(r["elapsed"]) for r in rows]
     pressure = _channel(rows, "pressure")
@@ -220,7 +220,7 @@ def metrics_for_shot(db: Database, shot_id: str, *, refresh: bool = False) -> di
 
 
 def warm_metrics_cache(db: Database) -> int:
-    """Berechnet fehlende oder veraltete Metriken. Idempotent, ohne Netzzugriff."""
+    """Computes missing or stale metrics. Idempotent, without network access."""
     pending = db.shot_ids_without_metrics(METRICS_VERSION)
     for shot_id in pending:
         metrics_for_shot(db, shot_id, refresh=True)
@@ -250,7 +250,7 @@ def downsample_curve(
     max_points: int = 120,
     keep_times: Sequence[float | None] = (),
 ) -> dict[str, list[float | None]]:
-    """Zeitreihe auf ``max_points`` ausduennen (SPEC ss9.1).
+    """Thins the time series down to ``max_points`` (SPEC ss9.1).
 
     Evenly across **time**, not across the index - with uneven sampling a
     densely sampled stretch would otherwise stay over-represented. The first
@@ -260,13 +260,12 @@ def downsample_curve(
     These mandatory points take precedence over ``max_points``: if the budget
     is smaller than their number they all come back anyway. Otherwise a
     ``max_points=2`` could cut away the pressure peak even though it is
-    described as guaranteed. The curve is thus at most four points longer than
-    angefordert.
+    described as guaranteed. The curve is therefore at most four points
+    longer than asked for.
 
-    Rueckgabe sind parallele Arrays (``t``, ``p``, ``fi``, ``fo``, ``w``,
-    ``tb``) rather than a list of objects - that saves about 60 % of the
-    characters. Channels
-    ohne einen einzigen Messwert fehlen ganz.
+    What comes back are parallel arrays (``t``, ``p``, ``fi``, ``fo``,
+    ``w``, ``tb``) rather than a list of objects - that saves about 60 % of
+    the characters. Channels without a single reading are left out entirely.
     """
     if not rows:
         return {"t": []}
@@ -561,7 +560,7 @@ def _coefficient_of_variation(values: Sequence[float]) -> float | None:
 
 
 def _slope(times: Sequence[float], values: Sequence[float | None]) -> float | None:
-    """Steigung einer Ausgleichsgeraden (kleinste Quadrate), Einheit pro Sekunde."""
+    """Slope of a least-squares fit, in units per second."""
     pairs = [(t, v) for t, v in zip(times, values, strict=True) if v is not None]
     if len(pairs) < 2:
         return None

@@ -121,11 +121,11 @@ def test_state_roundtrip(archive: Database) -> None:
 
 def test_errors_are_capped_at_20(archive: Database) -> None:
     for i in range(30):
-        archive.record_errors([f"fehler {i}"])
+        archive.record_errors([f"error {i}"])
     stored = archive.get_json_state("last_errors")
     assert len(stored) == 20
-    assert stored[-1]["error"] == "fehler 29"
-    assert stored[0]["error"] == "fehler 10"
+    assert stored[-1]["error"] == "error 29"
+    assert stored[0]["error"] == "error 10"
 
 
 def test_shot_span_and_max_updated(archive: Database, reference: dict) -> None:

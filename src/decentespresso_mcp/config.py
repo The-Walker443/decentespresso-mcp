@@ -36,7 +36,7 @@ _PLACEHOLDERS = {"change-me", "you@example.com", "<openssl rand -hex 24>"}
 
 
 class ConfigError(ValueError):
-    """Ungueltige oder fehlende Konfiguration. Enthaelt alle Einzelfehler."""
+    """Invalid or missing configuration. Carries every single problem."""
 
     def __init__(self, problems: list[str]) -> None:
         self.problems = problems
@@ -275,7 +275,7 @@ def _lan_url_problems(url: str) -> list[str]:
     if parsed.scheme not in ("http", "https"):
         return [f"DECAID_URL must start with http:// or https://, but is {url!r}"]
     if not parsed.hostname:
-        return [f"DECAID_URL enthaelt keinen Host: {url!r}"]
+        return [f"DECAID_URL carries no host: {url!r}"]
 
     try:
         address = ipaddress.ip_address(parsed.hostname)
@@ -316,8 +316,8 @@ def _is_absolute_path(path: str) -> bool:
     """Absolute in the container (POSIX) as well as in local development (Windows).
 
     The check is deliberately platform independent: the container runs on Linux
-    but development also happens on Windows - ``os.path.isabs`` would give
-    nach Host unterschiedlich urteilen.
+    but development also happens on Windows - ``os.path.isabs`` would judge
+    differently depending on the host.
     """
     return PurePosixPath(path).is_absolute() or PureWindowsPath(path).is_absolute()
 

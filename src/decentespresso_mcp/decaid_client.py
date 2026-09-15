@@ -25,7 +25,7 @@ from . import __version__
 log = logging.getLogger(__name__)
 
 #: The Decaid version this was verified against. status() warns on deviation;
-#: nach jedem geprueften Update hier nachziehen (SPEC ss20.6).
+#: bump it here after every checked update (SPEC ss20.6).
 VERIFIED_DECAID_VERSION = "0.8.5"
 
 #: T4: the API silently caps at 100. Asking for more returns 100 items without
@@ -155,10 +155,10 @@ class DecaidClient:
         delay = min(2.0**attempt, 30.0) * (1.0 + random.random() * 0.25)  # noqa: S311
         await asyncio.sleep(delay)
 
-    # --------------------------------------------------------------- Endpunkte
+    # --------------------------------------------------------------- Endpoints
 
     async def info(self) -> dict[str, Any]:
-        """``GET /api/v1/info`` (T2) - Version, Commit, Bauzeit."""
+        """``GET /api/v1/info`` (T2) - version, commit, build time."""
         return (await self._request("GET", "/api/v1/info")).json()
 
     async def list_shots(
@@ -190,7 +190,7 @@ class DecaidClient:
         )
 
     async def shot_ids(self) -> list[str]:
-        """``GET /api/v1/shots/ids`` (T9) - alle IDs in einem Zug, unpaginiert."""
+        """``GET /api/v1/shots/ids`` (T9) - every id in one go, unpaginated."""
         return list((await self._request("GET", "/api/v1/shots/ids")).json())
 
     async def latest_shot(self) -> dict[str, Any]:
@@ -242,7 +242,7 @@ class DecaidClient:
     # --- Workflow ------------------------------------------------------------
 
     async def workflow(self) -> dict[str, Any]:
-        """``GET /api/v1/workflow`` - aktuelle Einstellung samt Profil."""
+        """``GET /api/v1/workflow`` - the setting for the next shot, with its profile."""
         return (await self._request("GET", "/api/v1/workflow")).json()
 
     async def update_workflow(self, patch: dict[str, Any]) -> dict[str, Any]:

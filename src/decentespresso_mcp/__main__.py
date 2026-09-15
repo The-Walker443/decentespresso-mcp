@@ -32,12 +32,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--backfill",
         action="store_true",
-        help="Einmaliger vollstaendiger Sync ueber alle Seiten, dann Ende.",
+        help="One complete sync across all pages, then exit.",
     )
     parser.add_argument(
         "--sync-once",
         action="store_true",
-        help="Einmaliger inkrementeller Sync, dann Ende.",
+        help="One incremental sync, then exit.",
     )
     parser.add_argument("--version", action="version", version=__version__)
     args = parser.parse_args(argv)

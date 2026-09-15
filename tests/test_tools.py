@@ -229,7 +229,7 @@ async def test_get_shot_by_id(mcp) -> None:
 async def test_get_shot_latest_without_coordinator(mcp) -> None:
     result = await call(mcp, "get_shot", {"id": "latest"})
     assert result["shot"]["id"] == RECENT
-    assert "freshness" not in result, "ohne Verbindung gibt es keinen Frische-Check"
+    assert "freshness" not in result, "no connection means no freshness check"
 
 
 async def test_get_shot_latest_with_bean_filter(mcp) -> None:
@@ -648,7 +648,7 @@ async def test_list_shots_does_not_sync_while_paginating(
     assert first["next_cursor"] is not None
 
     second = await call(mcp, "list_shots", {"limit": 2, "cursor": first["next_cursor"]})
-    assert coordinator.runs == 1, "Folgeseiten loesen keinen Abgleich aus"
+    assert coordinator.runs == 1, "a follow-up page must not trigger another sync"
     assert "freshness" not in second
 
 

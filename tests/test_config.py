@@ -186,7 +186,7 @@ def test_guard_rules_default_to_all(valid_env: dict[str, str]) -> None:
 def test_an_empty_setting_is_not_an_off_switch(valid_env: dict[str, str]) -> None:
     """Whoever copies .env.example leaves the line blank.
 
-    Das als "keine Waechter" zu lesen haette sie stillschweigend abgeschaltet -
+    Reading that as "no guards" would have switched them off silently -
     for switching off there is the explicit "none".
     """
     assert Config.from_env({**valid_env, "GUARD_RULES": ""}).guard_rules == ALL_RULES
@@ -225,7 +225,7 @@ def test_a_german_decimal_comma_is_accepted(valid_env: dict[str, str]) -> None:
     ("BEAN_AGE_WARN_DAYS", "0"),
     ("RATING_GRACE_HOURS", "0"),
     ("DOSE_TOLERANCE_G", "99"),
-    ("DOSE_TOLERANCE_G", "keine"),
+    ("DOSE_TOLERANCE_G", "none at all"),
 ])
 def test_an_impossible_threshold_is_refused(valid_env: dict[str, str], name, value) -> None:
     with pytest.raises(ConfigError):

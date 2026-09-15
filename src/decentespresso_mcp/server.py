@@ -291,10 +291,10 @@ def build_mcp(
         """Compact list of shots, newest first.
 
         Filters are case-insensitive substrings: `bean` matches the bean name
-        or the roastery, `roaster` only the roastery, `profile` the
-        Profilnamen. `since`/`until` nehmen ISO8601 (`2026-07-31`) oder relative
+        or the roastery, `roaster` only the roastery, `profile` the profile
+        name. `since`/`until` take ISO8601 (`2026-07-31`) or a relative
         shorthand (`12h`, `7d`, `2w`, `1m`, `1y`). `warnings` is the number
-        unzuverlaessiger Metriken dieses Shots.
+        of unreliable metrics on that shot.
 
         With more matches than `limit` a `next_cursor` comes back; send it
         again unchanged as `cursor`. The first page syncs with the tablet
@@ -499,8 +499,7 @@ def build_mcp(
         suffices) a specific one, `name` the most recently seen one of that
         name. Within the steps `target` is bar for `mode: pressure` and ml/s
         otherwise; `exit` is `null` without an active exit condition. Legacy
-        profiles
-        haben keine Schritte, ihre Sollwerte stehen in `legacy_settings`.
+        profiles have no steps - their targets sit in `legacy_settings`.
 
         For merely comparing two shots, `compare_shots` is enough.
         """
@@ -508,7 +507,7 @@ def build_mcp(
         if sum(given) != 1:
             raise ToolError(
                 "invalid_argument: exactly one argument expected - shot_id, name "
-                "oder version_hash."
+                "or version_hash."
             )
 
         if shot_id:
@@ -549,14 +548,14 @@ def build_mcp(
         """Fetches new and changed shots from the tablet right away.
 
         Usually unnecessary: the server syncs on its own, and `get_shot`/
-        `list_shots` check freshness anyway. Changes nothing in Decaid,
-        beliebig wiederholbar. `errors` sind voruebergehende Probleme,
+        `list_shots` check freshness anyway. Changes nothing in Decaid and
+        can be repeated at will. `errors` are transient problems,
         `warnings` are final findings. If `waiting_for_tablet` is set the tablet
         was off - not an error, just nothing to fetch; say it that way.
         """
         if coordinator is None:
             raise ToolError(
-                "sync_unavailable: Dieser Server laeuft ohne Decaid-Verbindung."
+                "sync_unavailable: this server runs without a connection to Decaid."
             )
         try:
             result = await coordinator.run(full=False)
@@ -1173,7 +1172,7 @@ _UNIT_HOURS = {"h": 1, "d": 24, "w": 24 * 7, "m": 24 * 30, "y": 24 * 365}
 
 
 def _parse_time(value: str | None, label: str) -> str | None:
-    """ISO8601 oder relatives Kuerzel (``7d``, ``12h``, ``2w``, ``1m``, ``1y``)."""
+    """ISO8601 or a relative shorthand (``7d``, ``12h``, ``2w``, ``1m``, ``1y``)."""
     if not value:
         return None
     text = value.strip()
