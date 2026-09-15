@@ -1,4 +1,4 @@
-# Secrets & Laufzeitdaten
+# Secrets and runtime data
 .env
 .env.*
 !.env.example

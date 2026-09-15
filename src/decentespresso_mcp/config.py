@@ -41,7 +41,7 @@ class ConfigError(ValueError):
     def __init__(self, problems: list[str]) -> None:
         self.problems = problems
         joined = "\n  - ".join(problems)
-        super().__init__(f"Ungueltige Konfiguration:\n  - {joined}")
+        super().__init__(f"Invalid configuration:\n  - {joined}")
 
 
 @dataclass(frozen=True, repr=False)
