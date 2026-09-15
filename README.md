@@ -4,8 +4,22 @@
 
 Every shot your Decent DE1 pulls is already measured in fine detail — pressure,
 flow, weight and temperature about four times a second, next to the targets the
-profile asked for. That data lives on the tablet. This server keeps all of it on
-a machine you own, and hands it to Claude so you can just ask.
+profile asked for. [Decaid](https://github.com/decentespresso/decaid) — Decent's
+new control app, the one replacing the ten-year-old de1app — records all of that
+and, the part that matters here, serves it over a local REST API. This server
+reads that API, keeps everything on a machine you own, and hands it to Claude so
+you can just ask.
+
+> **Decaid is required.** This project speaks to Decaid and to nothing else. If
+> you still run the original de1app, which is what most DE1 owners use today,
+> there is nothing here for you yet — see
+> [Which app do you run?](#which-app-do-you-run) below.
+>
+> **Independent community project.** Despite the name, this is not a Decent
+> Espresso product and has nothing to do with Decent Espresso International.
+> They make the machine and they make Decaid; this server is an outside client
+> of Decaid's public API, written by someone who owns one of their machines.
+> Nobody there endorses, reviews or supports it.
 
 ```
 You:    Why was my shot this morning sour and bitter at the same time?
@@ -36,9 +50,11 @@ hand.
 
 ## What you get
 
-**A complete archive, independent of the tablet.** Shots, the full measurement
-series, and the exact profile version each one ran on. Decaid is the source;
-this is the memory. Nothing in that chain leaves your network.
+**A complete archive, independent of the tablet.** Every shot Decaid holds, with
+the full measurement series and the exact profile version it ran on, pulled over
+`/api/v1` and kept in SQLite. Decaid is the source; this is the memory. The sync
+is incremental and notices shots you edited after the fact, the tablet may be
+off whenever it likes, and nothing in that chain leaves your network.
 
 **Metrics from the machine's own phase markers.** The end of preinfusion is read
 off what the DE1 reports, not guessed from a pressure threshold. Where a shot
@@ -98,11 +114,40 @@ to you.
 
 ---
 
+## Which app do you run?
+
+Decaid is new. Most DE1 owners are still on **de1app**, the Tcl application that
+has run the machine for a decade, and for them this server has nothing to offer:
+de1app keeps no local API to read. There is no workaround planned — the shape of
+this project follows from what Decaid exposes, and half of what it does would be
+impossible without it.
+
+| | de1app | Decaid |
+|---|---|---|
+| A local API to archive from | — | REST + WebSocket |
+| Per-point `targetPressure` / `targetFlow` | — | yes, and profile compliance is built on it |
+| Machine phase markers (`state.substate`) | — | yes, so `pi_end` is read off rather than guessed |
+| Profile as structured JSON | Tcl, parsed by hand | yes, with a version hash per shot |
+| Beans, batches, the next shot's setting | — | yes, and writable |
+
+**Your old history is not lost.** Decaid imports de1app shots, and this server
+recognises them (id `de1app-<unix time>`, timestamps already in UTC, the
+phantom `enjoyment: 0.0` of the import normalised back to "not rated"). They
+just carry less: no machine phase markers, so `pi_end` falls back to the profile
+step boundary or, failing that, to a pressure heuristic that says so in
+`warnings`. In this archive, 84 of 88 imported shots land on the step boundary
+and 3 on the heuristic, while 77 of 81 shots Decaid recorded itself are read
+straight off the machine.
+
+If you are moving over, import into Decaid first and point this at Decaid — not
+the other way round.
+
 ## How it fits together
 
 ```
-     Decent DE1 ──BLE──▶ Decaid on the tablet          ← the source
-                              │  local network only
+     Decent DE1 ──BLE──▶ Decaid (tablet, or wherever    ← the source
+                              │    you run it)
+                              │  /api/v1, local network only
                               ▼
                   decentespresso-mcp (Docker)          ← the memory
                               │  internal Docker network
@@ -112,19 +157,23 @@ to you.
                            Claude                      ← the interface
 ```
 
-The tunnel exists so Claude can reach the server. The tablet is never reached
+The tunnel exists so Claude can reach the server. Decaid is never reached
 through it — that connection is local network only, and the server refuses to
 start if you point it anywhere else.
 
-The tablet does not need to be on. It runs while you are making coffee; the rest
-of the time the server waits and catches up afterwards. That is a normal state,
-not an error, and nothing will nag you about it.
+Decaid does not need to be running. It is up while you are making coffee; the
+rest of the time the server waits and catches up afterwards, because the sync is
+incremental and Decaid keeps the history. A tablet that is off is a normal
+state, not an error, and nothing will nag you about it.
 
 ---
 
 ## Requirements
 
-- A **Decent DE1** with **Decaid** on the tablet (verified against 0.8.5).
+- A **Decent DE1** running **Decaid**, reachable on your network. Everything
+  here is verified against Decaid 0.8.5+2624 — twenty-seven findings about what
+  its API really does are tabulated in the specification, and `status()` says so
+  when the version it meets differs from the one this was checked against.
 - **Docker** on a machine on the same network as the tablet.
 - A **Cloudflare tunnel** or equivalent, if you want to reach it from
   claude.ai. Optional — everything works locally without one.
@@ -254,6 +303,13 @@ an error, just nothing to fetch.
 - **Thresholds are calibrated against one archive** — one machine, one grinder,
   one operator. They are percentile-based and documented one by one in the
   specification, so they can be re-derived rather than believed.
+- **Decaid only, and Decaid is young.** No de1app, no visualizer.coffee, no CSV
+  import. The API this depends on is new enough that a Decaid update could move
+  something; when the version stops matching the one it was verified against,
+  `status()` says so rather than pretending.
+- **Imported shots know less.** Anything de1app recorded lacks the machine's
+  phase markers, so its preinfusion boundary is inferred instead of read off.
+  The metric says which, per shot, and refuses comparisons it cannot support.
 - **It does not write profiles.** Reading and versioning them, yes; changing
   them belongs at the machine.
 - **Nothing is ever deleted.** The API can do it. This project does not build
@@ -293,4 +349,9 @@ bands and the three-level detail system. The thresholds themselves are measured
 against this archive rather than adopted: the sampling rates differ, and this
 data carries per-point targets that theirs does not.
 
-Community project, not affiliated with Decent Espresso International.
+**Not affiliated with Decent Espresso International.** The name says what the
+project is for, not who made it. Decent builds the DE1 and Decaid; this is an
+independent community project by an owner of one of their machines, connected to
+them only by reading Decaid's public API. It is not endorsed, reviewed or
+supported by Decent Espresso, and any problem you have with it belongs in this
+issue tracker rather than in theirs.
