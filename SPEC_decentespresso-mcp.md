@@ -66,6 +66,13 @@ warns when the tablet reports a different one.
 against the live API, and each one that shapes behaviour is noted at the
 relevant constant in the code.
 
+**The canonical API description** is `assets/api/rest_v1.yml` in the Decaid
+repository (<https://github.com/decentespresso/decaid>). That is the file to
+cite and the file to check against. The `rea_restapi.yml` circulating from dye2
+is a copy for plugin developers - useful, but a copy, and behind the original
+whenever the two disagree. Where the YAML and the running instance disagree, the
+instance wins and the finding goes in the table above.
+
 ### 4.1 Endpoints
 
 | Endpoint | Returns |
@@ -109,7 +116,10 @@ relevant constant in the code.
 | T24 | Writable on the workflow | `context.grinderSetting`, `context.grinderModel`, `context.targetDoseWeight`, `context.targetYield`, `context.beanBatchId` |
 | T25 | Protected on write | `id` → 400 ("ID in path does not match"), `createdAt`/`updatedAt` → 400 ("system-managed") |
 | T26 | **`timestamp`** | **Not protected.** A `PUT` carrying it returns 200 and the value stands |
-| T27 | **Weight on a batch** | **Does not exist.** A batch carries `id`, `beanId`, `roastDate`, `buyDate`, `freezeDate`, `frozen`, `archived` and the two timestamps, and nothing else - checked against the list and the single-item endpoint. There is no `weightRemaining` to estimate a remaining stock from |
+| T27 | **Weight on a batch** | **Does not exist.** A batch carries `id`, `beanId`, `roastDate`, `roastLevel`, `freezeDate`, `frozen`, `archived` and the two timestamps. There is no `weightRemaining` to estimate a remaining stock from |
+| T28 | **Batch and coffee labels** | **Kept apart, and nothing joins them.** `context` holds the managed reference `beanBatchId` next to the display strings `coffeeName` and `coffeeRoaster`; setting the batch alone leaves the previous coffee's name standing on the machine. Measured live: after `beanBatchId` was moved to the decaf batch, `coffeeName` still read `Arabica Honey Process`. Decaid's own API examples write the id and both labels together |
+| T29 | **`beanBatchId` is unchecked** | An arbitrary UUID is accepted with 200 and stands afterwards. There is no referential integrity, so the client is the only thing between a typo and a workflow pointing at nothing |
+| T30 | **`coffeeData` is gone** | The legacy containers `doseData`, `grinderData` and `coffeeData` stopped being accepted in Decaid 0.5.2. Everything goes through `context`, whose fields are flat |
 
 T26 is why the block list in `writes.py` is not a second line of defence but the
 only one for the telemetry fields.
@@ -672,7 +682,34 @@ locally and the metrics cache refilled - a dose change changes the ratio. The
 response names `before` and `after` per field **from that read-back**, not from
 the assumption of what was sent. A field under `unchanged` was not taken.
 
-### 11.2 Validation
+The comparison covers the whole entity, not only the fields that were sent, and
+anything that moved without being asked for comes back under `alongside`. Only
+`createdAt` and `updatedAt` are left out, because Decaid maintains those on
+every write (T15). A write that quietly changes something else is precisely what
+a read-back exists to catch.
+
+### 11.2 A batch change carries its labels
+
+Decaid keeps `beanBatchId` and the display strings `coffeeName` /
+`coffeeRoaster` side by side in the workflow context and derives neither from
+the other (T28). Setting the batch alone leaves the machine showing the previous
+coffee's name - reproduced on the live instance, and the reason `set_workflow`
+resolves the batch to its bean and writes all three fields together. Decaid's
+own API examples do exactly the same, so this is not a workaround but the
+intended client behaviour.
+
+Consequences that follow from it:
+
+- `coffeeName` and `coffeeRoaster` are **blocked** as caller-supplied fields.
+  Setting them by hand is how the machine ends up showing one coffee while
+  pulling another; they are ours to derive, not the caller's to choose.
+- **An unresolvable batch aborts the write.** Decaid accepts any string as a
+  `beanBatchId` without checking it (T29), so this refusal is the only thing
+  between a typo and a workflow pointing at nothing.
+- Clearing the batch leaves the labels standing. They are then the only record
+  of what is in the hopper, and deleting that would be a loss, not a cleanup.
+
+### 11.3 Validation
 
 Before the first API call, with every violation collected. The API validates no
 value ranges at all, so this is the only protection against a typo reaching the
@@ -684,7 +721,7 @@ message says that the DE1 app writes `DD.MM.YYYY` while ISO is expected here -
 which does produce mixed formats in the archive. Accepted deliberately: a
 machine-readable format is worth more than uniformity with an ambiguous one.
 
-### 11.3 Logging
+### 11.4 Logging
 
 One line per write with the target, the **field names** and the duration - no
 values. Notes can hold private things and a log is the wrong place for them.

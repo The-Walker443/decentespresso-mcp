@@ -161,7 +161,10 @@ WORKFLOW = Ruleset(
         "grinderModel": "grinder",
         "targetDoseWeight": "target dose in g",
         "targetYield": "target yield in g",
-        "beanBatchId": "identifier of the batch being pulled from",
+        "beanBatchId": (
+            "identifier of the batch being pulled from; the coffee name and "
+            "roastery follow from it"
+        ),
     },
     kinds={
         "targetDoseWeight": "weight",
@@ -174,6 +177,14 @@ WORKFLOW = Ruleset(
             "belongs at the machine, not in a conversation."
         ),
         "id": "The identifier of the workflow is immutable.",
+        "coffeeName": (
+            "The coffee name follows from beanBatchId and is written with it. "
+            "Setting it by hand is how the machine ends up showing one coffee "
+            "while pulling another."
+        ),
+        "coffeeRoaster": (
+            "The roastery follows from beanBatchId and is written with it."
+        ),
         "steamSettings": "Steam is not part of a shot.",
         "rinseData": "Rinsing is not part of a shot.",
         "hotWaterData": "Hot water is not part of a shot.",

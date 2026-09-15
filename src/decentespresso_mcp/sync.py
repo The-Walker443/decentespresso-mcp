@@ -444,12 +444,46 @@ class SyncCoordinator:
         The workflow is the setting for the *next* shot; it only reaches the
         archive once a shot has actually been pulled with it. So there is
         nothing to update locally here.
+
+        A batch change carries the coffee labels with it - see
+        ``_coffee_labels`` for why that is our job rather than Decaid's.
         """
+        patch = dict(fields)
+        if patch.get("beanBatchId"):
+            patch.update(await self._coffee_labels(str(patch["beanBatchId"])))
+
         async with self._lock:
             before = (await self._client.workflow()).get("context") or {}
-            await self._client.update_workflow({"context": dict(fields)})
+            await self._client.update_workflow({"context": patch})
             after = (await self._client.workflow()).get("context") or {}
         return before, after
+
+    async def _coffee_labels(self, batch_id: str) -> dict[str, Any]:
+        """``coffeeName``/``coffeeRoaster`` for a batch, resolved through its bean.
+
+        The workflow context keeps the managed reference (``beanBatchId``) and
+        the two display strings side by side, and Decaid derives neither from
+        the other (T28). Setting only the batch therefore leaves the machine
+        showing the previous coffee's name - measured on the live instance, and
+        the reason this method exists. Decaid's own API examples write the id
+        and the labels together, which is the behaviour reproduced here.
+
+        An unresolvable batch aborts the write. Decaid accepts any string as a
+        ``beanBatchId`` without checking it (T29), so refusing here is the only
+        thing standing between a typo and a workflow pointing at nothing.
+        """
+        try:
+            batch = await self._find(self._client.bean_batches(), batch_id)
+        except ShotNotFound:
+            raise ShotNotFound(
+                f"Decaid has no batch {batch_id!r}. Nothing was written - the "
+                "workflow still points at the batch it did before."
+            ) from None
+        bean_id = batch.get("beanId")
+        if not bean_id:
+            raise ShotNotFound(f"The batch {batch_id!r} names no bean")
+        bean = await self._find(self._client.beans(), str(bean_id))
+        return {"coffeeName": bean.get("name"), "coffeeRoaster": bean.get("roaster")}
 
     async def read_workflow(self) -> dict[str, Any]:
         return await self._client.workflow()

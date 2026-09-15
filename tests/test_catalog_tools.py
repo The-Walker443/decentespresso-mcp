@@ -24,6 +24,10 @@ from decentespresso_mcp.sync import SyncCoordinator
 FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "decaid"
 BEAN_ID = "bean-1"
 BATCH_ID = "batch-1"
+#: UUID-shaped, because `beanBatchId` is validated as an identifier.
+OTHER_BEAN_ID = "2a6388a8-4092-49d1-a815-89d4192562db"
+OTHER_BATCH_ID = "0a640616-b680-4a10-8062-c1f9fd892cfe"
+MISSING_BATCH_ID = "00000000-0000-4000-8000-000000000000"
 
 
 def load(name: str):
@@ -41,11 +45,20 @@ class FakeDecaid:
         self.beans = [{"id": BEAN_ID, "name": "Testsorte", "roaster": "Tchibo",
                        "species": None, "processing": "washed", "decaf": False,
                        "archived": False, "notes": "alt",
-                       "createdAt": None, "updatedAt": None}]
+                       "createdAt": None, "updatedAt": None},
+                      {"id": OTHER_BEAN_ID, "name": "Sugar Cane Decaf",
+                       "roaster": "Rösttrommel", "species": None,
+                       "processing": None, "decaf": True, "archived": False,
+                       "notes": None, "createdAt": None, "updatedAt": None}]
         self.batches = [{"id": BATCH_ID, "beanId": BEAN_ID,
                          "roastDate": "2026-09-01T00:00:00.000Z",
                          "buyDate": None, "freezeDate": None, "frozen": False,
-                         "archived": False, "createdAt": None, "updatedAt": None}]
+                         "archived": False, "createdAt": None, "updatedAt": None},
+                        {"id": OTHER_BATCH_ID, "beanId": OTHER_BEAN_ID,
+                         "roastDate": "2026-09-05T00:00:00.000Z",
+                         "buyDate": None, "freezeDate": None, "frozen": False,
+                         "archived": False, "createdAt": None,
+                         "updatedAt": None}]
         self.workflow = {
             "id": "wf-1",
             "context": {"grinderSetting": "3.30", "grinderModel": "Niche",
@@ -73,18 +86,23 @@ class FakeDecaid:
         self.puts.append((path, body))
 
         if "/beans/" in path:
-            return self._patch(self.beans[0], body)
+            return self._patch(self._by_id(self.beans, path), body)
         if "/bean-batches/" in path:
             for field in ("roastDate", "buyDate", "freezeDate"):
                 if isinstance(body.get(field), str):
                     body[field] = body[field] + "T00:00:00.000Z"
-            return self._patch(self.batches[0], body)
+            return self._patch(self._by_id(self.batches, path), body)
         if path.endswith("/workflow"):
             if "profile" in body:
                 return httpx.Response(400, json={"error": "profile is read-only"})
             self.workflow["context"].update(body.get("context") or {})
             return httpx.Response(200, json=self.workflow)
         return httpx.Response(404, json={"error": "unknown"})
+
+    @staticmethod
+    def _by_id(rows: list[dict[str, Any]], path: str) -> dict[str, Any]:
+        wanted = path.rstrip("/").rsplit("/", 1)[-1]
+        return next(r for r in rows if r["id"] == wanted)
 
     @staticmethod
     def _patch(target: dict[str, Any], body: dict[str, Any]) -> httpx.Response:
@@ -340,6 +358,68 @@ async def test_a_profile_change_never_reaches_the_machine(
                    {"fields": {"profile": {"title": "anderes"}}})
     assert "at the machine" in str(excinfo.value)
     assert fake.puts == []
+
+
+async def test_a_batch_change_carries_the_coffee_labels(
+    writable: Config, db: Database, coordinator: SyncCoordinator, fake: FakeDecaid
+) -> None:
+    """Otherwise the machine keeps showing the previous coffee (SPEC T28).
+
+    Measured on the live instance on 2026-09-15: after `beanBatchId` was moved
+    to the decaf batch, `coffeeName` still read "Arabica Honey Process".
+    Decaid keeps the managed reference and the two display strings side by
+    side and derives neither from the other, so resolving batch -> bean ->
+    labels is the client's job. Decaid's own API examples write all three
+    together.
+    """
+    result = await call(build_mcp(writable, db, coordinator), "set_workflow",
+                        {"fields": {"beanBatchId": OTHER_BATCH_ID}})
+
+    assert fake.puts[0][1] == {"context": {
+        "beanBatchId": OTHER_BATCH_ID,
+        "coffeeName": "Sugar Cane Decaf",
+        "coffeeRoaster": "Rösttrommel",
+    }}
+    assert result["changes"]["coffeeName"]["after"] == "Sugar Cane Decaf"
+    assert result["alongside"] == ["coffeeName", "coffeeRoaster"]
+    assert "without being asked for" in result["note_alongside"]
+
+
+async def test_an_unknown_batch_is_refused_before_anything_is_written(
+    writable: Config, db: Database, coordinator: SyncCoordinator, fake: FakeDecaid
+) -> None:
+    """Decaid accepts any string as a beanBatchId with 200 (SPEC T29).
+
+    There is no referential integrity on the API side, so this refusal is the
+    only thing between a typo and a workflow pointing at nothing.
+    """
+    with pytest.raises(ToolError) as excinfo:
+        await call(build_mcp(writable, db, coordinator), "set_workflow",
+                   {"fields": {"beanBatchId": MISSING_BATCH_ID}})
+    assert "still points at the batch it did before" in str(excinfo.value)
+    assert fake.puts == [], "nothing may reach the machine on a failed lookup"
+
+
+async def test_the_coffee_labels_are_not_the_callers_to_set(
+    writable: Config, db: Database, coordinator: SyncCoordinator, fake: FakeDecaid
+) -> None:
+    """Setting them by hand is how the machine shows one coffee while pulling
+    another - they follow from the batch or not at all."""
+    with pytest.raises(ToolError) as excinfo:
+        await call(build_mcp(writable, db, coordinator), "set_workflow",
+                   {"fields": {"coffeeName": "Something Else"}})
+    assert "follows from beanBatchId" in str(excinfo.value)
+    assert fake.puts == []
+
+
+async def test_a_grind_change_leaves_the_labels_alone(
+    writable: Config, db: Database, coordinator: SyncCoordinator, fake: FakeDecaid
+) -> None:
+    """The derivation hangs on beanBatchId, not on every write."""
+    result = await call(build_mcp(writable, db, coordinator), "set_workflow",
+                        {"fields": {"grinderSetting": "3.10"}})
+    assert fake.puts[0][1] == {"context": {"grinderSetting": "3.10"}}
+    assert "alongside" not in result
 
 
 async def test_an_unchanged_value_is_reported_as_such(

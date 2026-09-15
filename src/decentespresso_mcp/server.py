@@ -81,6 +81,10 @@ NOTES_PREVIEW_CHARS = 160
 
 READ_ONLY = {"readOnlyHint": True, "openWorldHint": False}
 
+#: Decaid maintains these itself on every write (T15). They move on their own
+#: and reporting them as a change would be noise, not information.
+SERVER_MANAGED_FIELDS = frozenset({"createdAt", "updatedAt"})
+
 INSTRUCTIONS = """\
 Local archive of espresso shots pulled on a Decent DE1. The source is Decaid on
 the tablet at the machine, reached over the local network; this server holds the
@@ -749,6 +753,10 @@ def _register_catalog_writes(
         grinderModel, targetDoseWeight, targetYield, beanBatchId. A profile
         change is not possible - that belongs at the machine. Afterwards name
         what is now set.
+
+        `beanBatchId` also rewrites the coffee name and roastery shown on the
+        machine, resolved from the batch; they come back under `alongside`.
+        An unknown batch is refused rather than set.
         """
         return await _write(coordinator.write_workflow, WORKFLOW, None, fields,
                             what="workflow")
@@ -783,6 +791,19 @@ async def _write(
     }
     ignored = [n for n, pair in changes.items() if pair["before"] == pair["after"]]
 
+    # Report what moved, not what was sent. A field can change without being
+    # asked for - `set_workflow` carries the coffee labels along with a batch
+    # change (SPEC T28) - and a write that quietly changed something else is
+    # exactly what a read-back is for.
+    alongside = sorted(
+        name for name, value in after.items()
+        if name not in payload
+        and name not in SERVER_MANAGED_FIELDS
+        and before.get(name) != value
+    )
+    for name in alongside:
+        changes[name] = {"before": before.get(name), "after": after.get(name)}
+
     # Field names yes, values no - notes can hold private things.
     log.info(
         f"{what} updated",
@@ -797,6 +818,12 @@ async def _write(
     result: dict[str, Any] = {"changes": changes}
     if target_id is not None:
         result["id"] = target_id
+    if alongside:
+        result["alongside"] = alongside
+        result["note_alongside"] = (
+            "These changed without being asked for, to keep the record "
+            "consistent: " + ", ".join(alongside) + "."
+        )
     if ignored:
         result["unchanged"] = ignored
         result["note"] = (
