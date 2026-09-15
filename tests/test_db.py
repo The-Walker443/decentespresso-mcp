@@ -30,7 +30,7 @@ def test_migrations_are_idempotent(tmp_path: pathlib.Path) -> None:
     reopened.close()
 
 
-def test_a_visualizer_era_file_is_refused(tmp_path: pathlib.Path) -> None:
+def test_a_superseded_schema_file_is_refused(tmp_path: pathlib.Path) -> None:
     """Otherwise the CREATE IF NOT EXISTS would do nothing and the old schema stay."""
     old = Database(tmp_path / "alt.db")
     old.migrate()
@@ -42,7 +42,7 @@ def test_a_visualizer_era_file_is_refused(tmp_path: pathlib.Path) -> None:
     old.close()
 
     reopened = Database(tmp_path / "alt.db")
-    with pytest.raises(RuntimeError, match="Visualizer era"):
+    with pytest.raises(RuntimeError, match="superseded schema"):
         reopened.migrate()
     reopened.close()
 

@@ -250,8 +250,8 @@ async def _link_profile(
 ) -> None:
     """Derive the profile version from the embedded workflow and link it.
 
-    Unlike in the Visualizer era this needs no second request and no TCL parser
-    - the profile ships with the shot.
+    No second request and no foreign format to parse - the profile ships with
+    the shot.
     """
     profile = ((detail.get("workflow") or {}).get("profile")) or {}
     if not profile.get("steps"):

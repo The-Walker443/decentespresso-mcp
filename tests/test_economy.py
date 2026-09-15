@@ -272,12 +272,12 @@ async def test_log_never_carries_arguments(mcp, caplog) -> None:
 
 async def test_write_tool_costs_what_it_is_worth(valid_env, db) -> None:
     """Write mode must not blow up the tool list (SPEC §17.3/§18.4)."""
+    from decentespresso_mcp.decaid_client import DecaidClient
     from decentespresso_mcp.sync import SyncCoordinator
-    from decentespresso_mcp.visualizer_client import VisualizerClient
 
     writable = Config.from_env({**valid_env, "WRITE_ENABLED": "true"})
     coordinator = SyncCoordinator(
-        VisualizerClient("a@b.org", "lang-genug-hier"), db
+        DecaidClient("http://10.100.100.171:8080"), db
     )
     try:
         async with Client(build_mcp(writable, db, coordinator)) as client:

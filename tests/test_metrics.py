@@ -1,10 +1,9 @@
 """Metrics per SPEC §8, against the real reference shot from Decaid.
 
 The numbers here come from a recorded response of Decaid 0.8.5 and supersede
-the expectations of the Visualizer era. What changed in substance is above all
-the origin of ``pi_end``: Decaid reports the machine state in plain text, so
-the end of preinfusion is read off rather than inferred from a square wave
-plus a pressure anchor.
+an earlier set of expectations. What matters in substance is the origin of
+``pi_end``: Decaid reports the machine state in plain text, so the end of
+preinfusion is read off rather than inferred.
 """
 
 from __future__ import annotations
@@ -458,3 +457,58 @@ def test_warm_cache_covers_all_shots(db: Database) -> None:
 
 def test_unknown_shot_yields_none(db: Database) -> None:
     assert metrics_for_shot(db, "does-not-exist") is None
+
+
+# ----------------------------------------- The heuristic path on real data
+
+
+def heuristic_detail() -> dict:
+    """A real shot that genuinely has no usable phase markers.
+
+    Pulled from the archive on 2026-09-15: 241 data points, zero phase
+    boundaries. Its failure mode is the more interesting one - the machine does
+    report a state, but the same one throughout: ``pouring`` on every single
+    point, with ``profileFrame`` stuck at 0. There is no transition to find, so
+    neither of the first two sources has anything to say.
+    """
+    import json
+
+    return json.loads(
+        (FIXTURES / "shot_heuristic.json").read_text(encoding="utf-8")
+    )
+
+
+def test_a_real_shot_without_markers_uses_the_heuristic() -> None:
+    """The genuine article, not a reference shot with its markers stripped.
+
+    Five shots in the archive land here. Without a real one under test the
+    fallback would only ever be exercised against data that was doctored to
+    reach it.
+    """
+    rows = series_rows_from_decaid(heuristic_detail())
+    assert len(rows) == 241
+    # A state is reported, but it never changes - so there is no boundary.
+    assert {r["substate"] for r in rows} == {"pouring"}
+    assert {r["profile_frame"] for r in rows} == {0.0}
+    assert phase_boundaries(rows) == []
+
+    metrics = compute_metrics(rows)
+    assert metrics["pi_end_source"] == "heuristic"
+    assert metrics["pi_end"] == 4.3
+    assert metrics["duration_s"] == 59.8
+    assert any("phase markers" in w for w in metrics["warnings"])
+
+
+def test_the_heuristic_still_yields_usable_pressure_metrics() -> None:
+    """A missing marker costs the phase boundary, not the whole analysis."""
+    metrics = compute_metrics(series_rows_from_decaid(heuristic_detail()))
+    assert metrics["max_pressure_global"] is not None
+    assert metrics["peak_pressure_infusion"] is not None
+    assert metrics["temp_basket_mean"] is not None
+
+
+def test_curve_shape_of_a_markerless_shot_says_where_it_came_from() -> None:
+    """One segment, and ``source`` admits there was nothing to split on."""
+    shape = curve_shape(series_rows_from_decaid(heuristic_detail()))
+    assert shape["source"] == "none"
+    assert len(shape["segments"]) == 1

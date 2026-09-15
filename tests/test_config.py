@@ -5,7 +5,7 @@ import pytest
 from decentespresso_mcp.config import Config, ConfigError
 from decentespresso_mcp.guards import ALL_RULES
 
-from .conftest import TEST_PASSWORD, TEST_SECRET
+from .conftest import TEST_SECRET
 
 
 def test_defaults_are_applied(config: Config) -> None:
@@ -25,15 +25,8 @@ def test_connector_url_is_none_without_base_url(valid_env: dict[str, str]) -> No
     del valid_env["PUBLIC_BASE_URL"]
     assert Config.from_env(valid_env).connector_url is None
 
-
-def test_user_agent_identifies_server_and_contact(config: Config) -> None:
-    # SPEC ss4: hoeflich pollen heisst identifizierbar sein.
-    assert config.user_agent.startswith("decentespresso-mcp/")
-    assert "shots@example.org" in config.user_agent
-
-
 @pytest.mark.parametrize(
-    "key", ["VISUALIZER_EMAIL", "VISUALIZER_PASSWORD", "MCP_PATH_SECRET"]
+    "key", ["MCP_PATH_SECRET", "DECAID_URL"]
 )
 def test_missing_required_value_fails(valid_env: dict[str, str], key: str) -> None:
     del valid_env[key]
@@ -43,17 +36,16 @@ def test_missing_required_value_fails(valid_env: dict[str, str], key: str) -> No
 
 
 def test_empty_string_counts_as_missing(valid_env: dict[str, str]) -> None:
-    valid_env["VISUALIZER_PASSWORD"] = "   "
+    valid_env["MCP_PATH_SECRET"] = "   "
     with pytest.raises(ConfigError):
         Config.from_env(valid_env)
 
 
 def test_placeholder_from_env_example_is_rejected(valid_env: dict[str, str]) -> None:
-    valid_env["VISUALIZER_PASSWORD"] = "change-me"
     valid_env["MCP_PATH_SECRET"] = "<openssl rand -hex 24>"
     with pytest.raises(ConfigError) as excinfo:
         Config.from_env(valid_env)
-    assert sum("placeholder" in p for p in excinfo.value.problems) == 2
+    assert sum("placeholder" in p for p in excinfo.value.problems) == 1
 
 
 def test_short_secret_is_rejected(valid_env: dict[str, str]) -> None:
@@ -116,47 +108,23 @@ def test_base_url_needs_scheme(valid_env: dict[str, str]) -> None:
 
 def test_all_problems_are_reported_at_once(valid_env: dict[str, str]) -> None:
     # One start should show every problem, not one per restart.
-    del valid_env["VISUALIZER_EMAIL"]
     valid_env["MCP_PATH_SECRET"] = "short"
     valid_env["LOG_LEVEL"] = "CHATTY"
+    valid_env["DECAID_URL"] = "https://decaid.example.com"
     with pytest.raises(ConfigError) as excinfo:
         Config.from_env(valid_env)
     assert len(excinfo.value.problems) >= 3
 
-
-def test_short_password_triggers_a_startup_warning(valid_env: dict[str, str]) -> None:
-    # The log filter lets short values through - that must be noticed but must
-    # not prevent a start.
-    valid_env["VISUALIZER_PASSWORD"] = "short12"      # 7 characters
-    config = Config.from_env(valid_env)
-
-    warnings = config.startup_warnings()
-    assert len(warnings) == 1
-    assert "VISUALIZER_PASSWORD" in warnings[0]
-    assert "NOT removed from logs" in warnings[0]
-
-
-def test_long_enough_password_warns_about_nothing(config: Config) -> None:
+def test_a_proper_secret_warns_about_nothing(config: Config) -> None:
     assert config.startup_warnings() == []
 
 
-def test_repr_hides_password_and_secret(config: Config) -> None:
-    text = repr(config)
-    assert TEST_PASSWORD not in text
-    assert TEST_SECRET not in text
-    assert "***" in text
-    # Die Mailadresse bleibt sichtbar - sie steht ohnehin im User-Agent.
-    assert "shots@example.org" in text
-
-
-def test_secret_values_cover_password_path_secret_and_wire_token(config: Config) -> None:
-    # The base64 token belongs in there: that is how the password actually
-    # travels.
-    assert set(config.secret_values()) == {
-        TEST_PASSWORD, TEST_SECRET, config.basic_auth_token
-    }
-    assert TEST_PASSWORD not in config.basic_auth_token
-
+def test_a_barely_long_enough_secret_is_worth_a_word(valid_env) -> None:
+    """It passes validation, and it still stands in for authentication."""
+    valid_env["MCP_PATH_SECRET"] = "a" * 33
+    warnings = Config.from_env(valid_env).startup_warnings()
+    assert len(warnings) == 1
+    assert "MCP_PATH_SECRET" in warnings[0]
 
 # --------------------------------------------------- DECAID_URL (SPEC ss20.6)
 

@@ -26,27 +26,31 @@ around. This has paid for itself repeatedly:
 - `actualDoseWeight` is always exactly equal to `targetDoseWeight`, which made a
   whole planned guard rule meaningless.
 
-### Mutating probes
+### Mutating probes and tests against live data
 
-Some things can only be learned by writing. When a probe has to change real
-data:
+Some things can only be learned by writing. Probing and testing write paths
+against the operator's real Decaid data is **allowed**: a clean verification of
+what the API actually does is worth more here than an untouched history. Two
+duties remain.
 
-1. **Read the current value first** and keep it.
-2. Write a distinctive, reversible probe value.
-3. **Read back** to see what the API actually did.
-4. **Restore the original immediately**, and read back again to confirm the
-   restore.
-5. Report what was touched, even when the restore succeeded.
+**Snapshot and restore where you can.** Read the current value first, write the
+probe, read back to see what the API did, then put the original back and read
+that back too. Best effort - if a value cannot be recovered, that is not a
+reason to skip the probe, only a reason to say so.
 
-Never probe a field whose original value cannot be recovered. During the M8
-verification a probe set a shot's `timestamp` to `2020-01-01`; the field turned
-out to be writable, and the original was only recoverable to within a few
-milliseconds from the first measurement point. Everything observable came back,
-but that was luck, not method.
+**Report everything you changed.** Every report lists, in full, which entities
+were touched, which fields on them, and whether they are restored. No
+exceptions, not even when the restore succeeded and nothing appears to have
+happened.
 
-The finding itself was worth having - Decaid refuses `id` and `createdAt` with
-400 but accepts `timestamp` - and it changed the code: for telemetry fields the
-whitelist in `writes.py` is the only protection, not a second line of defence.
+The reporting duty exists because of one incident: during the M8 verification a
+probe set a shot's `timestamp` to `2020-01-01`. The field turned out to be
+writable - a finding worth having, and one that changed the code, because for
+telemetry fields the whitelist in `writes.py` is the only protection rather than
+a second line of defence. The original was recoverable only to within a few
+milliseconds, from the first measurement point. Everything observable came back,
+but that was luck. Luck is not something a later reader can verify; a list of
+what was touched is.
 
 ## Writing to the archive
 

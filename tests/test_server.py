@@ -116,6 +116,5 @@ async def test_no_secret_leaks_into_mcp_metadata(config: Config, db: Database) -
         result = await client.call_tool("status", {})
     blob = json.dumps([t.model_dump(mode="json") for t in tools]) + json.dumps(result.data)
     assert TEST_SECRET not in blob
-    assert config.visualizer_password not in blob
     assert config.decaid_url in json.dumps(result.data), (
         "the LAN address is no secret and helps when looking things up")

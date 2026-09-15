@@ -1,13 +1,10 @@
-"""Profile versions from the workflow JSON (SPEC §20.5).
+"""Profile versions from the workflow JSON.
 
-Decaid ships the brewing profile as JSON alongside the shot - it no longer
-has to be fetched separately and parsed from TCL. That removes the most
-common source of failure in the Visualizer era: a profile the API would not
-hand out (422), or one whose TCL the parser did not understand.
+Decaid ships the brewing profile as JSON alongside the shot, so there is no
+second request and no parsing of a foreign format - the profile a shot ran on
+arrives with the shot and cannot be missing or unreadable.
 
-``tcl_profile.py`` stays readable for the archived era but is no longer used.
-
-Two hashes, as before (SPEC §5):
+Two hashes:
 
 ``version_hash``  Identity of one profile version. Changes as soon as
                   anything about the profile changes - notes included.

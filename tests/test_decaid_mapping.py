@@ -251,7 +251,8 @@ def test_series_rows_carry_targets_and_phase_markers() -> None:
     assert [r["elapsed"] for r in rows] == sorted(r["elapsed"] for r in rows)
 
     first = rows[0]
-    # Target values per data point - the Visualizer era had none of these.
+    # Target values per data point - this is what makes compliance measurable
+    # rather than estimated.
     assert first["target_pressure"] is not None
     assert first["target_flow"] is not None
     assert first["state"] is not None

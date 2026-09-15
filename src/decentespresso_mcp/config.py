@@ -7,7 +7,6 @@ collects *every* problem and raises them together.
 
 from __future__ import annotations
 
-import base64
 import ipaddress
 import os
 import re
@@ -47,8 +46,6 @@ class ConfigError(ValueError):
 
 @dataclass(frozen=True, repr=False)
 class Config:
-    visualizer_email: str
-    visualizer_password: str
     mcp_path_secret: str
     sync_interval_min: int
     db_path: str
@@ -90,53 +87,42 @@ class Config:
 
     @property
     def user_agent(self) -> str:
-        """SPEC §4: polite polling with an identifiable UA including a contact address."""
-        return f"decentespresso-mcp/{__version__} (privat, {self.visualizer_email})"
-
-    @property
-    def basic_auth_token(self) -> str:
-        """The base64 part of the ``Authorization: Basic`` header.
-
-        A redaction that only knows the plaintext password lets through exactly
-        the form in which the password actually travels.
-        """
-        raw = f"{self.visualizer_email}:{self.visualizer_password}".encode()
-        return base64.b64encode(raw).decode()
+        """Identifies this server to Decaid. No contact address: the tablet is
+        on the same network and belongs to the same person."""
+        return f"decentespresso-mcp/{__version__} (private, LAN)"
 
     def startup_warnings(self) -> list[str]:
         """Non-fatal findings that belong in the log at startup.
 
-        Kept apart from ``ConfigError``: this does not prevent a start but
-        aber auffallen.
+        Kept apart from ``ConfigError``: these do not prevent a start but should
+        still be noticed.
         """
-        from .logging_setup import MIN_REDACT_LEN
-
         warnings: list[str] = []
-        if len(self.visualizer_password) < MIN_REDACT_LEN:
-            # The log filter lets short values through, because it would
-            # otherwise shred every incidental match in the text. A password
-            # kurzes Passwort kann also in einer Logzeile stehenbleiben.
+        if len(self.mcp_path_secret) < MIN_SECRET_LEN + 8:
+            # Long enough to pass validation, short enough to be worth a word:
+            # this path secret stands in for authentication entirely.
             warnings.append(
-                f"VISUALIZER_PASSWORD is shorter than {MIN_REDACT_LEN} characters "
-                "and is therefore NOT removed from logs. Please set a longer one."
+                f"MCP_PATH_SECRET is {len(self.mcp_path_secret)} characters. It "
+                "replaces authentication outright - openssl rand -hex 24 gives 48."
             )
         return warnings
 
     def secret_values(self) -> tuple[str, ...]:
         """Values the log filter (``logging_setup``) must never let through.
 
-        The email is deliberately absent: per SPEC §4 it belongs in the
-        User-Agent and would otherwise be unreadable in exactly the line one
-        needs when debugging a 401. The password is what matters, not the
-        identity.
+        Decaid needs no credentials - the tablet is on the same network - so
+        what is left is the path secret, which stands in for authentication,
+        and the ntfy token, which travels as ``Authorization: Bearer``.
+
+        The ntfy token was missing here until the Visualizer credentials were
+        removed; with three other entries in the tuple, nobody noticed that it
+        was not one of them.
         """
-        return (self.visualizer_password, self.mcp_path_secret, self.basic_auth_token)
+        return tuple(v for v in (self.mcp_path_secret, self.ntfy_token) if v)
 
     def __repr__(self) -> str:
         return (
             "Config("
-            f"visualizer_email={self.visualizer_email!r}, "
-            "visualizer_password='***', "
             f"mcp_path_secret='***({len(self.mcp_path_secret)} chars)', "
             f"sync_interval_min={self.sync_interval_min}, "
             f"db_path={self.db_path!r}, "
@@ -154,8 +140,6 @@ class Config:
         src = os.environ if env is None else env
         problems: list[str] = []
 
-        email = _req_str(src, "VISUALIZER_EMAIL", problems)
-        password = _req_str(src, "VISUALIZER_PASSWORD", problems)
         secret = _req_str(src, "MCP_PATH_SECRET", problems)
 
         if secret is not None:
@@ -220,8 +204,6 @@ class Config:
             raise ConfigError(problems)
 
         return cls(
-            visualizer_email=email,  # type: ignore[arg-type]
-            visualizer_password=password,  # type: ignore[arg-type]
             mcp_path_secret=secret,  # type: ignore[arg-type]
             sync_interval_min=interval,
             db_path=db_path,

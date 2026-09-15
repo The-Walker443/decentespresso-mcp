@@ -87,9 +87,9 @@ _UPSERT_BEAN = _upsert_sql("beans", _BEAN_COLUMNS)
 _UPSERT_BATCH = _upsert_sql("bean_batches", _BATCH_COLUMNS)
 
 
-#: Migrations of the Visualizer era. If a file carries one of these, it is not
-#: the archive this server has kept since M8.
-_VISUALIZER_ERA_MIGRATIONS = frozenset({
+#: Migrations of the superseded schema. A file carrying any of these predates
+#: the current data model and cannot be upgraded into it.
+_SUPERSEDED_MIGRATIONS = frozenset({
     "001_init.sql",
     "002_profile_semantic_hash.sql",
     "003_shot_metrics.sql",
@@ -136,7 +136,7 @@ class Database:
                 row["name"]
                 for row in self._conn.execute("SELECT name FROM schema_migrations")
             }
-            self._refuse_visualizer_era(done)
+            self._refuse_incompatible_schema(done)
             applied: list[str] = []
             for sql_file in sorted(self._migrations_dir.glob("*.sql")):
                 if sql_file.name in done:
@@ -152,21 +152,22 @@ class Database:
                 log.info("migrations applied", extra={"fields": {"files": ",".join(applied)}})
             return applied
 
-    def _refuse_visualizer_era(self, applied: set[str]) -> None:
-        """Aborts if the file still comes from the Visualizer era.
+    def _refuse_incompatible_schema(self, applied: set[str]) -> None:
+        """Aborts on a database written against the superseded schema.
 
-        The new migrations consist of ``CREATE TABLE IF NOT EXISTS`` - applied
-        to an old file they would silently do nothing and leave the old schema
-        standing, while the server acted as if it were up to date. The history
-        reset calls for a new file.
+        The migrations here consist of ``CREATE TABLE IF NOT EXISTS`` - applied
+        to such a file they would silently do nothing and leave the old tables
+        standing, while the server acted as if it were up to date. A new file is
+        the only correct outcome, so this refuses loudly rather than continuing
+        quietly.
         """
-        stale = sorted(applied & _VISUALIZER_ERA_MIGRATIONS)
+        stale = sorted(applied & _SUPERSEDED_MIGRATIONS)
         if stale:
             raise RuntimeError(
-                f"{self.path} comes from the Visualizer era (applied: "
-                f"{', '.join(stale)}). Since M8 Decaid is the source and the "
-                "schema is a different one; create a new file and keep the old "
-                "one as shots-visualizer-era.db."
+                f"{self.path} was written against the superseded schema "
+                f"(applied: {', '.join(stale)}). That schema has no migration "
+                "path to this one; point DB_PATH at a new file and keep the old "
+                "one alongside it."
             )
 
     # --------------------------------------------------------------------- Shots

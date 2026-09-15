@@ -15,7 +15,7 @@ import pathlib
 from collections.abc import Iterator
 
 import pytest
-from conftest import TEST_PASSWORD, TEST_SECRET
+from conftest import TEST_NTFY_TOKEN, TEST_SECRET
 from fastmcp import Client
 from helpers import REFERENCE_ID, corpus, decaid_detail, store_shot_with_profile
 from test_sync import FakeDecaid
@@ -137,40 +137,31 @@ async def test_criterion_6_no_secret_in_tool_output(config: Config, db: Database
                                         default=str))
 
     blob = "\n".join(collected)
-    for secret in (TEST_SECRET, TEST_PASSWORD, config.basic_auth_token):
+    for secret in (TEST_SECRET, TEST_NTFY_TOKEN):
         assert secret not in blob, "criterion 6: a secret in a tool response"
 
 
-def test_criterion_6_no_secret_in_logs(capsys, config: Config) -> None:
-    setup_logging(config.log_level, secrets=config.secret_values())
+def test_criterion_6_no_secret_in_logs(capsys, notifying_config: Config) -> None:
+    setup_logging(notifying_config.log_level,
+                  secrets=notifying_config.secret_values())
     log = logging.getLogger("decentespresso_mcp.test")
 
     # Every shape in which a secret realistically ends up in a log line.
-    log.info("connector %s", config.connector_url)
-    log.info("password %s", TEST_PASSWORD)
-    log.info("header Authorization: Basic %s", config.basic_auth_token)
-    log.info("dict %s", {"authorization": f"Basic {config.basic_auth_token}"})
+    log.info("connector %s", notifying_config.connector_url)
+    log.info("ntfy token %s", TEST_NTFY_TOKEN)
+    log.info("header Authorization: Bearer %s", TEST_NTFY_TOKEN)
+    log.info("dict %s", {"authorization": f"Bearer {TEST_NTFY_TOKEN}"})
     try:
-        raise RuntimeError(f"401 for {config.basic_auth_token}")
+        raise RuntimeError(f"ntfy refused {TEST_NTFY_TOKEN}")
     except RuntimeError:
-        log.exception("auth failed")
+        log.exception("notification failed")
 
     out = capsys.readouterr().out
     logging.getLogger().handlers.clear()
 
-    for secret in (TEST_SECRET, TEST_PASSWORD, config.basic_auth_token):
+    for secret in (TEST_SECRET, TEST_NTFY_TOKEN):
         assert secret not in out, "criterion 6: a secret in the log"
     assert REDACTED in out
-
-
-def test_basic_auth_token_is_the_wire_format(config: Config) -> None:
-    """The plaintext alone is not enough - this is how the password really goes out."""
-    import base64
-
-    decoded = base64.b64decode(config.basic_auth_token).decode()
-    assert decoded == f"{config.visualizer_email}:{TEST_PASSWORD}"
-    assert TEST_PASSWORD not in config.basic_auth_token, "otherwise the step would be pointless"
-
 
 @pytest.mark.parametrize(
     "line",

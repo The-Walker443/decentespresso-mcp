@@ -6,17 +6,16 @@
 #     ownership from the image, so the manual chown 10001 on the host is gone
 #   - no .env file: Portainer fills the ${VAR} from the stack variables
 #
-# Zu setzende Variablen (Portainer -> Stack -> Environment variables):
-#   IMAGE_REPOSITORY   z. B. ghcr.io/<owner>/decentespresso-mcp
+# Variables to set (Portainer -> Stack -> Environment variables):
+#   IMAGE_REPOSITORY   e.g. ghcr.io/<owner>/decentespresso-mcp
 #   IMAGE_TAG          latest  (or a sha-... for a pinned version)
-#   VISUALIZER_EMAIL
-#   VISUALIZER_PASSWORD
 #   MCP_PATH_SECRET    openssl rand -hex 24
 #   PUBLIC_BASE_URL    https://<hostname>
 #   WRITE_ENABLED      false (default) or true for the write tools
-#   DECAID_URL         http://10.100.100.171:8080 (nur private IPs, SPEC 20.6)
-#   NTFY_URL/NTFY_TOPIC/NTFY_TOKEN   optional, Waechter-Nachrichten
-#   CLOUDFLARED_NETWORK  Name des vorhandenen Tunnel-Netzes
+#   DECAID_URL         http://10.100.100.171:8080 (private IPs only)
+#   NTFY_URL/NTFY_TOPIC/NTFY_TOKEN   optional, guard notifications
+#   GUARD_RULES        optional, comma-separated rule names or "none"
+#   CLOUDFLARED_NETWORK  name of the existing tunnel network
 
 services:
   decentespresso-mcp:
@@ -25,8 +24,6 @@ services:
     restart: unless-stopped
 
     environment:
-      VISUALIZER_EMAIL: ${VISUALIZER_EMAIL}
-      VISUALIZER_PASSWORD: ${VISUALIZER_PASSWORD}
       MCP_PATH_SECRET: ${MCP_PATH_SECRET}
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL}
       SYNC_INTERVAL_MIN: ${SYNC_INTERVAL_MIN:-15}

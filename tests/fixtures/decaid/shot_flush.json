@@ -1,0 +1,249 @@
+{
+ "id": "a7f988d3-8a59-4c5e-a62c-a727257b49da",
+ "timestamp": "2026-09-12T09:16:50.498018",
+ "createdAt": "2026-09-12T07:16:51.758047Z",
+ "updatedAt": "2026-09-12T07:16:51.758047Z",
+ "measurements": [
+  {
+   "machine": {
+    "timestamp": "2026-09-12T09:16:50.491854",
+    "state": {
+     "state": "espresso",
+     "substate": "preparingForShot"
+    },
+    "flow": 0.105224609375,
+    "pressure": 0.00439453125,
+    "targetFlow": 3.6875,
+    "targetPressure": 0.0,
+    "mixTemperature": 89.64453125,
+    "groupTemperature": 96.09329223632812,
+    "targetMixTemperature": 95.0,
+    "targetGroupTemperature": 95.0,
+    "profileFrame": 2,
+    "steamTemperature": 159
+   },
+   "scale": {
+    "timestamp": "2026-09-12T09:16:50.451474",
+    "weight": 0.0,
+    "weightFlow": 0.0,
+    "battery": 60,
+    "timerValue": null
+   },
+   "volume": 0.0
+  },
+  {
+   "machine": {
+    "timestamp": "2026-09-12T09:16:50.761549",
+    "state": {
+     "state": "espresso",
+     "substate": "preparingForShot"
+    },
+    "flow": 0.842041015625,
+    "pressure": 0.00537109375,
+    "targetFlow": 4.0,
+    "targetPressure": 0.0,
+    "mixTemperature": 89.6796875,
+    "groupTemperature": 96.07066345214844,
+    "targetMixTemperature": 95.0,
+    "targetGroupTemperature": 95.0,
+    "profileFrame": 2,
+    "steamTemperature": 159
+   },
+   "scale": {
+    "timestamp": "2026-09-12T09:16:50.657849",
+    "weight": 0.0,
+    "weightFlow": 0.0,
+    "battery": 60,
+    "timerValue": null
+   },
+   "volume": 0.0
+  },
+  {
+   "machine": {
+    "timestamp": "2026-09-12T09:16:50.986881",
+    "state": {
+     "state": "espresso",
+     "substate": "preparingForShot"
+    },
+    "flow": 1.3955078125,
+    "pressure": 0.00537109375,
+    "targetFlow": 4.0,
+    "targetPressure": 0.0,
+    "mixTemperature": 89.8125,
+    "groupTemperature": 96.01841735839844,
+    "targetMixTemperature": 95.0,
+    "targetGroupTemperature": 95.0,
+    "profileFrame": 2,
+    "steamTemperature": 159
+   },
+   "scale": {
+    "timestamp": "2026-09-12T09:16:50.931303",
+    "weight": 0.0,
+    "weightFlow": 0.0,
+    "battery": 60,
+    "timerValue": null
+   },
+   "volume": 0.0
+  },
+  {
+   "machine": {
+    "timestamp": "2026-09-12T09:16:51.255276",
+    "state": {
+     "state": "espresso",
+     "substate": "preparingForShot"
+    },
+    "flow": 1.92822265625,
+    "pressure": 0.00537109375,
+    "targetFlow": 4.0,
+    "targetPressure": 0.0,
+    "mixTemperature": 89.8125,
+    "groupTemperature": 96.0198974609375,
+    "targetMixTemperature": 95.0,
+    "targetGroupTemperature": 95.0,
+    "profileFrame": 2,
+    "steamTemperature": 159
+   },
+   "scale": {
+    "timestamp": "2026-09-12T09:16:51.230933",
+    "weight": 0.0,
+    "weightFlow": 0.0,
+    "battery": 60,
+    "timerValue": null
+   },
+   "volume": 0.0
+  },
+  {
+   "machine": {
+    "timestamp": "2026-09-12T09:16:51.526541",
+    "state": {
+     "state": "espresso",
+     "substate": "preinfusion"
+    },
+    "flow": 2.39794921875,
+    "pressure": 0.005126953125,
+    "targetFlow": 0.0,
+    "targetPressure": 2.625,
+    "mixTemperature": 89.91015625,
+    "groupTemperature": 84.39939880371094,
+    "targetMixTemperature": 97.61328125,
+    "targetGroupTemperature": 95.0,
+    "profileFrame": 0,
+    "steamTemperature": 159
+   },
+   "scale": {
+    "timestamp": "2026-09-12T09:16:51.441738",
+    "weight": 0.0,
+    "weightFlow": 0.0,
+    "battery": 60,
+    "timerValue": null
+   },
+   "volume": 0.0
+  }
+ ],
+ "workflow": {
+  "id": "61289677-96c3-4168-8e01-f960c18c6a7a",
+  "name": "Workflow",
+  "description": "Description",
+  "profile": {
+   "version": "2",
+   "title": "D-Flow",
+   "notes": "A simple to use profiling system By Damian Brakel\n        D-Flow's Default profile is provided as an example profile for you to get started in creating your own",
+   "author": "Damian.",
+   "beverage_type": "espresso",
+   "steps": [
+    {
+     "name": "Filling",
+     "pump": "pressure",
+     "transition": "fast",
+     "exit": {
+      "type": "pressure",
+      "condition": "over",
+      "value": 1.5
+     },
+     "volume": 100.0,
+     "seconds": 25.0,
+     "weight": 5.0,
+     "temperature": 95.0,
+     "sensor": "coffee",
+     "pressure": 3.0,
+     "limiter": null
+    },
+    {
+     "name": "Infusing",
+     "pump": "pressure",
+     "transition": "fast",
+     "exit": null,
+     "volume": 100.0,
+     "seconds": 60.0,
+     "weight": 4.0,
+     "temperature": 95.0,
+     "sensor": "coffee",
+     "pressure": 3.0,
+     "limiter": null
+    },
+    {
+     "name": "Pouring",
+     "pump": "flow",
+     "transition": "fast",
+     "exit": null,
+     "volume": 0.0,
+     "seconds": 127.0,
+     "weight": 0.0,
+     "temperature": 95.0,
+     "sensor": "coffee",
+     "flow": 1.7,
+     "limiter": {
+      "value": 8.5,
+      "range": 0.2
+     }
+    }
+   ],
+   "target_volume": 0.0,
+   "target_weight": 42.0,
+   "target_volume_count_start": 2,
+   "tank_temperature": 0.0
+  },
+  "context": {
+   "targetDoseWeight": 18.0,
+   "targetYield": 42.0,
+   "grinderModel": "Timemore Sculpture 078s",
+   "grinderSetting": "2.70",
+   "beanBatchId": "10585dd5-1681-4763-868d-36d3713c100c",
+   "coffeeName": "Arabica Honey Process",
+   "coffeeRoaster": "Tugu Kawisari",
+   "extras": {
+    "basketId": "d5fb625d-c25f-44de-b849-5a65daab28c1",
+    "basketName": "Decent 18g",
+    "rpm": 0
+   }
+  },
+  "steamSettings": {
+   "targetTemperature": 160,
+   "duration": 120,
+   "flow": 0.0,
+   "stopAtTemperature": 0.0
+  },
+  "hotWaterData": {
+   "targetTemperature": 95,
+   "duration": 30,
+   "volume": 100,
+   "flow": 10.0
+  },
+  "rinseData": {
+   "targetTemperature": 90,
+   "duration": 10,
+   "flow": 4.0
+  },
+  "machine": {
+   "provenanceStatus": "captured",
+   "flowCalibration": 0.85,
+   "serialNumber": "12356",
+   "model": "DE1Pro",
+   "firmwareVersion": "1358"
+  }
+ },
+ "annotations": {
+  "actualDoseWeight": 18.0
+ },
+ "stopReason": "machineEnded"
+}

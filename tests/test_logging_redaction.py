@@ -1,4 +1,8 @@
-"""Covers acceptance criterion 6: no secret in the logs (SPEC §13)."""
+"""No secret in the logs.
+
+Two secrets exist on this server: the path secret that stands in for
+authentication, and the ntfy token that travels as ``Authorization: Bearer``.
+"""
 
 from __future__ import annotations
 
@@ -7,7 +11,7 @@ import logging
 from decentespresso_mcp.config import Config
 from decentespresso_mcp.logging_setup import REDACTED, KeyValueFormatter, setup_logging
 
-from .conftest import TEST_PASSWORD, TEST_SECRET
+from .conftest import TEST_NTFY_TOKEN, TEST_SECRET
 
 
 def _record(msg: str, *args: object, **kwargs: object) -> logging.LogRecord:
@@ -32,23 +36,23 @@ def test_extra_fields_are_appended() -> None:
 
 
 def test_secret_in_message_is_redacted() -> None:
-    fmt = KeyValueFormatter([TEST_PASSWORD, TEST_SECRET])
+    fmt = KeyValueFormatter([TEST_NTFY_TOKEN, TEST_SECRET])
     out = fmt.format(_record("connecting to https://host/%s/mcp", TEST_SECRET))
     assert TEST_SECRET not in out
     assert REDACTED in out
 
 
 def test_secret_in_traceback_is_redacted() -> None:
-    fmt = KeyValueFormatter([TEST_PASSWORD, TEST_SECRET])
+    fmt = KeyValueFormatter([TEST_NTFY_TOKEN, TEST_SECRET])
     try:
-        raise RuntimeError(f"auth failed for {TEST_PASSWORD}")
+        raise RuntimeError(f"ntfy refused {TEST_NTFY_TOKEN}")
     except RuntimeError:
         import sys
 
         record = _record("boom")
         record.exc_info = sys.exc_info()
     out = fmt.format(record)
-    assert TEST_PASSWORD not in out
+    assert TEST_NTFY_TOKEN not in out
     assert REDACTED in out
 
 
@@ -60,20 +64,22 @@ def test_secret_in_extra_field_is_redacted() -> None:
 
 
 def test_short_values_are_not_redacted() -> None:
-    # Otherwise a short password shreds every log line that happens to contain
+    # Otherwise a short secret shreds every log line that happens to contain
     # the same character sequence.
     out = KeyValueFormatter(["abc"]).format(_record("abcdef"))
     assert "abcdef" in out
 
 
-def test_setup_logging_redacts_on_stdout(capsys, config: Config) -> None:
-    setup_logging(config.log_level, secrets=config.secret_values())
+def test_setup_logging_redacts_on_stdout(capsys, notifying_config: Config) -> None:
+    setup_logging(notifying_config.log_level,
+                  secrets=notifying_config.secret_values())
     logging.getLogger("decentespresso_mcp.test").info(
-        "connector at %s with password %s", config.connector_url, TEST_PASSWORD
+        "connector at %s, ntfy token %s",
+        notifying_config.connector_url, TEST_NTFY_TOKEN,
     )
     out = capsys.readouterr().out
     assert TEST_SECRET not in out
-    assert TEST_PASSWORD not in out
+    assert TEST_NTFY_TOKEN not in out
     assert out.count(REDACTED) == 2
 
     logging.getLogger().handlers.clear()
@@ -123,3 +129,16 @@ def test_debug_brings_the_noise_back(capsys, config: Config) -> None:
     assert "Starting worker" in out
     assert "HTTP Request" in out
     logging.getLogger().handlers.clear()
+
+
+def test_the_ntfy_token_is_on_the_list(notifying_config: Config) -> None:
+    """It was not, until the Visualizer credentials left.
+
+    With three other entries in the tuple nobody noticed that the one secret
+    this server actually sends outward was missing from it.
+    """
+    assert TEST_NTFY_TOKEN in notifying_config.secret_values()
+
+
+def test_without_ntfy_only_the_path_secret_remains(config: Config) -> None:
+    assert config.secret_values() == (TEST_SECRET,)
