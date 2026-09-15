@@ -86,7 +86,7 @@ def test_milestone_is_derived_from_the_minor_version() -> None:
     ("0.12.0", "M12"),
     ("1.0.0", None),      # from 1.0 on the milestone count is over
     ("2.4.1", None),
-    ("0+unbekannt", None),
+    ("0+unknown", None),
     ("kaputt", None),
 ])
 def test_milestone_derivation(monkeypatch, version: str, expected: str | None) -> None:

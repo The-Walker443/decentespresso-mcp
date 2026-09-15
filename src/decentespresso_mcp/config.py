@@ -180,7 +180,7 @@ class Config:
         log_level = src.get("LOG_LEVEL", "INFO").strip().upper() or "INFO"
         if log_level not in _LOG_LEVELS:
             problems.append(
-                f"LOG_LEVEL={log_level!r} unbekannt, erlaubt: {sorted(_LOG_LEVELS)}"
+                f"LOG_LEVEL={log_level!r} is unknown, allowed: {sorted(_LOG_LEVELS)}"
             )
 
         base_url = (src.get("PUBLIC_BASE_URL") or "").strip() or None

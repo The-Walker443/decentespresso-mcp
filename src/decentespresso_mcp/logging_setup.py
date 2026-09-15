@@ -120,12 +120,32 @@ def setup_logging(level: str = "INFO", secrets: Iterable[str] = ()) -> None:
     root.setLevel(level.upper())
 
     # uvicorn brings its own handlers and would otherwise log twice, unredacted.
-    for name in ("uvicorn", "uvicorn.error", "uvicorn.access", "httpx", "httpcore"):
+    for name in ("uvicorn", "uvicorn.error", "uvicorn.access", "httpx", "httpcore",
+                 "docket"):
         noisy = logging.getLogger(name)
         noisy.handlers.clear()
         noisy.propagate = True
     # httpx logs every request individually; the sync worker summarises on its
     # own. At DEBUG the individual requests stay visible.
-    if root.level > logging.DEBUG:
-        logging.getLogger("httpx").setLevel(logging.WARNING)
+    #
+    # docket is fastmcp's background task queue (a hard dependency since 2.14).
+    # Its worker starts unconditionally - there is no setting to switch it off -
+    # and announces itself with its three built-in demo tasks:
+    #
+    #   Starting worker 'host#1234' with the following tasks:
+    #   * trace(...)  * fail(...)  * sleep(...)
+    #
+    # None of that is ours: no tool here declares a task_config, so the worker
+    # never has anything to do. Four lines of someone else's startup banner in
+    # front of our own is worse than useless when reading a log, so it is muted
+    # to WARNING. Its warnings stay - they would report a real fault in the
+    # queue - and at DEBUG everything comes back.
+    #
+    # Both levels are set explicitly rather than only the muting one: a logger
+    # keeps whatever level it was last given, so setting it on one branch alone
+    # would leave a second call at DEBUG still muted - and the promise of
+    # idempotence above would be false.
+    detail = logging.NOTSET if root.level <= logging.DEBUG else logging.WARNING
+    logging.getLogger("httpx").setLevel(detail)
+    logging.getLogger("docket").setLevel(detail)
     logging.getLogger("httpcore").setLevel(logging.WARNING)

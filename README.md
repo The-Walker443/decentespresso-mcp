@@ -619,6 +619,12 @@ If something is missing or implausible the server does not start and lists
   shred incidental matches in the text.
 - uvicorn access logs are off — they would record the secret path of every
   request.
+- `docket`, fastmcp's background task queue, is muted to WARNING. Its worker
+  starts unconditionally (fastmcp offers no setting to switch it off) and
+  announces its three built-in demo tasks — `trace`, `fail`, `sleep` — at
+  startup. None of those are ours: no tool here declares a `task_config`, so the
+  worker never has anything to do. Its warnings still come through, and
+  `LOG_LEVEL=DEBUG` brings everything back.
 - `/healthz` is reachable through the tunnel as long as the ingress forwards the
   hostname wholesale. The route only returns `ok` — no numbers, no version, no
   hint at the secret path. To close it, add an entry with `path: ^/healthz$` and

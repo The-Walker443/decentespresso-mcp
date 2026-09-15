@@ -85,7 +85,7 @@ async def test_one_message_per_shot(archive: Database, notifying, ntfy) -> None:
 
 
 async def test_a_shot_is_never_reported_twice(archive: Database, notifying, ntfy) -> None:
-    """Sonst kaeme bei jedem Abgleich dieselbe Meldung erneut."""
+    """Otherwise every sync would bring the same message round again."""
     await send(notifying, [finding("bean_age", "s1")], archive)
     again = await send(notifying, [finding("bean_age", "s1")], archive)
     assert again == 0

@@ -60,8 +60,8 @@ def test_secret_in_extra_field_is_redacted() -> None:
 
 
 def test_short_values_are_not_redacted() -> None:
-    # Otherwise a short password shreds every log line that happens to
-    # dieselbe Zeichenfolge enthaelt.
+    # Otherwise a short password shreds every log line that happens to contain
+    # the same character sequence.
     out = KeyValueFormatter(["abc"]).format(_record("abcdef"))
     assert "abcdef" in out
 
@@ -76,4 +76,50 @@ def test_setup_logging_redacts_on_stdout(capsys, config: Config) -> None:
     assert TEST_PASSWORD not in out
     assert out.count(REDACTED) == 2
 
+    logging.getLogger().handlers.clear()
+
+
+# ------------------------------------------------------- Third-party noise
+
+
+def test_the_docket_worker_banner_is_muted(capsys, config: Config) -> None:
+    """docket is fastmcp's task queue and announces itself at startup.
+
+    Its worker starts unconditionally - fastmcp offers no setting to switch it
+    off - and prints its three built-in demo tasks (trace, fail, sleep). None of
+    that is ours, and four lines of someone else's banner in front of our own
+    make a log harder to read.
+    """
+    setup_logging(config.log_level, secrets=config.secret_values())
+    worker = logging.getLogger("docket.worker")
+    worker.info("Starting worker 'host#1' with the following tasks:")
+    worker.info("* trace(message: str, ...)")
+
+    assert capsys.readouterr().out == ""
+    logging.getLogger().handlers.clear()
+
+
+def test_docket_warnings_still_get_through(capsys, config: Config) -> None:
+    """Muting is not switching off: a real fault in the queue must show."""
+    setup_logging(config.log_level, secrets=config.secret_values())
+    logging.getLogger("docket.worker").warning("Failed to renew leases")
+
+    assert "Failed to renew leases" in capsys.readouterr().out
+    logging.getLogger().handlers.clear()
+
+
+def test_debug_brings_the_noise_back(capsys, config: Config) -> None:
+    """A logger keeps the level it was last given.
+
+    Setting it only on the muting branch would leave a second call at DEBUG
+    still muted, and the idempotence ``setup_logging`` promises would be false.
+    """
+    setup_logging("INFO", secrets=config.secret_values())
+    setup_logging("DEBUG", secrets=config.secret_values())
+    logging.getLogger("docket.worker").info("Starting worker 'host#1'")
+    logging.getLogger("httpx").info("HTTP Request: GET /api/v1/shots")
+
+    out = capsys.readouterr().out
+    assert "Starting worker" in out
+    assert "HTTP Request" in out
     logging.getLogger().handlers.clear()

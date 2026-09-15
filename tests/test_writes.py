@@ -111,7 +111,7 @@ def test_empty_fields_is_an_error() -> None:
 
 
 def test_all_problems_are_collected() -> None:
-    problems = problems_of({"unbekannt": 1, "id": "x", "enjoyment": 999})
+    problems = problems_of({"unknown_field": 1, "id": "x", "enjoyment": 999})
     assert len(problems) == 3
 
 

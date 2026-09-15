@@ -19,7 +19,7 @@ from .sync import open_database, run_sync
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="visualizer-mcp")
+    parser = argparse.ArgumentParser(prog="decentespresso-mcp")
     parser.add_argument(
         "--print-connector-url",
         action="store_true",
@@ -86,7 +86,8 @@ def main(argv: list[str] | None = None) -> int:
     if config.public_base_url:
         log.info(
             "connector url available - print it with: "
-            "docker compose exec visualizer-mcp visualizer-mcp --print-connector-url",
+            "docker compose exec decentespresso-mcp decentespresso-mcp "
+            "--print-connector-url",
             extra={"fields": {"base_url": config.public_base_url}},
         )
 

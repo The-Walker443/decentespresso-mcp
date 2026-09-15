@@ -67,7 +67,7 @@ class FakeDecaid:
                 return httpx.Response(200, json=self.workflow)
             if path.endswith("/info"):
                 return httpx.Response(200, json=load("info.json"))
-            return httpx.Response(404, json={"error": "unbekannt"})
+            return httpx.Response(404, json={"error": "unknown"})
 
         body = json.loads(request.content)
         self.puts.append((path, body))
@@ -84,7 +84,7 @@ class FakeDecaid:
                 return httpx.Response(400, json={"error": "profile is read-only"})
             self.workflow["context"].update(body.get("context") or {})
             return httpx.Response(200, json=self.workflow)
-        return httpx.Response(404, json={"error": "unbekannt"})
+        return httpx.Response(404, json={"error": "unknown"})
 
     @staticmethod
     def _patch(target: dict[str, Any], body: dict[str, Any]) -> httpx.Response:
