@@ -65,13 +65,14 @@ _SHOT_COLUMNS = (
 _BEAN_COLUMNS = (
     "id", "name", "roaster", "species", "processing", "decaf", "archived",
     "notes", "country", "region", "producer", "variety", "altitude",
-    "created_at", "updated_at", "raw_json", "synced_at",
+    "decaf_process", "created_at", "updated_at", "raw_json", "synced_at",
 )
 
 _BATCH_COLUMNS = (
     "id", "bean_id", "roast_date", "buy_date", "open_date", "best_before_date",
     "freeze_date", "unfreeze_date", "frozen", "archived",
     "weight_g", "weight_remaining_g",
+    "roast_level", "harvest_date", "quality_score", "price", "currency", "notes",
     "created_at", "updated_at", "raw_json", "synced_at",
 )
 
@@ -347,7 +348,9 @@ class Database:
             SELECT b.*, e.name AS bean_name, e.roaster AS bean_roaster,
                    COUNT(s.id) AS shot_count,
                    MIN(s.started_at) AS first_shot,
-                   MAX(s.started_at) AS last_shot
+                   MAX(s.started_at) AS last_shot,
+                   SUM(s.dose_g) AS coffee_used_g,
+                   AVG(s.dose_g) AS mean_dose_g
               FROM bean_batches b
               LEFT JOIN beans e ON e.id = b.bean_id
               LEFT JOIN shots s ON s.bean_batch_id = b.id
@@ -380,6 +383,7 @@ class Database:
                 SELECT b.id AS bean_id, b.name AS bean_name, b.roaster,
                        b.species, b.processing, b.decaf, b.archived,
                        b.country, b.region, b.producer, b.variety, b.altitude,
+                       b.decaf_process,
                        COUNT(s.id) AS shot_count,
                        MIN(s.started_at) AS first_shot,
                        MAX(s.started_at) AS last_shot,

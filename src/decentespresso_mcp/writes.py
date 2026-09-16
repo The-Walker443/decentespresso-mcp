@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 #: Maximum length of free-text fields.
@@ -38,6 +38,16 @@ _WEIGHT_RANGES: dict[str, tuple[float, float]] = {
 
 #: How far back a roast date may lie before it is a typo.
 _MAX_ROAST_AGE_DAYS = 3 * 365
+
+#: Dates that legitimately lie ahead. A best-before date in the past would be a
+#: strange thing to enter and is allowed anyway (bags do expire); one in the
+#: future is the normal case, and the blanket "no future dates" rule refused it.
+#: Found on real data: a batch carrying bestBeforeDate 2026-10-31 and openDate
+#: a week ahead - both of which this would have rejected.
+_FUTURE_DATES = frozenset({"bestBeforeDate", "openDate"})
+
+#: Even a future date has a limit. Ten years out is a mistyped year.
+_MAX_AHEAD = timedelta(days=10 * 365)
 
 _UUID = re.compile(r"^[0-9a-fA-F-]{8,64}$")
 
@@ -113,6 +123,7 @@ BEAN = Ruleset(
         "producer": "farm or producer",
         "variety": 'varieties, as a list (["Heirloom", "74110"])',
         "altitude": "altitude as [min, max] in metres",
+        "decafProcess": 'decaffeination method ("Swiss Water", "CO2")',
     },
     kinds={"decaf": "bool", "variety": "string_list", "altitude": "int_pair"},
     blocked={
@@ -137,6 +148,14 @@ BATCH = Ruleset(
         "freezeDate": "date it went into the freezer (ISO, YYYY-MM-DD)",
         "unfreezeDate": "date it came out again (ISO, YYYY-MM-DD)",
         "frozen": "currently frozen (true/false)",
+        "roastLevel": 'roast level, free text ("Medium")',
+        "harvestDate": 'harvest year or season, free text ("2026")',
+        "qualityScore": "cupping score 0-100",
+        "price": "purchase price",
+        "currency": 'currency code ("EUR")',
+        "notes": "note on the batch",
+        "weight": "bag weight in g",
+        "weightRemaining": "remaining weight in g",
     },
     kinds={
         "roastDate": "date",
@@ -146,6 +165,11 @@ BATCH = Ruleset(
         "freezeDate": "date",
         "unfreezeDate": "date",
         "frozen": "bool",
+        "qualityScore": "score",
+        "price": "price",
+        "currency": "currency",
+        "weight": "bag_weight",
+        "weightRemaining": "bag_weight",
     },
     blocked={
         "id": "The identifier of a batch is immutable.",
@@ -267,7 +291,39 @@ def _coerce(ruleset: Ruleset, name: str, value: Any) -> Any:
         return _string_list(value)
     if kind == "int_pair":
         return _int_pair(value)
+    if kind == "score":
+        return _bounded_number(name, value, 0.0, 100.0, "a cupping score 0-100")
+    if kind == "price":
+        return _bounded_number(name, value, 0.0, 10_000.0, "a price in the currency set")
+    if kind == "bag_weight":
+        return _bounded_number(name, value, 0.0, 50_000.0, "a weight in g")
+    if kind == "currency":
+        return _currency(value)
     return _text(value)
+
+
+def _bounded_number(name: str, value: Any, low: float, high: float, what: str) -> float:
+    if isinstance(value, bool) or not isinstance(value, int | float | str):
+        raise ValueError(f"{what} is expected")
+    try:
+        number = float(str(value).replace(",", "."))
+    except ValueError as exc:
+        raise ValueError(f"{what} is expected") from exc
+    if not low <= number <= high:
+        raise ValueError(f"{number} is outside {low:g} to {high:g} - {what}")
+    return number
+
+
+def _currency(value: Any) -> str:
+    """A three-letter code. Decaid takes anything; this does not.
+
+    The field only earns its place next to a price if the two can be read
+    together, and "EUR" against "Euro" against "€" would make that guesswork.
+    """
+    text = str(value or "").strip().upper()
+    if not text.isalpha() or len(text) != 3:
+        raise ValueError('a three-letter currency code is expected ("EUR")')
+    return text
 
 
 def _string_list(value: Any) -> list[str]:
@@ -350,8 +406,13 @@ def _iso_date(name: str, value: Any) -> str:
             "DD.MM.YYYY; ISO is expected here and stored that way."
         ) from None
     today = datetime.now(UTC).date()
-    if parsed > today:
+    if parsed > today and name not in _FUTURE_DATES:
         raise ValueError(f"{text} lies in the future (today is {today.isoformat()})")
+    if parsed > today + _MAX_AHEAD:
+        raise ValueError(
+            f"{text} lies more than {_MAX_AHEAD.days // 365} years ahead - "
+            "that is a typo rather than a date."
+        )
     if name == "roastDate" and (today - parsed).days > _MAX_ROAST_AGE_DAYS:
         raise ValueError(
             f"{text} lies more than {_MAX_ROAST_AGE_DAYS // 365} years back - "

@@ -21,7 +21,7 @@ from decentespresso_mcp.config import Config
 from decentespresso_mcp.db import Database
 from decentespresso_mcp.decaid_mapping import batch_row_from_decaid, bean_row_from_decaid
 from decentespresso_mcp.guards import bean_age_days
-from decentespresso_mcp.server import build_mcp
+from decentespresso_mcp.server import _stock, build_mcp
 
 BEAN_ID = "bean-1"
 SYNCED = "2026-09-16T06:00:00Z"
@@ -240,8 +240,8 @@ async def test_get_batch_shows_the_state_before_it_is_overwritten(
     assert batch["roast_date"] == "2026-08-15"
     assert batch["open_date"] == "2026-08-20"
     assert batch["frozen_since"] == "2026-08-25"
-    assert batch["weight_g"] == 250.0
-    assert batch["weight_remaining_g"] == 180.0
+    assert batch["stock"]["bag_weight_g"] == 250.0
+    assert batch["stock"]["recorded_remaining_g"] == 180.0
 
 
 async def test_list_beans_carries_the_batches(config: Config, db: Database) -> None:
@@ -289,3 +289,78 @@ async def test_a_bean_without_origin_has_no_origin_block(
     stock(db, {"id": "batch-roasted", "beanId": BEAN_ID}, started="2026-08-29T08:00:00")
     bean = (await call(build_mcp(config, db), "list_beans"))["beans"][0]
     assert "origin" not in bean
+
+
+# ------------------------------------------------- What is left of the bag
+
+
+async def test_the_stock_is_derived_and_decaids_figure_is_kept_beside_it(
+    config: Config, db: Database
+) -> None:
+    """Decaid initialises `weightRemaining` and never counts it down.
+
+    Measured on the real archive: a 500 g bag reads 500 g remaining after
+    twenty-seven shots. So the useful figure is bag weight minus what the shots
+    consumed - but Decaid's own number stays visible next to it, because
+    dropping it would make an estimate look like a reading.
+    """
+    stock_batch = {"id": "batch-stock", "beanId": BEAN_ID,
+                   "roastDate": "2026-08-15T00:00:00.000Z",
+                   "weight": 500.0, "weightRemaining": 500.0}
+    stock(db, stock_batch, started="2026-08-29T08:00:00")
+
+    batch = await call(build_mcp(config, db), "get_batch", {"id": "batch-stock"})
+    reported = batch["stock"]
+
+    assert reported["bag_weight_g"] == 500.0
+    assert reported["recorded_remaining_g"] == 500.0
+    assert reported["used_by_shots_g"] > 0
+    assert reported["estimated_remaining_g"] < 500.0
+
+
+def test_the_stock_note_fires_on_the_real_numbers() -> None:
+    """The case from the archive: a 500 g bag reading 500 g left after 27 shots.
+
+    One shot's worth of difference is noise and stays quiet; 486 g of it is not.
+    """
+    quiet = _stock({"weight_g": 500.0, "weight_remaining_g": 500.0,
+                    "coffee_used_g": 18.0, "mean_dose_g": 18.0})
+    assert "note" not in quiet
+
+    loud = _stock({"weight_g": 500.0, "weight_remaining_g": 500.0,
+                   "coffee_used_g": 486.0, "mean_dose_g": 18.0})
+    assert loud["estimated_remaining_g"] == 14.0
+    assert loud["shots_left_estimate"] == 0
+    assert "does not count down" in loud["note"]
+
+
+def test_no_weight_means_no_stock_block() -> None:
+    """Most batches carry none, and an empty block would suggest an empty bag."""
+    assert _stock({"coffee_used_g": 200.0, "mean_dose_g": 18.0}) is None
+
+
+async def test_provenance_reaches_the_response(config: Config, db: Database) -> None:
+    """Seven fields that had no column until a batch was filled in properly."""
+    stock(db, {"id": "batch-rich", "beanId": BEAN_ID,
+               "roastDate": "2026-08-15T00:00:00.000Z",
+               "roastLevel": "Medium", "harvestDate": "2026",
+               "qualityScore": 77.0, "price": 3.0, "currency": "EUR",
+               "notes": "test"},
+          started="2026-08-29T08:00:00")
+
+    batch = await call(build_mcp(config, db), "get_batch", {"id": "batch-rich"})
+
+    assert batch["roast_level"] == "Medium"
+    assert batch["harvest"] == "2026", "a season, kept as text"
+    assert batch["quality_score"] == 77.0
+    assert batch["price"] == {"amount": 3.0, "currency": "EUR"}
+    assert batch["notes"] == "test"
+
+
+async def test_a_price_without_a_currency_is_not_reported_as_euros(
+    config: Config, db: Database
+) -> None:
+    stock(db, {"id": "batch-price", "beanId": BEAN_ID, "price": 3.0},
+          started="2026-08-29T08:00:00")
+    batch = await call(build_mcp(config, db), "get_batch", {"id": "batch-price"})
+    assert batch["price"] == {"amount": 3.0}

@@ -244,6 +244,7 @@ def bean_row_from_decaid(bean: dict[str, Any], synced_at: str) -> dict[str, Any]
         "producer": _text(bean.get("producer")),
         "variety": _json_list(bean.get("variety")),
         "altitude": _json_list(bean.get("altitude")),
+        "decaf_process": _text(bean.get("decafProcess")),
         "created_at": _iso_or_none(bean.get("createdAt")),
         "updated_at": _iso_or_none(bean.get("updatedAt")),
         "raw_json": json.dumps(bean, ensure_ascii=False, separators=(",", ":")),
@@ -282,6 +283,14 @@ def batch_row_from_decaid(batch: dict[str, Any], synced_at: str) -> dict[str, An
         "archived": _flag(batch.get("archived")),
         "weight_g": _number(batch.get("weight")),
         "weight_remaining_g": _number(batch.get("weightRemaining")),
+        "roast_level": _text(batch.get("roastLevel")),
+        # "Harvest date or season" per the API, and the real value is "2026".
+        # Kept as text: parsing it would either fail or invent a January first.
+        "harvest_date": _text(batch.get("harvestDate")),
+        "quality_score": _number(batch.get("qualityScore")),
+        "price": _number(batch.get("price")),
+        "currency": _text(batch.get("currency")),
+        "notes": _text(batch.get("notes")),
         "created_at": _iso_or_none(batch.get("createdAt")),
         "updated_at": _iso_or_none(batch.get("updatedAt")),
         "raw_json": json.dumps(batch, ensure_ascii=False, separators=(",", ":")),

@@ -250,7 +250,7 @@ inside tracebacks from libraries that know nothing about it.
 | `compare_shots` | two to four side by side, with deltas |
 | `list_profiles` · `get_profile` | profile versions and their targets |
 | `get_workflow` | what the next shot would run on, live from the tablet |
-| `list_batches` · `get_batch` | which batch, roasted when, how much is gone |
+| `list_batches` · `get_batch` | which batch, roasted when, what is left of the bag |
 | `audit_archive` | what the watchman found |
 | `stats` | a period, with a comparison |
 | `sync_now` · `status` | housekeeping |

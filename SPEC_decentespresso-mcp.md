@@ -111,18 +111,21 @@ instance wins and the finding goes in the table above.
 | T19 | Retention | No pruning endpoint; the archive reaches back without gaps |
 | T20 | Writable annotations | `espressoNotes`, `enjoyment`, `actualDoseWeight`, `actualYield` |
 | T21 | Writable on a bean | `name`, `roaster`, `species`, `processing`, `notes`, `decaf` |
-| T22 | Writable on a batch | `roastDate`, `buyDate`, `openDate`, `bestBeforeDate`, `freezeDate`, `unfreezeDate`, `frozen`, `weight`, `weightRemaining`. Dates come back with a time attached - the long-standing three with a trailing `Z`, the later ones without |
+| T22 | Writable on a batch | `roastDate`, `buyDate`, `openDate`, `bestBeforeDate`, `freezeDate`, `unfreezeDate`, `frozen`, `weight`, `weightRemaining`, `roastLevel`, `harvestDate`, `qualityScore`, `price`, `currency`, `notes`. Dates come back with a time attached - the long-standing three with a trailing `Z`, the later ones without |
 | T23 | **`unfreezeDate`** | **Exists and is writable.** An earlier entry here said it did not exist; that was read off a response where it was unset, and an absent key is not an absent field. Written and read back 2026-09-16. With it the freezer time is subtracted exactly instead of the age becoming an upper bound |
 | T24 | Writable on the workflow | `context.grinderSetting`, `context.grinderModel`, `context.targetDoseWeight`, `context.targetYield`, `context.beanBatchId` |
 | T25 | Protected on write | `id` → 400 ("ID in path does not match"), `createdAt`/`updatedAt` → 400 ("system-managed") |
 | T26 | **`timestamp`** | **Not protected.** A `PUT` carrying it returns 200 and the value stands |
-| T27 | **Weight on a batch** | **Exists, and is unset on this machine.** `weight` and `weightRemaining` are in the schema and both are writable (verified 2026-09-16). The earlier entry called them nonexistent on the strength of a response that omitted them. A remaining-stock estimate is therefore possible in principle and impossible here - for want of data, not of a field |
+| T27 | **Weight on a batch** | **Exists and is in use.** `weight` and `weightRemaining` are writable, and the reference batch now carries 500 g. The earlier entry called them nonexistent on the strength of a response that omitted them while unset. See T34 for why only the first of the two can be trusted |
 | T28 | **Batch and coffee labels** | **Kept apart, and nothing joins them.** `context` holds the managed reference `beanBatchId` next to the display strings `coffeeName` and `coffeeRoaster`; setting the batch alone leaves the previous coffee's name standing on the machine. Measured live: after `beanBatchId` was moved to the decaf batch, `coffeeName` still read `Arabica Honey Process`. Decaid's own API examples write the id and both labels together |
 | T29 | **`beanBatchId` is unchecked** | An arbitrary UUID is accepted with 200 and stands afterwards. There is no referential integrity, so the client is the only thing between a typo and a workflow pointing at nothing |
 | T30 | **`coffeeData` is gone** | The legacy containers `doseData`, `grinderData` and `coffeeData` stopped being accepted in Decaid 0.5.2. Everything goes through `context`, whose fields are flat |
-| T31 | **Origin on a bean** | `country`, `region`, `producer`, `variety` (array of strings), `altitude` (`[min, max]` in metres) and `decafProcess` all exist and all five of the first are writable (verified 2026-09-16, restored with null) |
+| T31 | **Origin on a bean** | `country`, `region`, `producer`, `variety` (array of strings), `altitude` (`[min, max]` in metres) and `decafProcess` all exist and all six are writable (verified 2026-09-16, restored with null) |
 | T32 | **Unset means absent** | An unset field is left out of the response entirely rather than sent as `null` - which is what made T23 and T27 wrong. Decaid's UI shows grey placeholder text in empty fields ("washed, natural, honey…"); the API never sends those |
 | T33 | **`null` clears a field** | A `PUT` carrying an explicit `null` removes the value. That is how a probe is undone, and the only reason the origin fields could be verified without leaving residue |
+| T34 | **`weightRemaining` does not count down** | It is initialised to `weight` when the batch is created and nothing decrements it. On the reference batch it reads 500 g of a 500 g bag after 27 shots that consumed 486 g. A remainder worth having is derived from the recorded doses; Decaid's figure is reported beside it, never instead of it |
+| T35 | **`harvestDate` is not a date** | The API calls it "harvest date or season" and the real value is `"2026"`. Stored and validated as text - parsing it would either fail or invent a first of January |
+| T36 | **Future dates are legitimate** | `bestBeforeDate` lies ahead by nature, and the operator's `openDate` did too. A blanket "no future dates" rule refused both |
 
 T26 is why the block list in `writes.py` is not a second line of defence but the
 only one for the telemetry fields.
@@ -210,7 +213,14 @@ what the user explicitly sets to 0 is an input.
 **One procedure, not two.** The shot list returns everything except
 `measurements`, `updatedAt` included, so without a single detail request it is
 known which shots changed. Backfill and incremental run are the same algorithm;
-`full=True` only forces a refetch.
+`full` chooses only the label.
+
+It used to force a refetch of every listed shot, and that made the first
+backfill of a large archive impossible to finish: with more shots than the
+per-run cap, each run re-selected the same oldest 60, stored nothing new, left
+`pending` where it was and never set the done marker - so the next run made the
+same choice again. A backfill means "make sure everything is here", not
+"download it all again".
 
 **The list is always read in full.** It is sorted by shot time, not by
 modification time, so a shot pulled in June whose note was added today still
@@ -220,7 +230,9 @@ point of having a cursor.
 
 **Cap per run:** 60 detail requests. A detail weighs about 140 kB; a first
 backfill would otherwise be over 20 MB in one go over the tablet's Wi-Fi. A
-started backfill counts as complete only once nothing is outstanding.
+started backfill counts as complete only once nothing is outstanding, and each
+run must therefore carry on where the last one stopped. Measured on a fresh
+archive of 174 shots: 60, then 54, then done.
 
 **A tablet that is off is not an error.** The sync enters `waiting_for_tablet`,
 backs off and catches up later. No error message, no notification, no red
@@ -597,9 +609,13 @@ to see the current state before overwriting it.
 - `list_beans` carries `batches` per bean - identifier, roast date, frozen
   state, shot count, date range.
 - `list_batches(bean?)` and `get_batch(id)` are the lookup path.
-- A bean carries `origin` (`country`, `region`, `producer`, `variety`,
-  `altitude`) where anything is recorded, and no `origin` key at all where
-  nothing is. Unset is absent, never a placeholder (T31, T32).
+- A bean carries `origin` (`country`, `region`, `producer`, `decaf_process`,
+  `variety`, `altitude`) where anything is recorded, and no `origin` key at all
+  where nothing is. Unset is absent, never a placeholder (T31, T32).
+- `get_batch` adds the provenance a filled-in batch carries: roast level,
+  harvest season, cupping score, price with its currency, the batch note, and
+  the `stock` block described in §9.5. `price` is reported as amount and
+  currency together or not at all - a bare number invites being read as euros.
 
 ### 9.5 Statistics
 
@@ -631,13 +647,14 @@ and hiding that would make the number confusing rather than clean.
 spellings of the same number are not a change - comparing the strings reported
 13 changes on a bean that was moved 11 times.
 
-**No remaining-stock estimate.** A remainder needs a starting weight. Decaid
-*has* the field - `weight` and `weightRemaining` both exist and are writable
-(T27, corrected) - but nothing on this machine fills it, so there is no basis to
-compute from. What is reported instead is what was actually used: shots pulled
-from the batch, coffee consumed, mean dose, days since roasting. The estimate
-becomes possible the day those weights are entered; it is not built on a guess
-until then.
+**Remaining stock is derived, not read.** Decaid's `weightRemaining` is
+initialised to the bag weight and never counted down (T34): the reference batch
+reads 500 g left after 27 shots that consumed 486 g. So `get_batch` reports the
+bag weight, what the recorded doses actually used, and the difference - and puts
+Decaid's own figure beside it rather than instead of it, with a note when the
+two disagree by more than a dose. An estimate presented as a reading would be
+the worse error. The estimate misses anything ground and thrown away; it is
+labelled as an estimate for that reason.
 
 **Top lists carry their rating coverage.** A mean over one rating out of twenty
 is not the same claim as one over ten, so `rated` sits next to `shots`.

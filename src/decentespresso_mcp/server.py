@@ -1074,18 +1074,71 @@ def _batch_summary(row: Any, *, full: bool = False) -> dict[str, Any]:
     }
     if full:
         summary |= {
+            "roast_level": data.get("roast_level"),
+            "harvest": data.get("harvest_date"),
+            "quality_score": data.get("quality_score"),
+            "price": _price(data),
+            "notes": data.get("notes"),
             "buy_date": data.get("buy_date"),
             "open_date": data.get("open_date"),
             "best_before_date": data.get("best_before_date"),
             "frozen_since": data.get("freeze_date"),
             "thawed_on": data.get("unfreeze_date"),
-            "weight_g": data.get("weight_g"),
-            "weight_remaining_g": data.get("weight_remaining_g"),
+            "stock": _stock(data),
             "archived": bool(data.get("archived")),
         }
         if not data.get("roast_date"):
             summary["age_unknown_reason"] = "This batch carries no roast date."
     return _drop_empty(summary) | {"frozen": bool(data.get("frozen"))}
+
+
+def _price(data: dict[str, Any]) -> dict[str, Any] | None:
+    """Price and currency together, or neither.
+
+    A bare number is not a price when the currency sits in another field, and
+    reporting it alone invites reading it as euros.
+    """
+    amount, currency = data.get("price"), data.get("currency")
+    if amount is None:
+        return None
+    return _drop_empty({"amount": amount, "currency": currency})
+
+
+def _stock(data: dict[str, Any]) -> dict[str, Any] | None:
+    """What is left of the bag, with both answers when they disagree.
+
+    Decaid keeps `weightRemaining`, and on this archive it stands at the full
+    bag weight after twenty-seven shots - it is initialised on creation and
+    nothing decrements it. So the figure worth having is derived: bag weight
+    minus what the shots actually consumed.
+
+    Both are reported. Ours is an estimate over recorded doses and silently
+    misses anything ground and thrown away; Decaid's is whatever was last typed
+    in. Naming one and hiding the other would make a guess look like a reading.
+    """
+    weight = data.get("weight_g")
+    used = data.get("coffee_used_g")
+    if weight is None and data.get("weight_remaining_g") is None:
+        return None
+
+    stock: dict[str, Any] = {"bag_weight_g": weight}
+    if data.get("weight_remaining_g") is not None:
+        stock["recorded_remaining_g"] = data["weight_remaining_g"]
+    if weight is not None and used is not None:
+        left = round(weight - used, 1)
+        stock["used_by_shots_g"] = round(used, 1)
+        stock["estimated_remaining_g"] = max(0.0, left)
+        mean_dose = data.get("mean_dose_g")
+        if mean_dose:
+            stock["shots_left_estimate"] = max(0, int(left // mean_dose))
+        if (recorded := data.get("weight_remaining_g")) is not None and \
+                abs(recorded - left) > 20:
+            stock["note"] = (
+                f"Decaid records {recorded:g} g left while the shots account for "
+                f"{used:.0f} g of a {weight:g} g bag. Decaid initialises that "
+                "field and does not count down; the estimate does."
+            )
+    return _drop_empty(stock)
 
 
 def _drop_empty(block: dict[str, Any]) -> dict[str, Any]:
@@ -1105,7 +1158,7 @@ def _origin(row: Any) -> dict[str, Any] | None:
     means nobody typed it, and inventing a value from the placeholder would
     turn a UI hint into a recorded fact.
     """
-    keys = ("country", "region", "producer")
+    keys = ("country", "region", "producer", "decaf_process")
     block: dict[str, Any] = {k: row[k] for k in keys if _has(row, k)}
     for key in ("variety", "altitude"):
         if _has(row, key):
@@ -1140,16 +1193,22 @@ def _batch_block(row: Any, started_at: str | None) -> dict[str, Any] | None:
     started = as_datetime(started_at)
     age, certain = bean_age_days(batch, datetime.now(UTC), started=started)
 
+    # roast_date and days_off_roast are always present, null included: there
+    # the absence is the statement, and `age_unknown_reason` explains it. The
+    # other dates are left out when unset - most batches carry none of them and
+    # four nulls in every shot response would be noise.
     block: dict[str, Any] = {
         "id": batch.get("id"),
         "roast_date": batch.get("roast_date"),
         "days_off_roast": age,
         "frozen": bool(batch.get("frozen")),
+    } | _drop_empty({
         "freeze_date": batch.get("freeze_date"),
         "unfreeze_date": batch.get("unfreeze_date"),
         "buy_date": batch.get("buy_date"),
         "open_date": batch.get("open_date"),
-    }
+        "best_before_date": batch.get("best_before_date"),
+    })
     if age is None:
         block["age_unknown_reason"] = (
             "This batch carries no roast date."

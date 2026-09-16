@@ -42,10 +42,16 @@ def test_the_whitelist_is_exactly_the_verified_set() -> None:
         # (bean 1fb10258, probe values restored with an explicit null, which
         # clears a field).
         "country", "region", "producer", "variety", "altitude",
+        "decafProcess",
     }
     assert set(BATCH.allowed) == {
         "roastDate", "buyDate", "openDate", "bestBeforeDate",
         "freezeDate", "unfreezeDate", "frozen",
+        # Provenance, written and read back on 2026-09-16 against the empty
+        # legacy batch 785c517b so that no value anybody typed was at risk;
+        # all six cleared with null afterwards.
+        "roastLevel", "harvestDate", "qualityScore", "price", "currency",
+        "notes", "weight", "weightRemaining",
     }
     assert set(WORKFLOW.allowed) == {
         "grinderSetting", "grinderModel", "targetDoseWeight", "targetYield",
@@ -263,3 +269,63 @@ def test_the_error_names_the_endpoint() -> None:
     """Otherwise the model guesses which tool the field belongs to."""
     assert "on the workflow" in problems_of({"enjoyment": 50}, WORKFLOW)[0]
     assert "on the shot" in problems_of({"grinderSetting": "3.3"}, SHOT)[0]
+
+
+# ----------------------------------------------- Provenance on a batch
+
+
+def test_a_best_before_date_may_lie_ahead() -> None:
+    """The blanket future-date rule refused a perfectly ordinary value.
+
+    Found on real data once a batch was filled in properly: bestBeforeDate
+    2026-10-31 and an openDate a week out. A best-before date in the future is
+    the normal case, and `update_batch` could not write one.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    ahead = (datetime.now(UTC).date() + timedelta(days=45)).isoformat()
+    assert validate_fields({"bestBeforeDate": ahead}, BATCH)["bestBeforeDate"] == ahead
+    assert validate_fields({"openDate": ahead}, BATCH)["openDate"] == ahead
+
+
+def test_a_roast_date_still_may_not() -> None:
+    """A roast records something that happened; the exception is not blanket."""
+    from datetime import UTC, datetime, timedelta
+
+    ahead = (datetime.now(UTC).date() + timedelta(days=1)).isoformat()
+    assert "in the future" in problems_of({"roastDate": ahead}, BATCH)[0]
+
+
+def test_a_date_a_decade_out_is_a_typo() -> None:
+    assert "typo" in problems_of({"bestBeforeDate": "2099-01-01"}, BATCH)[0]
+
+
+def test_the_harvest_is_a_season_not_a_date() -> None:
+    """The API calls it "harvest date or season" and the real value is "2026".
+
+    Validating it as a date would reject the only value in this archive.
+    """
+    assert validate_fields({"harvestDate": "2026"}, BATCH) == {"harvestDate": "2026"}
+    assert validate_fields({"harvestDate": "Spring 2026"}, BATCH) == {
+        "harvestDate": "Spring 2026"
+    }
+
+
+@pytest.mark.parametrize(("value", "expected"), [(77, 77.0), ("77,5", 77.5), (100, 100.0)])
+def test_a_cupping_score_is_a_number_in_range(value, expected) -> None:
+    assert validate_fields({"qualityScore": value}, BATCH)["qualityScore"] == expected
+
+
+@pytest.mark.parametrize("value", [-1, 101, "sehr gut", True])
+def test_a_cupping_score_outside_the_scale_is_refused(value) -> None:
+    assert problems_of({"qualityScore": value}, BATCH)[0].startswith("qualityScore:")
+
+
+def test_a_currency_is_a_three_letter_code() -> None:
+    """Only then can it be read together with the price.
+
+    Decaid takes anything at all, so "EUR" against "Euro" against a symbol
+    would make the pair guesswork.
+    """
+    assert validate_fields({"currency": "eur"}, BATCH) == {"currency": "EUR"}
+    assert "three-letter" in problems_of({"currency": "Euro"}, BATCH)[0]
