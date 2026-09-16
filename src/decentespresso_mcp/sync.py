@@ -138,9 +138,21 @@ async def run_sync(
         return result
 
     known = await asyncio.to_thread(db.known_shot_versions)
+    # A shot is fetched when it is new or has changed - in a backfill too.
+    #
+    # `full` used to force every listed shot through here, which made the first
+    # backfill unable to finish: with more shots than MAX_DETAILS_PER_RUN, each
+    # run re-selected the same oldest 60, reported `pending` unchanged, and
+    # never set the backfill-done marker, so the next run started over. Measured
+    # on a fresh archive against 174 shots: 60 fetched, then "+0 shots, 114
+    # pending" for as many runs as one cares to make.
+    #
+    # `full` now only chooses the listing mode and the label. Re-fetching a shot
+    # that is already stored identically was never the point of a backfill;
+    # making sure everything is there was.
     stale = [
         item for item in listed
-        if full or item["id"] not in known
+        if item["id"] not in known
         or _stamp(item.get("updatedAt")) != known[item["id"]]
     ]
     result.unchanged = len(listed) - len(stale)

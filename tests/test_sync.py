@@ -342,6 +342,55 @@ async def test_coordinator_starts_with_a_backfill(db):
     assert result.mode == "backfill"
 
 
+async def test_a_first_backfill_finishes_on_an_archive_larger_than_one_run(db):
+    """The path production actually takes, and it used to be a dead end.
+
+    `SyncCoordinator.run()` picks `full=True` while the backfill-done marker is
+    unset. `full` then forced *every* listed shot to count as stale, so each run
+    re-selected the same oldest MAX_DETAILS_PER_RUN, wrote nothing new, left
+    `pending` where it was, and never set the marker - so the next run made the
+    same choice again. Measured against the live archive on 2026-09-16: 60
+    fetched, then "+0 shots, 114 pending" for as many runs as one cared to make.
+
+    The existing split-backfill test missed it because it continued with an
+    explicit `full=False`, which is not what the coordinator does.
+    """
+    many = [
+        decaid_detail(f"de1app-{1785525360 + i}",
+                      timestamp="2026-08-01T05:32:50",
+                      updated_at="2026-09-01T10:00:00Z")
+        for i in range(MAX_DETAILS_PER_RUN * 2 + 3)
+    ]
+    coordinator = SyncCoordinator(FakeDecaid(many), db)
+
+    first = await coordinator.run()
+    assert first.mode == "backfill"
+    assert db.count_shots() == MAX_DETAILS_PER_RUN
+
+    await coordinator.run()
+    assert db.count_shots() == MAX_DETAILS_PER_RUN * 2, "must move on, not repeat"
+
+    third = await coordinator.run()
+    assert third.pending == 0
+    assert db.count_shots() == len(many)
+    assert db.get_state(STATE_BACKFILL_DONE)
+
+
+async def test_a_backfill_does_not_refetch_what_it_already_has(db):
+    """Which is what makes the run above progress.
+
+    A backfill means "make sure everything is here", not "download it all
+    again" - a detail weighs about 140 kB and the tablet is on Wi-Fi.
+    """
+    shots = three_shots()
+    client = FakeDecaid(shots)
+    await run_sync(client, db, full=True)
+    before = client.detail_calls
+
+    await run_sync(client, db, full=True)
+    assert client.detail_calls == before, "nothing changed, so nothing to fetch"
+
+
 async def test_coordinator_switches_to_incremental(db):
     client = FakeDecaid(three_shots())
     coordinator = SyncCoordinator(client, db)
