@@ -142,12 +142,20 @@ def bean_age_days(
 ) -> tuple[int | None, bool]:
     """Age of the bean in days, excluding time spent frozen. ``(days, certain)``.
 
-    Being frozen does not count as ageing, so frozen time is subtracted. Decaid
-    however keeps **no thaw date** (checked against the API on 2026-09-14): if
-    ``frozen`` is false and a ``freezeDate`` is set nonetheless, the batch was
-    thawed at some point - nobody knows when. The age is then an upper bound
-    only, and the second element of the return value is ``False``. A number
-    that cannot be substantiated is not reported here as certain.
+    Being frozen does not count as ageing, so frozen time is subtracted.
+
+    ``unfreezeDate`` exists in Decaid's API and is used when it is set; an
+    earlier note here claimed the field did not exist, which came from reading
+    a response where it was simply unset. Where it *is* unset and a
+    ``freezeDate`` is not - the batch was thawed at some point, nobody knows
+    when - the age is an upper bound and the second element of the return value
+    is ``False``. A number that cannot be substantiated is not reported here as
+    certain.
+
+    Without a roast date the answer is ``(None, False)``: this function never
+    guesses one from the purchase or open date. Those are different facts, and
+    an age derived from the wrong one would be indistinguishable from a real
+    measurement downstream.
     """
     roasted = _as_date(batch.get("roast_date"))
     if roasted is None:
@@ -177,6 +185,34 @@ def bean_age_days(
     return age, False
 
 
+def bean_age_not_checkable(
+    shots: Sequence[Mapping[str, Any]],
+    batches: Mapping[str, Mapping[str, Any]],
+) -> dict[str, Any]:
+    """How many shots the age rule had to sit out, and why.
+
+    A rule that silently skips looks the same as a rule that found nothing, and
+    the difference matters here: an archive where half the batches carry no
+    roast date is not an archive where the beans are all fresh. `audit_archive`
+    reports this next to the findings so the silence is legible.
+    """
+    no_batch = no_roast_date = 0
+    for shot in shots:
+        batch = batches.get(str(shot.get("bean_batch_id") or ""))
+        if batch is None:
+            no_batch += 1
+        elif not batch.get("roast_date"):
+            no_roast_date += 1
+    return {
+        "shots_without_a_batch": no_batch,
+        "shots_whose_batch_has_no_roast_date": no_roast_date,
+        "note": (
+            "The bean_age rule sat these out rather than computing an age from "
+            "a purchase date or from zero."
+        ) if (no_batch or no_roast_date) else None,
+    }
+
+
 def stale_beans(
     shots: Sequence[Mapping[str, Any]],
     batches: Mapping[str, Mapping[str, Any]],
@@ -191,7 +227,7 @@ def stale_beans(
         batch = batches.get(str(shot.get("bean_batch_id") or ""))
         if batch is None:
             continue
-        started = _as_datetime(shot.get("started_at"))
+        started = as_datetime(shot.get("started_at"))
         age, certain = bean_age_days(batch, at, started=started)
         if age is None or age <= warn_days:
             continue
@@ -240,7 +276,7 @@ def missing_rating(
     for shot in shots:
         if shot.get("enjoyment") is not None:
             continue
-        started = _as_datetime(shot.get("started_at"))
+        started = as_datetime(shot.get("started_at"))
         if started is None or not oldest <= started <= newest:
             continue
         findings.append(Finding(
@@ -395,7 +431,7 @@ def _as_date(value: Any) -> date | None:
         return None
 
 
-def _as_datetime(value: Any) -> datetime | None:
+def as_datetime(value: Any) -> datetime | None:
     if not isinstance(value, str) or not value:
         return None
     try:

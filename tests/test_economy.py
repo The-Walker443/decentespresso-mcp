@@ -40,8 +40,8 @@ RECENT = RECENT_ID
 #:
 #: The telling figure is the one **per tool**, not the sum - more capability
 #: necessarily costs more, verbosity does not. Per tool: 1155 B, then 764 B,
-#: now 858 B. What growth there is sits in the JSON schema of the new
-#: parameters rather than in the descriptions.
+#: 858 B, now 706 B across 14 read-only tools. list_batches and get_batch were
+#: added without the average moving, which is the whole point of the measure.
 MAX_TOOL_DEFINITIONS = 10_600
 MAX_BYTES_PER_TOOL = 900
 
@@ -55,7 +55,7 @@ MAX_GET_SHOT_LEAN = 2_400
 #: update_batch, set_workflow). Measured: 12123 B across 15 tools - 808 B per
 #: tool and therefore leaner than the 845 B a single write tool once cost,
 #: because the behavioural rules live centrally in INSTRUCTIONS rather than in
-#: every docstring. Now 13185 B across 16 tools - 824 B each, still below the
+#: every docstring. Now 12566 B across 18 tools - 698 B each, still below the
 #: read-only average. The surcharge only applies when writing is on.
 MAX_TOOL_DEFINITIONS_WITH_WRITE = 13_600
 

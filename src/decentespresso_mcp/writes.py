@@ -108,8 +108,13 @@ BEAN = Ruleset(
         "processing": "processing method (washed, for instance)",
         "notes": "description",
         "decaf": "decaffeinated (true/false)",
+        "country": "country of origin",
+        "region": "growing region",
+        "producer": "farm or producer",
+        "variety": 'varieties, as a list (["Heirloom", "74110"])',
+        "altitude": "altitude as [min, max] in metres",
     },
-    kinds={"decaf": "bool"},
+    kinds={"decaf": "bool", "variety": "string_list", "altitude": "int_pair"},
     blocked={
         "id": "The identifier of a bean is immutable.",
         "createdAt": "Decaid sets this itself.",
@@ -127,13 +132,19 @@ BATCH = Ruleset(
     allowed={
         "roastDate": "roast date (ISO, YYYY-MM-DD)",
         "buyDate": "purchase date (ISO, YYYY-MM-DD)",
+        "openDate": "date the bag was opened (ISO, YYYY-MM-DD)",
+        "bestBeforeDate": "best before (ISO, YYYY-MM-DD)",
         "freezeDate": "date it went into the freezer (ISO, YYYY-MM-DD)",
+        "unfreezeDate": "date it came out again (ISO, YYYY-MM-DD)",
         "frozen": "currently frozen (true/false)",
     },
     kinds={
         "roastDate": "date",
         "buyDate": "date",
+        "openDate": "date",
+        "bestBeforeDate": "date",
         "freezeDate": "date",
+        "unfreezeDate": "date",
         "frozen": "bool",
     },
     blocked={
@@ -142,11 +153,6 @@ BATCH = Ruleset(
         "createdAt": "Decaid sets this itself.",
         "updatedAt": "Decaid sets this itself.",
         "archived": "Archiving happens in Decaid, not from here.",
-        # Checked against the API on 2026-09-14: the field does not exist.
-        "unfreezeDate": (
-            "Decaid keeps no thaw date. To thaw, set frozen to false; bean age "
-            "then continues counting from that moment."
-        ),
     },
 )
 
@@ -257,7 +263,49 @@ def _coerce(ruleset: Ruleset, name: str, value: Any) -> Any:
         return _bool(value)
     if kind == "id":
         return _identifier(value)
+    if kind == "string_list":
+        return _string_list(value)
+    if kind == "int_pair":
+        return _int_pair(value)
     return _text(value)
+
+
+def _string_list(value: Any) -> list[str]:
+    """A list of short strings, as Decaid takes ``variety``.
+
+    A bare string is accepted and wrapped - "Heirloom" is what a person types,
+    and refusing it would only teach them to type ``["Heirloom"]``.
+    """
+    items = [value] if isinstance(value, str) else value
+    if not isinstance(items, list) or not items:
+        raise ValueError('a list of names is expected, e.g. ["Heirloom", "74110"]')
+    cleaned = [str(item).strip() for item in items]
+    if any(not item for item in cleaned):
+        raise ValueError("an empty entry is not a variety")
+    if any(len(item) > 80 for item in cleaned):
+        raise ValueError("each entry may be at most 80 characters")
+    return cleaned
+
+
+def _int_pair(value: Any) -> list[int]:
+    """``altitude`` as ``[min, max]`` in metres.
+
+    A single number becomes ``[n, n]``: an exact altitude is a range of width
+    zero, and that is honest, whereas inventing a spread would not be.
+    """
+    items = [value, value] if isinstance(value, int | float) and not isinstance(
+        value, bool) else value
+    if not isinstance(items, list) or len(items) != 2:
+        raise ValueError("[min, max] in metres is expected, e.g. [1800, 2200]")
+    try:
+        low, high = (int(round(float(item))) for item in items)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("altitudes must be numbers, in metres") from exc
+    if not 0 <= low <= high <= 4000:
+        raise ValueError(
+            "0 to 4000 metres is expected, with the lower value first"
+        )
+    return [low, high]
 
 
 def _enjoyment(value: Any) -> int:

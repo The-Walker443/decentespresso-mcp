@@ -250,15 +250,16 @@ inside tracebacks from libraries that know nothing about it.
 | `compare_shots` | two to four side by side, with deltas |
 | `list_profiles` · `get_profile` | profile versions and their targets |
 | `get_workflow` | what the next shot would run on, live from the tablet |
+| `list_batches` · `get_batch` | which batch, roasted when, how much is gone |
 | `audit_archive` | what the watchman found |
 | `stats` | a period, with a comparison |
 | `sync_now` · `status` | housekeeping |
 | `update_shot` · `update_bean` · `update_batch` · `set_workflow` | writing, behind the switch |
 
-Twelve tools cost 8.5 kB of definitions, sixteen with write mode on cost 11 kB —
-about 700 B each, because the shared vocabulary lives in the server prompt
-rather than being repeated in every docstring. That budget is pinned by tests;
-it is meant to stay that way.
+Fourteen tools cost 9.9 kB of definitions, eighteen with write mode on cost
+12.6 kB — about 700 B each, because the shared vocabulary lives in the server
+prompt rather than being repeated in every docstring. That budget is pinned by
+tests; it is meant to stay that way.
 
 ---
 

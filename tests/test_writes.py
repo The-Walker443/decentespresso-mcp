@@ -38,9 +38,14 @@ def test_the_whitelist_is_exactly_the_verified_set() -> None:
     }
     assert set(BEAN.allowed) == {
         "name", "roaster", "species", "processing", "notes", "decaf",
+        # Origin, written against the live API and read back on 2026-09-16
+        # (bean 1fb10258, probe values restored with an explicit null, which
+        # clears a field).
+        "country", "region", "producer", "variety", "altitude",
     }
     assert set(BATCH.allowed) == {
-        "roastDate", "buyDate", "freezeDate", "frozen",
+        "roastDate", "buyDate", "openDate", "bestBeforeDate",
+        "freezeDate", "unfreezeDate", "frozen",
     }
     assert set(WORKFLOW.allowed) == {
         "grinderSetting", "grinderModel", "targetDoseWeight", "targetYield",
@@ -96,14 +101,20 @@ def test_a_profile_change_is_refused_with_its_reason() -> None:
     assert "at the machine" in problems[0]
 
 
-def test_decaid_has_no_thaw_date_and_says_so() -> None:
-    """Checked on 2026-09-14: the field does not exist.
+def test_the_thaw_date_is_writable_after_all() -> None:
+    """It exists, and an earlier verification said otherwise.
 
-    The message names the way forward instead of merely refusing.
+    The claim "Decaid keeps no thaw date" came from a response where the field
+    was simply unset - absent from JSON is not absent from the API. Written
+    against the live instance and read back on 2026-09-16 (batch 0a640616,
+    restored with null): `unfreezeDate` is taken and stands. The consequence is
+    not cosmetic - with a thaw date the bean age is exact instead of an upper
+    bound.
     """
-    problems = problems_of({"unfreezeDate": "2026-09-01"}, BATCH)
-    assert "no thaw date" in problems[0]
-    assert "frozen" in problems[0]
+    assert validate_fields({"unfreezeDate": "2026-09-01"}, BATCH) == {
+        "unfreezeDate": "2026-09-01"
+    }
+    assert "unfreezeDate" not in BATCH.blocked
 
 
 def test_empty_fields_is_an_error() -> None:

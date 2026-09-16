@@ -88,9 +88,15 @@ class FakeDecaid:
         if "/beans/" in path:
             return self._patch(self._by_id(self.beans, path), body)
         if "/bean-batches/" in path:
+            # Measured 2026-09-16: the long-standing date fields come back with
+            # a trailing Z, the ones added later without one. Reproduced rather
+            # than tidied, because a client that assumes either is wrong.
             for field in ("roastDate", "buyDate", "freezeDate"):
                 if isinstance(body.get(field), str):
                     body[field] = body[field] + "T00:00:00.000Z"
+            for field in ("openDate", "bestBeforeDate", "unfreezeDate"):
+                if isinstance(body.get(field), str):
+                    body[field] = body[field] + "T00:00:00.000"
             return self._patch(self._by_id(self.batches, path), body)
         if path.endswith("/workflow"):
             if "profile" in body:
@@ -327,13 +333,19 @@ async def test_freezing_a_batch_goes_through(
     assert db.batch_row(BATCH_ID)["frozen"] == 1
 
 
-async def test_a_thaw_date_is_refused_with_the_way_out(
+async def test_a_thaw_date_goes_through(
     writable: Config, db: Database, coordinator: SyncCoordinator
 ) -> None:
-    with pytest.raises(ToolError) as excinfo:
-        await call(build_mcp(writable, db, coordinator), "update_batch",
-                   {"id": BATCH_ID, "fields": {"unfreezeDate": "2026-09-12"}})
-    assert "no thaw date" in str(excinfo.value)
+    """It used to be refused on the grounds that Decaid had no such field.
+
+    That was read off a response where it was unset. Written against the live
+    instance and read back on 2026-09-16: the field is taken. With it the bean
+    age is exact rather than an upper bound, so refusing it was costing the
+    archive the one fact that made the difference.
+    """
+    result = await call(build_mcp(writable, db, coordinator), "update_batch",
+                        {"id": BATCH_ID, "fields": {"unfreezeDate": "2026-09-12"}})
+    assert result["changes"]["unfreezeDate"]["after"] == "2026-09-12T00:00:00.000"
 
 
 # ---------------------------------------------------------- set_workflow

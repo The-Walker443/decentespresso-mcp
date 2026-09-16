@@ -111,15 +111,18 @@ instance wins and the finding goes in the table above.
 | T19 | Retention | No pruning endpoint; the archive reaches back without gaps |
 | T20 | Writable annotations | `espressoNotes`, `enjoyment`, `actualDoseWeight`, `actualYield` |
 | T21 | Writable on a bean | `name`, `roaster`, `species`, `processing`, `notes`, `decaf` |
-| T22 | Writable on a batch | `roastDate`, `buyDate`, `freezeDate`, `frozen`. Dates come back with a time attached; `2026-09-01` is accepted as input |
-| T23 | **`unfreezeDate`** | **Does not exist.** Decaid keeps no thaw date - see §9.2 |
+| T22 | Writable on a batch | `roastDate`, `buyDate`, `openDate`, `bestBeforeDate`, `freezeDate`, `unfreezeDate`, `frozen`, `weight`, `weightRemaining`. Dates come back with a time attached - the long-standing three with a trailing `Z`, the later ones without |
+| T23 | **`unfreezeDate`** | **Exists and is writable.** An earlier entry here said it did not exist; that was read off a response where it was unset, and an absent key is not an absent field. Written and read back 2026-09-16. With it the freezer time is subtracted exactly instead of the age becoming an upper bound |
 | T24 | Writable on the workflow | `context.grinderSetting`, `context.grinderModel`, `context.targetDoseWeight`, `context.targetYield`, `context.beanBatchId` |
 | T25 | Protected on write | `id` → 400 ("ID in path does not match"), `createdAt`/`updatedAt` → 400 ("system-managed") |
 | T26 | **`timestamp`** | **Not protected.** A `PUT` carrying it returns 200 and the value stands |
-| T27 | **Weight on a batch** | **Does not exist.** A batch carries `id`, `beanId`, `roastDate`, `roastLevel`, `freezeDate`, `frozen`, `archived` and the two timestamps. There is no `weightRemaining` to estimate a remaining stock from |
+| T27 | **Weight on a batch** | **Exists, and is unset on this machine.** `weight` and `weightRemaining` are in the schema and both are writable (verified 2026-09-16). The earlier entry called them nonexistent on the strength of a response that omitted them. A remaining-stock estimate is therefore possible in principle and impossible here - for want of data, not of a field |
 | T28 | **Batch and coffee labels** | **Kept apart, and nothing joins them.** `context` holds the managed reference `beanBatchId` next to the display strings `coffeeName` and `coffeeRoaster`; setting the batch alone leaves the previous coffee's name standing on the machine. Measured live: after `beanBatchId` was moved to the decaf batch, `coffeeName` still read `Arabica Honey Process`. Decaid's own API examples write the id and both labels together |
 | T29 | **`beanBatchId` is unchecked** | An arbitrary UUID is accepted with 200 and stands afterwards. There is no referential integrity, so the client is the only thing between a typo and a workflow pointing at nothing |
 | T30 | **`coffeeData` is gone** | The legacy containers `doseData`, `grinderData` and `coffeeData` stopped being accepted in Decaid 0.5.2. Everything goes through `context`, whose fields are flat |
+| T31 | **Origin on a bean** | `country`, `region`, `producer`, `variety` (array of strings), `altitude` (`[min, max]` in metres) and `decafProcess` all exist and all five of the first are writable (verified 2026-09-16, restored with null) |
+| T32 | **Unset means absent** | An unset field is left out of the response entirely rather than sent as `null` - which is what made T23 and T27 wrong. Decaid's UI shows grey placeholder text in empty fields ("washed, natural, honey…"); the API never sends those |
+| T33 | **`null` clears a field** | A `PUT` carrying an explicit `null` removes the value. That is how a probe is undone, and the only reason the origin fields could be verified without leaving residue |
 
 T26 is why the block list in `writes.py` is not a second line of defence but the
 only one for the telemetry fields.
@@ -510,6 +513,8 @@ is read-only except `sync_now` and the write tools from §11.
 | `sync_now()` | an immediate sync, idempotent |
 | `status()` | archive contents, last sync, Decaid state, warnings |
 | `audit_archive(since?, rule?, limit?)` | guard findings with the thresholds in force |
+| `list_batches(bean?)` | batches with roast date and usage - where batch identifiers come from |
+| `get_batch(id)` | one batch in full: all dates, freezer state, weights |
 | `stats(period, compare_previous)` | what was pulled in a period, and how it tasted |
 
 Filters are case-insensitive substrings. Dates take ISO8601 or a relative
@@ -577,7 +582,26 @@ necessarily costs more, verbosity does not.
 parameter values, no URL, no path. Arguments are the likeliest route by which
 something confidential eventually reaches a log line.
 
-### 9.4 Statistics
+### 9.4 Batch master data on the read paths
+
+Batches were synced and writable long before anything gave them out. The roast
+date of the batch in the hopper sat in the database, correct, and no read path
+exposed it - so bean age, one of the few variables a person actually turns while
+dialling in, could not be asked about, and `update_batch` was close to
+unusable: identifiers could only be guessed out of a shot, and there was no way
+to see the current state before overwriting it.
+
+- `get_shot` carries a `bean_batch` block: `roast_date`, `days_off_roast`,
+  `frozen`, `freeze_date`, `unfreeze_date`, `buy_date`, `open_date`. The age is
+  measured against that shot (§10.2).
+- `list_beans` carries `batches` per bean - identifier, roast date, frozen
+  state, shot count, date range.
+- `list_batches(bean?)` and `get_batch(id)` are the lookup path.
+- A bean carries `origin` (`country`, `region`, `producer`, `variety`,
+  `altitude`) where anything is recorded, and no `origin` key at all where
+  nothing is. Unset is absent, never a placeholder (T31, T32).
+
+### 9.5 Statistics
 
 `stats(period, compare_previous)` answers what was pulled in a period, from
 what, and how it tasted. Deliberately lean: shot counts overall and per day, the
@@ -607,9 +631,13 @@ and hiding that would make the number confusing rather than clean.
 spellings of the same number are not a change - comparing the strings reported
 13 changes on a bean that was moved 11 times.
 
-**No remaining-stock estimate.** A remainder would need a starting weight, and a
-batch carries none (T27). What is reported instead is what was actually used:
-shots pulled from the batch, coffee consumed, mean dose, days since roasting.
+**No remaining-stock estimate.** A remainder needs a starting weight. Decaid
+*has* the field - `weight` and `weightRemaining` both exist and are writable
+(T27, corrected) - but nothing on this machine fills it, so there is no basis to
+compute from. What is reported instead is what was actually used: shots pulled
+from the batch, coffee consumed, mean dose, days since roasting. The estimate
+becomes possible the day those weights are entered; it is not built on a guess
+until then.
 
 **Top lists carry their rating coverage.** A mean over one rating out of twenty
 is not the same claim as one over ten, so `rated` sits next to `shots`.
@@ -639,13 +667,25 @@ target on average, 497 g in the extreme. The rule therefore checks the yield
 against its target and the dose for plausibility only - a dose of 0 g means the
 scale was not connected.
 
-### 10.2 Bean age without a thaw date
+### 10.2 Bean age, and when it is only a bound
 
-Frozen time does not count as ageing, so it is subtracted. But Decaid keeps no
-`unfreezeDate` (T23): if `frozen` is false and a `freezeDate` is set, the batch
-was thawed at some point and nobody knows when. The finding then carries
-`certain: false` and the age is explicitly an **upper bound**. A number that
-cannot be substantiated is not reported as certain.
+Frozen time does not count as ageing, so it is subtracted. Decaid keeps an
+`unfreezeDate` (T23) and where it is filled the subtraction is exact. Where it
+is not - `frozen` false, a `freezeDate` set, no thaw date - the batch was thawed
+at some point and nobody knows when. The finding then carries `certain: false`
+and the age is explicitly an **upper bound**. A number that cannot be
+substantiated is not reported as certain.
+
+**Without a roast date the rule sits out.** It never falls back to the purchase
+date, the open date or zero: those are different facts, and an age derived from
+one of them would be indistinguishable downstream from a measured one.
+`audit_archive` reports the count under `not_checked`, because a rule that
+skips silently looks exactly like a rule that found nothing.
+
+The age is always measured against the **shot**, never against the clock. An
+age taken at query time would keep growing after the fact, so the same shot
+would answer differently every week and a comparison across a month would
+quietly compare two different questions.
 
 ### 10.3 Two bounds, not one deadline
 

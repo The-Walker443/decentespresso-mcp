@@ -64,12 +64,15 @@ _SHOT_COLUMNS = (
 
 _BEAN_COLUMNS = (
     "id", "name", "roaster", "species", "processing", "decaf", "archived",
-    "notes", "created_at", "updated_at", "raw_json", "synced_at",
+    "notes", "country", "region", "producer", "variety", "altitude",
+    "created_at", "updated_at", "raw_json", "synced_at",
 )
 
 _BATCH_COLUMNS = (
-    "id", "bean_id", "roast_date", "buy_date", "freeze_date", "unfreeze_date",
-    "frozen", "archived", "created_at", "updated_at", "raw_json", "synced_at",
+    "id", "bean_id", "roast_date", "buy_date", "open_date", "best_before_date",
+    "freeze_date", "unfreeze_date", "frozen", "archived",
+    "weight_g", "weight_remaining_g",
+    "created_at", "updated_at", "raw_json", "synced_at",
 )
 
 
@@ -83,6 +86,17 @@ def _upsert_sql(table: str, columns: tuple[str, ...]) -> str:
 
 # profile_id is left untouched on upsert - profile versioning sets the link.
 _UPSERT_SHOT = _upsert_sql("shots", _SHOT_COLUMNS)
+def _with_defaults(row: dict[str, Any], columns: Sequence[str]) -> dict[str, Any]:
+    """Fills in columns the caller left out, as NULL.
+
+    A column added to the schema must not break every caller that predates it;
+    "not supplied" and "not recorded" are the same statement here. That the
+    mapper really does supply all of them is checked in the test suite, where
+    the omission is a finding rather than a crash in an unrelated test.
+    """
+    return {name: row.get(name) for name in columns}
+
+
 _UPSERT_BEAN = _upsert_sql("beans", _BEAN_COLUMNS)
 _UPSERT_BATCH = _upsert_sql("bean_batches", _BATCH_COLUMNS)
 
@@ -209,16 +223,18 @@ class Database:
     # -------------------------------------------------- Beans and batches
 
     def upsert_beans(self, beans: Sequence[dict[str, Any]]) -> int:
+        rows = [_with_defaults(b, _BEAN_COLUMNS) for b in beans]
         with self._lock:
-            self._conn.executemany(_UPSERT_BEAN, beans)
+            self._conn.executemany(_UPSERT_BEAN, rows)
             self._conn.commit()
-        return len(beans)
+        return len(rows)
 
     def upsert_bean_batches(self, batches: Sequence[dict[str, Any]]) -> int:
+        rows = [_with_defaults(b, _BATCH_COLUMNS) for b in batches]
         with self._lock:
-            self._conn.executemany(_UPSERT_BATCH, batches)
+            self._conn.executemany(_UPSERT_BATCH, rows)
             self._conn.commit()
-        return len(batches)
+        return len(rows)
 
     def link_shots_to_beans(self) -> int:
         """Fills in ``bean_id`` from the batch.
@@ -317,7 +333,36 @@ class Database:
             ).fetchone()
             return row["lo"], row["hi"]
 
-    # ------------------------------------------------------------- Abfragen
+    # -------------------------------------------------------------- Queries
+
+    def list_batches(self, bean_id: str | None = None) -> list[dict[str, Any]]:
+        """Batches with how much was pulled from each.
+
+        Ordered newest roast first, then by the last shot, so the batch
+        currently in use comes out at the top. Batches nobody has pulled from
+        are included - they are exactly the ones somebody needs to look up an
+        identifier for.
+        """
+        sql = """
+            SELECT b.*, e.name AS bean_name, e.roaster AS bean_roaster,
+                   COUNT(s.id) AS shot_count,
+                   MIN(s.started_at) AS first_shot,
+                   MAX(s.started_at) AS last_shot
+              FROM bean_batches b
+              LEFT JOIN beans e ON e.id = b.bean_id
+              LEFT JOIN shots s ON s.bean_batch_id = b.id
+        """
+        params: tuple[Any, ...] = ()
+        if bean_id:
+            sql += " WHERE b.bean_id = ?"
+            params = (bean_id,)
+        sql += """
+             GROUP BY b.id
+             ORDER BY b.roast_date IS NULL, b.roast_date DESC,
+                      last_shot IS NULL, last_shot DESC
+        """
+        with self._lock:
+            return [dict(row) for row in self._conn.execute(sql, params)]
 
     def list_beans(self) -> list[dict[str, Any]]:
         """Beans with shot count, date range and the grind settings used.
@@ -334,6 +379,7 @@ class Database:
             beans = list(self._conn.execute("""
                 SELECT b.id AS bean_id, b.name AS bean_name, b.roaster,
                        b.species, b.processing, b.decaf, b.archived,
+                       b.country, b.region, b.producer, b.variety, b.altitude,
                        COUNT(s.id) AS shot_count,
                        MIN(s.started_at) AS first_shot,
                        MAX(s.started_at) AS last_shot,

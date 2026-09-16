@@ -221,7 +221,15 @@ def series_rows_from_decaid(detail: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def bean_row_from_decaid(bean: dict[str, Any], synced_at: str) -> dict[str, Any]:
-    """Bean -> a row for ``beans``."""
+    """Bean -> a row for ``beans``.
+
+    Origin comes as four separate fields plus an altitude range. Decaid's UI
+    shows grey placeholder text in the empty ones ("washed, natural, honey…"),
+    but the API omits an unset field entirely rather than sending the
+    placeholder - checked across every bean on the live instance. So the
+    ``.get`` default of ``None`` is the whole protection needed, and a test
+    pins it: a placeholder imported as a value would be a fact nobody typed.
+    """
     return {
         "id": bean.get("id"),
         "name": _text(bean.get("name")),
@@ -231,6 +239,11 @@ def bean_row_from_decaid(bean: dict[str, Any], synced_at: str) -> dict[str, Any]
         "decaf": _flag(bean.get("decaf")),
         "archived": _flag(bean.get("archived")),
         "notes": _text(bean.get("notes")),
+        "country": _text(bean.get("country")),
+        "region": _text(bean.get("region")),
+        "producer": _text(bean.get("producer")),
+        "variety": _json_list(bean.get("variety")),
+        "altitude": _json_list(bean.get("altitude")),
         "created_at": _iso_or_none(bean.get("createdAt")),
         "updated_at": _iso_or_none(bean.get("updatedAt")),
         "raw_json": json.dumps(bean, ensure_ascii=False, separators=(",", ":")),
@@ -241,9 +254,19 @@ def bean_row_from_decaid(bean: dict[str, Any], synced_at: str) -> dict[str, Any]
 def batch_row_from_decaid(batch: dict[str, Any], synced_at: str) -> dict[str, Any]:
     """Batch -> a row for ``bean_batches``.
 
-    Decaid keeps no ``unfreezeDate`` field of its own; it appears, if at all,
-    in the extras. Frozen time does not count towards bean age, which is why
-    both are carried along.
+    Four dates, and they mean different things: ``roastDate`` is when it was
+    roasted, ``buyDate`` when it was bought, ``openDate`` when the bag was
+    opened, ``bestBeforeDate`` what the label claims. Only the first drives the
+    bean-age guard; the rest are carried because they are the context a person
+    reads them in.
+
+    ``openDate`` is the one that was missing. Decaid sets it where the DE1 app
+    used to write a purchase date, so ``buy_date`` stayed null on batches that
+    plainly had a date - which is how this surfaced.
+
+    ``unfreezeDate`` is a real field in the API (it was once noted here as not
+    existing, wrongly - it is simply absent from the response while unset). The
+    extras fallback stays for archives written before that was understood.
     """
     extras = batch.get("extras") or {}
     return {
@@ -251,10 +274,14 @@ def batch_row_from_decaid(batch: dict[str, Any], synced_at: str) -> dict[str, An
         "bean_id": _text(batch.get("beanId")),
         "roast_date": _date(batch.get("roastDate")),
         "buy_date": _date(batch.get("buyDate")),
+        "open_date": _date(batch.get("openDate")),
+        "best_before_date": _date(batch.get("bestBeforeDate")),
         "freeze_date": _date(batch.get("freezeDate")),
         "unfreeze_date": _date(batch.get("unfreezeDate") or extras.get("unfreezeDate")),
         "frozen": _flag(batch.get("frozen")),
         "archived": _flag(batch.get("archived")),
+        "weight_g": _number(batch.get("weight")),
+        "weight_remaining_g": _number(batch.get("weightRemaining")),
         "created_at": _iso_or_none(batch.get("createdAt")),
         "updated_at": _iso_or_none(batch.get("updatedAt")),
         "raw_json": json.dumps(batch, ensure_ascii=False, separators=(",", ":")),
@@ -296,6 +323,18 @@ def _text(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _json_list(value: Any) -> str | None:
+    """A list field (``variety``, ``altitude``) as JSON text, or None.
+
+    An empty list is None rather than ``"[]"``: "no varieties recorded" and
+    "recorded as none" are the same thing here, and null is how the rest of
+    the archive says it.
+    """
+    if not isinstance(value, list) or not value:
+        return None
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
 def _number(value: Any) -> float | None:

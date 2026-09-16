@@ -35,7 +35,13 @@ from .decaid_client import (
     DecaidError,
     DecaidUnreachable,
 )
-from .guards import ALL_RULES, run_rules
+from .guards import (
+    ALL_RULES,
+    as_datetime,
+    bean_age_days,
+    bean_age_not_checkable,
+    run_rules,
+)
 from .metrics import METRICS_VERSION, curve_shape, downsample_curve, metrics_for_shot
 from .stats import _iso as _stats_iso
 from .stats import (
@@ -158,9 +164,11 @@ GUARDS - `audit_archive` checks four rules. What they mean:
   Every bean grinds differently; the first shot after such a change is usually
   off.
 - `bean_age` - the bean was past the age threshold when the shot was pulled.
-  Time spent frozen is subtracted. When a finding says `certain: false`, the
-  batch had been frozen and Decaid keeps no thaw date - the age is then an
-  **upper bound** and must be passed on as one, not as a firm number.
+  Time spent frozen is subtracted where a thaw date is recorded. When a finding
+  says `certain: false`, the batch was frozen and thawed without one - the age
+  is then an **upper bound** and must be passed on as one, not as a firm
+  number. `not_checked` says how many shots the rule sat out for want of a
+  roast date; it never guesses one.
 - `missing_rating` - no rating was added once the grace period had passed.
 - `dose_outlier` - weights do not match the workflow target. `basis` says what
   was measured against: the workflow target, or the batch median as a fallback.
@@ -257,27 +265,44 @@ def build_mcp(
 
     @mcp.tool(annotations=READ_ONLY)
     async def list_beans() -> dict[str, Any]:
-        """Every bean in the archive with shot count, date range and grind settings.
+        """Every bean with shot count, date range, origin and its batches.
 
         The way into "which beans are there". Times are ISO8601 UTC,
-        `grinder_setting` is free text from the grinder ("4,2", for instance).
+        `grinder_setting` is free text ("4,2", for instance). `batches` carries
+        the identifiers `update_batch` needs; `origin` is absent when nothing
+        is recorded, which means unrecorded, never zero.
         """
-        rows = await asyncio.to_thread(db.list_beans)
+        rows, batches = await asyncio.gather(
+            asyncio.to_thread(db.list_beans),
+            asyncio.to_thread(db.list_batches),
+        )
+        by_bean: dict[str, list[dict[str, Any]]] = {}
+        for batch in batches:
+            by_bean.setdefault(str(batch["bean_id"]), []).append({
+                "id": batch["id"],
+                "roast_date": batch["roast_date"],
+                "frozen": bool(batch["frozen"]),
+                "shot_count": batch["shot_count"],
+                "first_shot": batch["first_shot"],
+                "last_shot": batch["last_shot"],
+            })
         return {
             "beans": [
-                {
+                _drop_empty({
                     "id": r["bean_id"],
                     "name": r["bean_name"],
                     "roaster": r["roaster"],
                     "processing": r["processing"],
                     "decaf": bool(r["decaf"]) if r["decaf"] is not None else None,
+                    "origin": _origin(r),
                     "shot_count": r["shot_count"],
                     "first_shot": r["first_shot"],
                     "last_shot": r["last_shot"],
                     "last_grinder_model": r["last_grinder_model"],
                     "last_grinder_setting": r["last_grinder_setting"],
                     "grinder_settings_used": r["grinder_settings"],
-                }
+                    "batches": by_bean.get(str(r["bean_id"]), []),
+                })
                 for r in rows
             ]
         }
@@ -376,6 +401,13 @@ def build_mcp(
             "curve_shape": curve_shape(series, metrics),
             "profile": await asyncio.to_thread(_profile_summary, db, row["profile_id"]),
         }
+        batch_row = (
+            await asyncio.to_thread(db.batch_row, row["bean_batch_id"])
+            if row["bean_batch_id"] else None
+        )
+        batch = _batch_block(batch_row, row["started_at"])
+        if batch is not None:
+            payload["bean_batch"] = batch
         if freshness is not None:
             payload["freshness"] = freshness
         if include_curve or detail == "detailed":
@@ -465,6 +497,43 @@ def build_mcp(
             if notice:
                 payload["profile_notice"] = notice
         return payload
+
+    @mcp.tool(annotations=READ_ONLY)
+    async def list_batches(bean: str | None = None) -> dict[str, Any]:
+        """Bean batches with roast date and how much was pulled from each.
+
+        `bean` filters by name or roastery (substring). Newest roast first.
+        Where the identifiers for `update_batch` come from. No age here - an age
+        only means something against a shot, and `get_shot` gives it that way.
+        """
+        rows = await asyncio.to_thread(db.list_batches)
+        if bean:
+            needle = bean.strip().lower()
+            rows = [
+                r for r in rows
+                if needle in (r["bean_name"] or "").lower()
+                or needle in (r["bean_roaster"] or "").lower()
+            ]
+        return {
+            "batches": [_batch_summary(r) for r in rows],
+            "total": len(rows),
+        }
+
+    @mcp.tool(annotations=READ_ONLY)
+    async def get_batch(id: str) -> dict[str, Any]:
+        """One batch in full: all dates, freezer state, weights, usage.
+
+        `frozen_since`/`thawed_on` carry the bean-age calculation. A `null`
+        weight means none was recorded, not that the bag is empty.
+        """
+        row = await asyncio.to_thread(db.batch_row, id)
+        if row is None:
+            raise ToolError(
+                f"batch_not_found: no batch with the identifier {id!r}. "
+                "list_batches shows which exist."
+            )
+        usage = [b for b in await asyncio.to_thread(db.list_batches) if b["id"] == id]
+        return _batch_summary(usage[0] if usage else dict(row), full=True)
 
     @mcp.tool(annotations=READ_ONLY)
     async def list_profiles() -> dict[str, Any]:
@@ -617,6 +686,7 @@ def build_mcp(
             "total_findings": len(findings),
             "findings": [f.as_dict() for f in capped],
             "by_rule": _count_by_rule(findings),
+            "not_checked": _drop_empty(bean_age_not_checkable(shots, batches)),
         }
 
 
@@ -679,10 +749,12 @@ def _register_workflow_reader(mcp: FastMCP, coordinator: SyncCoordinator) -> Non
 
     @mcp.tool(annotations=READ_ONLY)
     async def get_workflow() -> dict[str, Any]:
-        """The setting the next shot would run on.
+        """What the **next** shot is set up to run on - not what the last one did.
 
-        Comes live from the tablet - the archive only holds what shots were
-        actually pulled with.
+        Read live from the tablet, never cached. `grinder_setting` is what the
+        grinder is dialled to now; the newest shot may have run on something
+        else. On a disagreement say so instead of reconciling it - the change
+        has either not been pulled on yet or was made and forgotten.
         """
         try:
             workflow = await coordinator.read_workflow()
@@ -984,6 +1056,114 @@ def _full_shot(row: Any) -> dict[str, Any]:
         "enjoyment": row["enjoyment"],
         "notes": row["notes"],
     }
+
+
+def _batch_summary(row: Any, *, full: bool = False) -> dict[str, Any]:
+    """A batch as a list entry, or in full for ``get_batch``."""
+    data = dict(row)
+    summary: dict[str, Any] = {
+        "id": data.get("id"),
+        "bean_id": data.get("bean_id"),
+        "bean_name": data.get("bean_name"),
+        "bean_roaster": data.get("bean_roaster"),
+        "roast_date": data.get("roast_date"),
+        "frozen": bool(data.get("frozen")),
+        "shot_count": data.get("shot_count"),
+        "first_shot": data.get("first_shot"),
+        "last_shot": data.get("last_shot"),
+    }
+    if full:
+        summary |= {
+            "buy_date": data.get("buy_date"),
+            "open_date": data.get("open_date"),
+            "best_before_date": data.get("best_before_date"),
+            "frozen_since": data.get("freeze_date"),
+            "thawed_on": data.get("unfreeze_date"),
+            "weight_g": data.get("weight_g"),
+            "weight_remaining_g": data.get("weight_remaining_g"),
+            "archived": bool(data.get("archived")),
+        }
+        if not data.get("roast_date"):
+            summary["age_unknown_reason"] = "This batch carries no roast date."
+    return _drop_empty(summary) | {"frozen": bool(data.get("frozen"))}
+
+
+def _drop_empty(block: dict[str, Any]) -> dict[str, Any]:
+    """Leaves out keys whose value is None or an empty container.
+
+    Only for optional blocks that are absent rather than null when nothing is
+    recorded. Never for a measured field: there `null` is the statement.
+    """
+    return {k: v for k, v in block.items() if v not in (None, {}, [])}
+
+
+def _origin(row: Any) -> dict[str, Any] | None:
+    """Country, region, producer, variety, altitude - or nothing at all.
+
+    Decaid's UI shows grey placeholder text in the empty fields ("washed,
+    natural, honey…"); the API sends the key not at all. So an absent key here
+    means nobody typed it, and inventing a value from the placeholder would
+    turn a UI hint into a recorded fact.
+    """
+    keys = ("country", "region", "producer")
+    block: dict[str, Any] = {k: row[k] for k in keys if _has(row, k)}
+    for key in ("variety", "altitude"):
+        if _has(row, key):
+            with contextlib.suppress(ValueError, TypeError):
+                block[key] = json.loads(row[key])
+    return _drop_empty(block) or None
+
+
+def _has(row: Any, key: str) -> bool:
+    try:
+        return row[key] is not None
+    except (IndexError, KeyError):
+        return False
+
+
+def _batch_block(row: Any, started_at: str | None) -> dict[str, Any] | None:
+    """The batch a shot was pulled from, aged **against that shot**.
+
+    `days_off_roast` counts to `started_at`, never to now. An age measured
+    against the clock would keep growing after the fact, so the same shot would
+    answer "how old was the bean" differently every week and any comparison
+    across a month would quietly drift.
+
+    A missing roast date stays `null` and says why. There is no fallback to the
+    purchase date, the open date or zero: those are different facts, and a
+    plausible number in place of a missing one is worse than the gap, because
+    nothing downstream can tell them apart.
+    """
+    if row is None:
+        return None
+    batch = dict(row)
+    started = as_datetime(started_at)
+    age, certain = bean_age_days(batch, datetime.now(UTC), started=started)
+
+    block: dict[str, Any] = {
+        "id": batch.get("id"),
+        "roast_date": batch.get("roast_date"),
+        "days_off_roast": age,
+        "frozen": bool(batch.get("frozen")),
+        "freeze_date": batch.get("freeze_date"),
+        "unfreeze_date": batch.get("unfreeze_date"),
+        "buy_date": batch.get("buy_date"),
+        "open_date": batch.get("open_date"),
+    }
+    if age is None:
+        block["age_unknown_reason"] = (
+            "This batch carries no roast date."
+            if not batch.get("roast_date")
+            else "The roast date is after the shot - one of the two is wrong."
+        )
+    elif not certain:
+        block["age_is_upper_bound"] = True
+        block["age_upper_bound_reason"] = (
+            "The batch was frozen and thawed, and no thaw date is recorded, so "
+            "the time in the freezer cannot be subtracted. The bean is at most "
+            "this old."
+        )
+    return block
 
 
 DETAIL_LEVELS = ("summary", "per_phase", "detailed")

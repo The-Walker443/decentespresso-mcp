@@ -215,12 +215,14 @@ def test_batch_usage_reports_what_was_used() -> None:
 
 
 def test_batch_usage_reports_no_remainder() -> None:
-    """Decaid keeps no weight on a batch.
+    """Not because the field is missing - because nobody fills it.
 
-    Verified against both the list and the single-item endpoint: a batch
-    carries id, beanId, roastDate, buyDate, freezeDate, frozen, archived and
-    the two timestamps. Without a starting weight there is no honest remainder,
-    and inventing one would be worse than leaving it out.
+    An earlier verification called `weight`/`weightRemaining` nonexistent, off
+    a response that omitted them while unset. They exist and are writable
+    (SPEC T27, corrected 2026-09-16). On this machine they are empty, so there
+    is still no basis for a remainder, and inventing one would be worse than
+    leaving it out. The day the weights are entered, the estimate becomes
+    honest - and until then this test says why it is absent.
     """
     usage = batch_usage([shot()], {"b1": {"id": "b1"}}, at=NOW)
     assert "shots_remaining" not in usage[0]
