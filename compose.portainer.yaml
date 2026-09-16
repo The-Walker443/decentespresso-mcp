@@ -1,7 +1,7 @@
 # Stack definition for Portainer (SPEC §16).
 #
-# Unterschiede zu compose.yaml (lokal, baut selbst):
-#   - zieht ein fertiges Image aus ghcr.io statt zu bauen
+# Differences from compose.yaml (local, builds for itself):
+#   - pulls a built image from ghcr.io instead of building
 #   - a named volume rather than a bind mount: Docker creates it with the
 #     ownership from the image, so the manual chown 10001 on the host is gone
 #   - no .env file: Portainer fills the ${VAR} from the stack variables

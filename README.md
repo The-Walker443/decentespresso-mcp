@@ -343,12 +343,14 @@ from it are never a statement about the real one — for that, ask `status()`.
 Personal project, built spec-driven with Claude Code; provided as-is, no support
 promised, issues welcome.
 
-Puck-diagnostic physics and threshold rationales are informed by
-[gaggimate-mcp](https://github.com/julianleopold/gaggimate-mcp) (MIT) — the
+Puck-diagnostic physics and threshold rationales are MIT-licensed inspiration
+from [gaggimate-mcp](https://github.com/julianleopold/gaggimate-mcp) — the
 resistance model, the idea of independent channeling signatures, the temperature
-bands and the three-level detail system. The thresholds themselves are measured
-against this archive rather than adopted: the sampling rates differ, and this
-data carries per-point targets that theirs does not.
+bands and the three-level detail system. **No code was copied**, so nothing of
+theirs is redistributed here; had any been, MIT permits its use in a GPL-3.0
+work as long as the MIT notice travels with it. The thresholds themselves are
+measured against this archive rather than adopted: the sampling rates differ,
+and this data carries per-point targets that theirs does not.
 
 **Not affiliated with Decent Espresso International.** The name says what the
 project is for, not who made it. Decent builds the DE1 and Decaid; this is an
@@ -356,3 +358,13 @@ independent community project by an owner of one of their machines, connected to
 them only by reading Decaid's public API. It is not endorsed, reviewed or
 supported by Decent Espresso, and any problem you have with it belongs in this
 issue tracker rather than in theirs.
+
+---
+
+## License
+
+**GPL-3.0-or-later.** See [LICENSE](LICENSE).
+
+Chosen to match the ecosystem this plugs into: Decaid is GPL-3.0 and the Decent
+app store requires its entries to be open source, so copyleft is what keeps this
+consistent with the software it talks to.

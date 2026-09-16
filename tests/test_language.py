@@ -77,6 +77,18 @@ def sql_files() -> list[pathlib.Path]:
     return sorted(MIGRATIONS.glob("*.sql"))
 
 
+#: Files outside `src/` that ship or are read by somebody. Each was added after
+#: German turned up in it: the schema, then the Dockerfile and the packaging.
+#: LICENSE is excluded - it is a legal text nobody here gets to reword.
+PLAIN_FILES = ("Dockerfile", "pyproject.toml", ".env.example", "compose.yaml",
+               "compose.portainer.yaml", ".gitignore")
+
+
+def plain_files() -> list[pathlib.Path]:
+    root = pathlib.Path(__file__).resolve().parents[1]
+    return [root / name for name in PLAIN_FILES if (root / name).is_file()]
+
+
 def texts(path: pathlib.Path) -> Iterator[tuple[str, int, str]]:
     """Every piece of prose in a module: docstrings, literals, comments.
 
@@ -154,6 +166,22 @@ def test_no_german_in_the_migrations(path: pathlib.Path) -> None:
         if (hits := german_in(comment)) or any(ch in UMLAUTS for ch in comment):
             findings.append(f"{path.name}:{number} {sorted(hits)} {line.strip()[:70]!r}")
     assert not findings, "German in the schema:\n  " + "\n  ".join(findings)
+
+
+@pytest.mark.parametrize("path", plain_files(), ids=lambda p: p.name)
+def test_no_german_in_the_files_that_ship(path: pathlib.Path) -> None:
+    """The Dockerfile and pyproject were missed twice over.
+
+    The package description read "MCP-Server fuer Espresso-Shot-Analyse" - that
+    is the summary shown for the installed distribution - and the Dockerfile
+    explained BUILD_REF half in German. Neither is Python, so the walk over
+    `src/` never looked at them.
+    """
+    findings = []
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if (hits := german_in(line)) or any(ch in UMLAUTS for ch in line):
+            findings.append(f"{path.name}:{number} {sorted(hits)} {line.strip()[:70]!r}")
+    assert not findings, "German outside src/:\n  " + "\n  ".join(findings)
 
 
 def test_the_guard_leaves_english_alone() -> None:

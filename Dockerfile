@@ -13,20 +13,23 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-COPY pyproject.toml ./
+# LICENSE travels with pyproject.toml: it is named there in `license-files`,
+# so the build fails without it - and a GPL work distributed as an image should
+# carry its licence anyway.
+COPY pyproject.toml LICENSE ./
 COPY src ./src
 RUN pip install --no-cache-dir .
 
 COPY migrations ./migrations
 
-# Welcher Commit steckt in diesem Image? Die Paketversion sagt, welcher
-# milestone was built - BUILD_REF says which commit. Together they make it
-# unambiguous at deployment time whether the new image runs or still the old.
+# Which commit is in this image? The package version says what was built and
+# BUILD_REF says which commit. Together they make it unambiguous at deployment
+# time whether the new image is running or still the old one.
 ARG BUILD_REF=""
 ENV BUILD_REF=$BUILD_REF
 
-# Non-root (SPEC §10.4). /data is mounted from the host and must belong to this
-# gehoeren: chown -R 10001:10001 ./data
+# Non-root (SPEC §12). /data is mounted from the host and must belong to this
+# user: chown -R 10001:10001 ./data
 RUN useradd --uid 10001 --user-group --no-create-home --shell /usr/sbin/nologin app \
     && mkdir -p /data \
     && chown app:app /data

@@ -500,7 +500,11 @@ The physics - resistance as `P/F²`, the idea of independent channeling
 signatures, temperature bands anchored on the machine specification and on
 tasting thresholds, and the three-level detail system - is informed by
 [gaggimate-mcp](https://github.com/julianleopold/gaggimate-mcp) (MIT), and in
-particular its threshold calibration document. No code was copied.
+particular its threshold calibration document. **No code was copied**, so
+nothing of theirs is redistributed here and no MIT notice has to travel with
+this. Were code taken later, MIT permits its use inside a GPL-3.0-or-later work
+provided the MIT notice and copyright line are kept with it - the combination
+then ships under the GPL, which is the licence of this project (§17).
 
 The numbers are not theirs. Their sampling is 100 ms where this is ~250 ms, and
 their data carries no per-point targets, so every threshold above was read off
@@ -913,3 +917,19 @@ Criteria 2 and 5 need the real machine and Docker; the rest run automatically.
 - MCP prompts (`dial_in_check`, `bean_history`).
 - Structured TDS/EY capture, if a refractometer appears.
 - Importing further sources - the schema is prepared through `raw_json`.
+
+## 17. Licence
+
+**GPL-3.0-or-later**, full text in `LICENSE`, declared in `pyproject.toml` as an
+SPDX expression so the built package carries it too.
+
+Chosen to match the ecosystem: Decaid is GPL-3.0 and the Decent app store
+requires its entries to be open source, so copyleft is what keeps this
+consistent with the software it talks to and usable there. Before this the
+repository carried no licence at all, which meant default copyright - nobody
+could legally fork or contribute. Fixing that ahead of any outside contribution
+is the point of the choice being made now rather than later.
+
+The attribution question this raises is answered in §8.9: the gaggimate-mcp
+influence is MIT-licensed inspiration, no code was copied, and MIT would in any
+case permit the combination.

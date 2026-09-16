@@ -1,14 +1,16 @@
 [project]
 name = "decentespresso-mcp"
 version = "0.9.0"
-description = "MCP-Server fuer Espresso-Shot-Analyse (Decent DE1 -> Decaid -> SQLite -> Claude)"
+description = "MCP server for espresso shot analysis (Decent DE1 -> Decaid -> SQLite -> Claude)"
 requires-python = ">=3.12"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
 dependencies = [
     "fastmcp>=2.10,<3",
     "httpx>=0.27",
-    # Zeitzonendatenbank fuer zoneinfo. Ob ein schlankes Basisimage
-    # /usr/share/zoneinfo mitbringt, ist nicht zugesichert; die Umrechnung der
-    # Ortszeit-Stempel auf UTC haengt aber daran (decaid_mapping).
+    # Time zone database for zoneinfo. A slim base image is not guaranteed to
+    # carry /usr/share/zoneinfo, and converting the local-time stamps to UTC
+    # depends on it (decaid_mapping).
     "tzdata>=2024.1",
 ]
 
@@ -23,7 +25,7 @@ dev = [
 decentespresso-mcp = "decentespresso_mcp.__main__:main"
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]  # PEP 639 SPDX license expression
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
@@ -31,7 +33,7 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# Damit tests/helpers.py per Namen importierbar ist.
+# So that tests/helpers.py is importable by name.
 pythonpath = ["tests"]
 addopts = "-q"
 asyncio_mode = "auto"

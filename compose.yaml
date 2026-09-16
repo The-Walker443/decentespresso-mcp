@@ -15,7 +15,7 @@ services:
       - /tmp
     security_opt:
       - "no-new-privileges:true"
-    # No host ports: reachable only over the internal Docker network (SPEC §10.4).
+    # No host ports: reachable only over the internal Docker network (SPEC §12).
     healthcheck:
       test:
         - CMD
