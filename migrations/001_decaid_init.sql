@@ -5,15 +5,15 @@
 -- here - migrations stay pure DDL.
 
 CREATE TABLE IF NOT EXISTS shots (
-  id              TEXT PRIMARY KEY,          -- Decaid-UUID oder de1app-<unixzeit>
-  started_at      TEXT NOT NULL,             -- ISO8601, immer UTC
+  id              TEXT PRIMARY KEY,          -- Decaid UUID or de1app-<unix time>
+  started_at      TEXT NOT NULL,             -- ISO8601, always UTC
   -- Where the timestamp came from before it became UTC: 'utc' for shots
   -- imported from the de1app, 'local_berlin' for ones Decaid recorded itself.
   -- Decaid delivers both in the same field without a zone; without this column
   -- it could not be traced afterwards what was converted.
   time_source     TEXT NOT NULL CHECK (time_source IN ('utc', 'local_berlin')),
-  created_at      TEXT,                      -- Decaids createdAt, UTC
-  updated_at      TEXT,                      -- Decaids updatedAt, UTC; Sync-Cursor
+  created_at      TEXT,                      -- Decaid's createdAt, UTC
+  updated_at      TEXT,                      -- Decaid's updatedAt, UTC; the sync cursor
   duration_s      REAL,
   stop_reason     TEXT,
 
@@ -33,30 +33,30 @@ CREATE TABLE IF NOT EXISTS shots (
   bean_roaster    TEXT,
 
   grinder_model   TEXT,
-  grinder_setting TEXT,                      -- Freitext, enthaelt Kommazahlen
+  grinder_setting TEXT,                      -- free text, contains decimal commas
   basket_name     TEXT,
 
   target_dose_g   REAL,                      -- target, from the workflow
   target_yield_g  REAL,
   dose_g          REAL,                      -- actual, from the annotations
   yield_g         REAL,
-  ratio           REAL,                      -- yield/dose, berechnet
+  ratio           REAL,                      -- yield/dose, computed
 
   -- 0-100. NULL means "not rated". Decaid creates imported shots with 0.0;
   -- those zeros arrive here as NULL (see decaid_mapping).
   enjoyment       REAL CHECK (enjoyment IS NULL OR (enjoyment >= 0 AND enjoyment <= 100)),
   notes           TEXT,
 
-  raw_json        TEXT NOT NULL,             -- vollstaendige Antwort ohne Messreihe
+  raw_json        TEXT NOT NULL,             -- the full response, without the series
   synced_at       TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS shot_series (     -- 1 Zeile pro Messpunkt
+CREATE TABLE IF NOT EXISTS shot_series (     -- one row per measurement point
   shot_id             TEXT NOT NULL REFERENCES shots(id) ON DELETE CASCADE,
   elapsed             REAL NOT NULL,         -- s from the first point (Decaid has no time field)
 
   pressure            REAL,
-  flow_in             REAL,                  -- Pumpe
+  flow_in             REAL,                  -- from the pump
   flow_out            REAL,                  -- derived from the scale
   weight              REAL,
   temp_mix            REAL,
@@ -115,7 +115,7 @@ CREATE TABLE IF NOT EXISTS bean_batches (
 CREATE TABLE IF NOT EXISTS profiles (
   id            INTEGER PRIMARY KEY AUTOINCREMENT,
   name          TEXT NOT NULL,
-  version_hash  TEXT NOT NULL UNIQUE,        -- Identitaet einer Profilversion
+  version_hash  TEXT NOT NULL UNIQUE,        -- identity of one profile version
   semantic_hash TEXT,                        -- groups versions that brew alike
   -- Where the profile came from. 'decaid' is the JSON embedded in the
   -- workflow, which is the only source now.
@@ -134,7 +134,7 @@ CREATE TABLE IF NOT EXISTS shot_metrics (
   computed_at     TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS sync_state (      -- letzter Lauf, Cursor, Fehler
+CREATE TABLE IF NOT EXISTS sync_state (      -- last run, cursor, errors
   key   TEXT PRIMARY KEY,
   value TEXT
 );

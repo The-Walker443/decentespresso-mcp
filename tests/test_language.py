@@ -66,8 +66,15 @@ UMLAUTS = "ÄÖÜäöüß"
 WORD = re.compile(r"[A-Za-zÄÖÜäöüß]+")
 
 
+MIGRATIONS = pathlib.Path(__file__).resolve().parents[1] / "migrations"
+
+
 def modules() -> list[pathlib.Path]:
     return sorted(p for p in SRC.rglob("*.py") if "__pycache__" not in p.parts)
+
+
+def sql_files() -> list[pathlib.Path]:
+    return sorted(MIGRATIONS.glob("*.sql"))
 
 
 def texts(path: pathlib.Path) -> Iterator[tuple[str, int, str]]:
@@ -131,6 +138,22 @@ def test_the_guard_catches_what_slipped_through_before(sentence: str) -> None:
     Every sentence here stood in `src/` until 2006b1e and passed a diff review.
     """
     assert german_in(sentence), f"not detected: {sentence!r}"
+
+
+@pytest.mark.parametrize("path", sql_files(), ids=lambda p: p.name)
+def test_no_german_in_the_migrations(path: pathlib.Path) -> None:
+    """The schema is documentation too, and it was missed twice.
+
+    `001_decaid_init.sql` was reported as translated and still opened three
+    tables with German comments. Nobody reads a migration after it has run,
+    which is exactly why nothing caught it.
+    """
+    findings = []
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        comment = line.partition("--")[2]
+        if (hits := german_in(comment)) or any(ch in UMLAUTS for ch in comment):
+            findings.append(f"{path.name}:{number} {sorted(hits)} {line.strip()[:70]!r}")
+    assert not findings, "German in the schema:\n  " + "\n  ".join(findings)
 
 
 def test_the_guard_leaves_english_alone() -> None:
