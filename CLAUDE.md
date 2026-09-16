@@ -26,6 +26,26 @@ around. This has paid for itself repeatedly:
 - `actualDoseWeight` is always exactly equal to `targetDoseWeight`, which made a
   whole planned guard rule meaningless.
 
+### Absence in a response proves nothing
+
+**A field counts as nonexistent only once a write to it was refused.** A field
+missing from a read response proves nothing: Decaid leaves unset fields out
+entirely rather than sending `null` (T32). To establish that something does not
+exist, write to it and see it rejected - or find it absent from
+`assets/api/rest_v1.yml`, the canonical description.
+
+Two findings were recorded as verified and were wrong in exactly this way:
+
+- **T23** claimed Decaid keeps no thaw date. `unfreezeDate` exists and is
+  writable. The wrong finding cost the archive the one fact that turns bean age
+  from an upper bound into an exact number, and it was enshrined in a block
+  list, a test and the spec.
+- **T27** claimed a batch carries no weight. `weight` and `weightRemaining`
+  exist. A whole feature was dropped on that basis.
+
+Both were read off a response where the field happened to be unset. Neither
+survived five minutes of writing to it.
+
 ### Mutating probes and tests against live data
 
 Some things can only be learned by writing. Probing and testing write paths
