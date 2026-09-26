@@ -389,3 +389,161 @@ async def test_applying_a_profile_stub_says_what_it_did(writable, db) -> None:
     fake = StoreFake(store={"dye2.reaplugin/recipes": [item]})
     result = await call(server(fake, writable, db), "apply_recipe", {"name": "Decaf"})
     assert "only as the name 'D-Flow'" in result["profile_note"]
+
+
+# ------------------------------------------------------ DYE2 favourites
+
+FAVS = json.loads((FIXTURES / "dye2_favourites.json").read_text(encoding="utf-8"))
+SENIMAN_BATCH = "140c8857-55a9-44c6-87f1-a381af1bf85f"
+YIRGA_BEAN = "936b19ea-fb28-462f-b4f8-3753de6715c5"
+YIRGA_BATCH = "44444444-4444-4444-8444-444444444444"
+
+
+class FavFake(StoreFake):
+    """StoreFake with the live favourites and the beans and batches they name."""
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(store={"dye2.reaplugin/autoFavourites": copy.deepcopy(FAVS),
+                                "dye2.reaplugin/recipes": copy.deepcopy(DYE2)}, **kwargs)
+        self.beans += [
+            {"id": "55555555-5555-4555-8555-555555555555", "name": "House Blend",
+             "roaster": "Seniman", "decaf": False, "archived": False},
+            {"id": YIRGA_BEAN, "name": "Coffee Circle Yirga Santos",
+             "roaster": "Coffee Circle", "decaf": False, "archived": False},
+            {"id": "a705e101-7572-4b62-9514-f3e9245faa20", "name": "Sugar Cane Decaf",
+             "roaster": "Rösttrommel", "decaf": False, "archived": False},
+        ]
+        self.batches += [
+            {"id": SENIMAN_BATCH, "beanId": "55555555-5555-4555-8555-555555555555",
+             "frozen": False, "archived": False},
+            {"id": YIRGA_BATCH, "beanId": YIRGA_BEAN, "roastDate": "2026-09-01T00:00:00.000Z",
+             "frozen": False, "archived": False},
+        ]
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if request.method == "GET" and path.startswith("/api/v1/beans/") \
+                and path.endswith("/batches"):
+            bean_id = path.split("/")[4]
+            return httpx.Response(200, json=[b for b in self.batches
+                                             if b["beanId"] == bean_id])
+        return super().handler(request)
+
+
+def favourite(title: str) -> dict[str, Any]:
+    return next(f for f in FAVS if f.get("title") == title)
+
+
+async def test_favourites_are_listed_with_the_contracts_fallbacks(writable, db) -> None:
+    """Eight on the live store: three titled, five derived as DYE2 does."""
+    listing = (await call(server(FavFake(), writable, db), "list_recipes",
+                          {"source": "dye2_favs"}))["recipes"]
+    names = [f["name"] for f in listing]
+    assert names[:3] == ["Seniman House Blend", "RT Decaf", "Decaf"]
+    assert names.count("Coffee Circle · Coffee Circle Yirga Santos") == 5
+    kinds = sorted(f["profile"] for f in listing)
+    assert kinds == ["name"] * 7 + ["reference"], "T44, as measured"
+    assert "barista" in listing[0]["maskedOff"]
+
+
+async def test_a_name_only_profile_is_not_applied_and_says_so(writable, db) -> None:
+    """The brief's T44 guard, with the live Seniman House Blend.
+
+    Its profile is {"id": null, "title": "D-Flow"}. PUT as DYE2 does, it would
+    rename whatever is running; here the context goes on and the profile stays.
+    """
+    fake = FavFake()
+    before = copy.deepcopy(fake.workflow["profile"])
+    result = await call(server(fake, writable, db), "apply_recipe",
+                        {"name": "Seniman House Blend"})
+
+    assert fake.workflow["profile"] == before, "not renamed, not touched"
+    assert result["profile"]["note"].startswith(
+        "favourite carries a name-only profile ('D-Flow'); keeping the current "
+        "profile untouched")
+    context = fake.workflow["context"]
+    wanted = favourite("Seniman House Blend")["workflow"]["context"]
+    assert context["beanBatchId"] == SENIMAN_BATCH
+    assert context["grinderSetting"] == wanted["grinderSetting"]
+    assert context["coffeeRoaster"] == "Seniman"
+
+
+async def test_a_reference_is_resolved_and_sent_in_full(writable, db) -> None:
+    """The one live favourite with an id: Decaid drops the id and keeps the old
+    steps (measured), so the stub alone would select nothing."""
+    fake = FavFake(workflow_profile=PROFILES_BY_TITLE["Adaptive v3"])
+    ref = next(f for f in FAVS if (f["workflow"]["profile"] or {}).get("id"))
+    fake.store["dye2.reaplugin/autoFavourites"] = [dict(copy.deepcopy(ref),
+                                                        title="With a reference")]
+    fake.store["dye2.reaplugin/autoFavourites"][0]["workflow"]["context"]["beanBatchId"] = \
+        YIRGA_BATCH
+    result = await call(server(fake, writable, db), "apply_recipe",
+                        {"name": "With a reference"})
+    record = next(r for r in fake_profiles() if r["id"] == ref["workflow"]["profile"]["id"])
+    assert fake.workflow["profile"]["steps"] == record["profile"]["steps"]
+    assert result["profile"]["kind"] == "reference"
+    assert "resolved and sent in full" in result["profile"]["note"]
+
+
+async def test_a_bean_id_where_a_batch_belongs_is_refused_with_the_batches(
+    writable, db
+) -> None:
+    """T45: six of eight live favourites store a bean's id as beanBatchId.
+
+    Decaid would take it (T29); every shot afterwards would point at a batch
+    that does not exist. The bean's batches are named instead of one guessed.
+    """
+    fake = FavFake()
+    message = await refused(server(fake, writable, db), "apply_recipe",
+                            {"name": favourite("RT Decaf")["id"]})
+    assert "stores the id of the bean 'Sugar Cane Decaf'" in message
+    assert fake.puts() == []
+
+    message = await refused(server(fake, writable, db), "apply_recipe",
+                            {"name": next(f["id"] for f in FAVS if not f.get("title"))})
+    assert YIRGA_BATCH in message, "names the bean's batch"
+
+
+async def test_the_copymask_is_honoured(writable, db) -> None:
+    """A group masked off is not sent, whatever the stored workflow carries."""
+    from decentespresso_mcp.recipes import favourite_workflow
+    fav = copy.deepcopy(favourite("Seniman House Blend"))
+    fav["copyMask"]["grindSetting"] = False
+    fav["copyMask"]["dose"] = False
+    context, _, off = favourite_workflow(fav)
+    assert "grinderSetting" not in context
+    assert "targetDoseWeight" not in context
+    assert {"grindSetting", "dose"} <= set(off)
+    assert context["beanBatchId"] == SENIMAN_BATCH, "the rest still goes"
+
+
+def test_a_legacy_favourite_is_derived_from_its_snapshot() -> None:
+    """No `workflow`: the contract's legacy path, mapped as DYE2's builder does."""
+    from decentespresso_mcp.recipes import favourite_workflow
+    fav = {k: v for k, v in copy.deepcopy(favourite("Seniman House Blend")).items()
+           if k != "workflow"}
+    context, profile, _ = favourite_workflow(fav)
+    snap = fav["snapshot"]
+    assert context["targetDoseWeight"] == snap["dose"]
+    assert context["grinderSetting"] == str(snap["grindSetting"])
+    assert profile == {"id": snap.get("profileId"), "title": snap.get("profileTitle")}
+
+
+async def test_five_favourites_with_one_label_are_named_by_id(writable, db) -> None:
+    fake = FavFake()
+    message = await refused(server(fake, writable, db), "apply_recipe",
+                            {"name": "coffee circle · coffee circle yirga santos"})
+    assert "5 entries in dye2_favs" in message
+    assert "name one by its id" in message
+
+
+async def test_favourites_are_never_written_either(writable, db) -> None:
+    fake = FavFake()
+    mcp = server(fake, writable, db)
+    await call(mcp, "list_recipes", {})
+    await call(mcp, "apply_recipe", {"name": "Seniman House Blend"})
+    assert fake.store_writes() == []
+
+
+PROFILES_BY_TITLE = {r["profile"]["title"]: r["profile"] for r in fake_profiles()
+                     if r["visibility"] == "visible"}

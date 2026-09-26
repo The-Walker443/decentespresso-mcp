@@ -125,7 +125,7 @@ instance wins and the finding goes in the table above.
 | T23 | **`unfreezeDate`** | **Exists and is writable.** An earlier entry here said it did not exist; that was read off a response where it was unset, and an absent key is not an absent field. Written and read back 2026-09-16. With it the freezer time is subtracted exactly instead of the age becoming an upper bound |
 | T24 | Writable on the workflow | `context.grinderSetting`, `context.grinderModel`, `context.targetDoseWeight`, `context.targetYield`, `context.beanBatchId`, and `profile` as a whole object (T38) |
 | T25 | Protected on write | `id` → 400 ("ID in path does not match"), `createdAt`/`updatedAt` → 400 ("system-managed") |
-| T26 | **`timestamp`** | **Not protected.** A `PUT` carrying it returns 200 and the value stands |
+| T26 | **`timestamp`** | **Not protected.** A `PUT` carrying it returns 200 and the value stands. Rechecked on Decaid 0.8.6 (2026-09-26), with the original kept as an exact string this time and restored exactly |
 | T27 | **Weight on a batch** | **Exists and is in use.** `weight` and `weightRemaining` are writable, and the reference batch now carries 500 g. The earlier entry called them nonexistent on the strength of a response that omitted them while unset. See T34 for why only the first of the two can be trusted |
 | T28 | **Batch and coffee labels** | **Kept apart, and nothing joins them.** `context` holds the managed reference `beanBatchId` next to the display strings `coffeeName` and `coffeeRoaster`; setting the batch alone leaves the previous coffee's name standing on the machine. Measured live: after `beanBatchId` was moved to the decaf batch, `coffeeName` still read `Arabica Honey Process`. Decaid's own API examples write the id and both labels together |
 | T29 | **`beanBatchId` is unchecked** | An arbitrary UUID is accepted with 200 and stands afterwards. There is no referential integrity, so the client is the only thing between a typo and a workflow pointing at nothing |
@@ -140,10 +140,11 @@ instance wins and the finding goes in the table above.
 | T38 | **The workflow embeds, it does not refer** | `workflow.profile` is a full profile object with no id anywhere in the workflow. Selecting a profile means copying it in; which record it came from can only be told by comparing content. A `PUT` carrying `profile` is accepted and leaves `context` untouched |
 | T39 | **A duplicate creation reports success** | A `POST /profiles` whose content already exists answers **201** with the *existing* record and silently drops the new title, `parentId` and `metadata`. Nothing is created. A client trusting the status code reports a new profile that is not there |
 | T40 | **Deleting a bean does not cascade** | `DELETE /beans/<id>` on a bean with batches fails with 500 (SQLite foreign key, code 787) although the API description says it deletes the batches too. Nothing is deleted. Batches first, then the bean. Not used by this server, which deletes nothing - found while cleaning up probes |
-| T41 | **Creation: required and returned** | `POST /beans` needs `name` and `roaster` (both refused alone with 400, a type-cast error rather than a message) and returns 201 with the new id. `POST /beans/<id>/batches` needs nothing and sets `weightRemaining` from `weight`. `POST /profiles` returns 201 with the record, visible, not default. Titles are not length-limited by the API - 300 characters were taken |
+| T41 | **Creation: required and returned** | `POST /beans` needs `name` and `roaster` (both refused alone with 400, a type-cast error rather than a message) - but **accepts both as empty strings** with 201, a bean with no name (measured, deleted) and returns 201 with the new id. `POST /beans/<id>/batches` needs nothing and sets `weightRemaining` from `weight`. `POST /profiles` returns 201 with the record, visible, not default. Titles are not length-limited by the API - 300 characters were taken |
 | T42 | **A DYE2 recipe can mislabel the coffee** | The live recipe "Decaf" stores `context.coffeeName` and neither `coffeeRoaster` nor `beanBatchId`. Applied as stored on a Grano Gayo batch, the machine showed "Coffee Circle / Sugar Cane Decaf". `apply_recipe` applies it unchanged, as the contract asks, and reports the mismatch |
 | T43 | *(withdrawn)* | Recorded on 2026-09-26 as "every DYE2 favourite carries a D-Flow stored nowhere". Wrong: the comparison hashed stubs without steps against each other. T44 is what the data shows |
-| T44 | **A DYE2 `workflow.profile` may be a name without a profile** | Seven of eight live favourites store `{"id": null, "title": "D-Flow"}`, one an id without steps; the recipe stores no profile. PUT as stored, such a stub only renames the running profile (T13) - applying "Seniman House Blend" left the previously running tune brewing. Reported on apply; the unsaved-profile guard does not fire for it, because nothing is replaced |
+| T44 | **A DYE2 `workflow.profile` may be a name without a profile** | Seven of eight live favourites store `{"id": null, "title": "D-Flow"}`, one an id without steps - and Decaid drops a profile `id` sent to the workflow and does not resolve it (measured with a real id); the recipe stores no profile. PUT as stored, such a stub only renames the running profile (T13) - applying "Seniman House Blend" left the previously running tune brewing. Reported on apply; the unsaved-profile guard does not fire for it, because nothing is replaced |
+| T45 | **A bean id where a batch belongs** | Six of eight live DYE2 favourites store a bean's id as `beanBatchId` (404 as a batch, 200 as a bean). Decaid would take it (T29). Applying such a favourite is refused, naming the bean's batches |
 
 T26 is why the block list in `writes.py` is not a second line of defence but the
 only one for the telemetry fields.
@@ -977,9 +978,29 @@ version. `INSTRUCTIONS` has the model offer `update_recipe` with
 `refresh_snapshot` for the pinned ones and a workflow refresh when the workflow
 still runs the old copy.
 
-**Favourites** are these recipes plus the per-coffee profiles of §11.5. DYE2's
-`autoFavourites` are its own, computed from shot history and rewritten after
-every shot; they are not listed here.
+**Favourites** are these recipes plus the per-coffee profiles of §11.5, and
+DYE2's own `autoFavourites`, listed and applied as source `dye2_favs` - read
+only, like its recipes. What applying one sends:
+
+- **The context, with the copyMask respected.** A group is on unless it is
+  explicitly false (the contract's "absent => on"); the mapping from group to
+  fields is DYE2's own, from `buildFavouriteWorkflow`. DYE2 already applies the
+  mask when it builds `workflow`, so doing it again is a no-op there and keeps
+  an item honest whose mask changed afterwards. A favourite without `workflow`
+  is derived from snapshot and mask - the contract's legacy path.
+- **The profile only where there is one** (T44). A full profile (auto entries)
+  goes through the unsaved-profile guard like any other. A stub with an id is
+  resolved and the full profile sent, since Decaid would neither resolve nor
+  keep the id. A stub without an id is not sent: "favourite carries a
+  name-only profile; keeping the current profile untouched". This is where
+  DYE2's own apply stumbles - its builder writes the stub and its dashboard
+  PUTs it.
+- **Through the guarded path.** The batch brings its labels (T28); a bean id in
+  the batch's place (T45) is refused with the bean's batches named.
+
+Names follow the contract's fallbacks (title, subtitle, a derived "roaster ·
+coffee"); five live favourites derive the same label, so DYE2's items can also
+be named by id.
 
 **What the tablet cannot see.** Recipes saved here do not appear on the tablet:
 the only way to put them there would be to write DYE2's key. A documented path

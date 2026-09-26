@@ -71,12 +71,16 @@ from .profile_forge import (
     same_brew,
 )
 from .recipes import (
+    DYE2_FAVOURITES,
     DYE2_NAMESPACE,
     DYE2_RECIPES,
     LEGACY_NOTE,
     context_patch,
     default_name,
     dye2_name,
+    favourite_name,
+    favourite_workflow,
+    profile_kind,
     row_from_workflow,
 )
 from .writes import ValidationError
@@ -714,6 +718,87 @@ class SyncCoordinator:
             await self._client.update_workflow(workflow)
             after_wf = await self._client.workflow()
         return before_wf, after_wf, await self._label_mismatch(after_wf)
+
+    async def dye2_favourites(self) -> list[dict[str, Any]]:
+        """DYE2's favourites, read. Like its recipes, never written from here."""
+        return await self._client.store_array(DYE2_NAMESPACE, DYE2_FAVOURITES)
+
+    async def apply_dye2_favourite(
+        self, fav: dict[str, Any], *, replace_unsaved: bool,
+    ) -> tuple[tuple[dict[str, Any], dict[str, Any]], dict[str, Any]]:
+        """A DYE2 favourite onto the machine: its context, copyMask respected,
+        and its profile only where there is one.
+
+        Measured (T44): a saved favourite stores its profile as `{id, title}`
+        without steps - DYE2's own builder writes it that way - and Decaid
+        neither resolves the id nor keeps it, so PUT as stored the stub only
+        renames whatever is running. Here a stub with an id is resolved and the
+        full profile sent; a stub with no id is not sent at all, and the
+        response says the current profile was kept. That is where DYE2's own
+        apply stumbles and this does not.
+
+        The context goes through the same guarded path as everything else, so
+        a batch brings its labels along (T28) and an unknown one is refused.
+        """
+        context, profile, masked = favourite_workflow(fav)
+        kind = profile_kind(profile)
+        records = await self._client.profiles(include_hidden=True)
+        chosen: dict[str, Any] | None = None
+        used: dict[str, Any] = {"kind": kind}
+        if kind == "full":
+            chosen = profile
+            used["title"] = profile.get("title")
+        elif kind == "reference":
+            record = next((r for r in records if r.get("id") == profile["id"]
+                           and r.get("visibility") != "deleted"), None)
+            if record is not None:
+                chosen = record["profile"]
+                used |= {"title": chosen.get("title"), "id": record["id"],
+                         "note": "DYE2 stores this profile as a reference only; "
+                                 "resolved and sent in full, since Decaid would "
+                                 "not resolve it (T44)."}
+            else:
+                used["note"] = (f"favourite refers to profile {profile['id']}, which "
+                                "is not on the tablet; keeping the current profile "
+                                "untouched")
+        elif kind == "name":
+            used["note"] = ("favourite carries a name-only profile "
+                            f"({profile.get('title')!r}); keeping the current "
+                            "profile untouched")
+        if masked:
+            used["masked_off"] = masked
+        if context.get("beanBatchId"):
+            await self._refuse_bean_as_batch(str(context["beanBatchId"]), fav)
+        result = await self._apply(context, chosen, records, replace_unsaved=replace_unsaved)
+        return result, used
+
+    async def _refuse_bean_as_batch(self, batch_id: str, fav: dict[str, Any]) -> None:
+        """Refuse a favourite whose `beanBatchId` is really a bean's id.
+
+        Measured (T45): six of eight live favourites store a bean id there - it
+        answers 404 as a batch and 200 as a bean. Decaid would take it (T29),
+        and every shot afterwards would point at a batch that does not exist.
+        Picking one of the bean's batches would be a guess, so the batches are
+        named and the choice left to the user.
+        """
+        try:
+            await self._client.bean_batch(batch_id)
+            return
+        except ShotNotFound:
+            pass
+        try:
+            bean = await self._client.bean(batch_id)
+        except ShotNotFound:
+            return          # neither: _coffee_labels refuses it with its own reason
+        batches = await self._client.bean_batches(batch_id)
+        listed = ", ".join(f"{b.get('id')} (roasted {str(b.get('roastDate') or '?')[:10]})"
+                           for b in batches) or "none - create_batch first"
+        raise ValidationError([
+            f"favourite {favourite_name(fav)!r} stores the id of the bean "
+            f"{bean.get('name')!r} where a batch belongs, so it would point the "
+            f"machine at a batch that does not exist. That bean's batches: "
+            f"{listed}. Nothing was written. set_workflow with one of these sets "
+            "the machine; correcting the favourite itself is done in DYE2."])
 
     async def _label_mismatch(self, workflow: dict[str, Any]) -> str | None:
         """Does the machine now name a different coffee than its batch holds?

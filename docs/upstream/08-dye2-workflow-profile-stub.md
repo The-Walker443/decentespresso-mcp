@@ -26,8 +26,18 @@ whatever was running and replaces only its title. Applying the favourite
 other D-Flow brewing, now titled "D-Flow" - verified by comparing the steps
 before and after.
 
-Whether Decaid resolves the `id` of the one favourite that carries one was not
-tested; only the favourite with `id: null` was applied.
+A stub that carries a real `id` does not select the profile either: PUT with
+`{"profile": {"id": "profile:198546fc983546de03b7", "title": "D-Flow"}}` left
+the steps exactly as they were, and Decaid drops the `id` altogether - it is in
+neither the PUT response nor the next GET. So the reference cannot work through
+this endpoint at all; a consumer has to resolve it and send the full profile.
+
+This is not a consumer mistake: `buildFavouriteWorkflow` in `dev-api.ts` writes
+`profile: { id: snp.profileId, title: snp.profileTitle }` for every saved
+favourite, and DYE2's own `applyAutoFavourite` in `dashboard.ts` puts the same
+stub into the workflow it works on. Read from the source rather than observed
+on the dashboard: applying a saved favourite there should rename the running
+profile the same way. Only `auto` entries carry the full profile.
 
 ## Why it matters
 
@@ -53,3 +63,12 @@ The recipe "Decaf" stores `context.coffeeName: "Sugar Cane Decaf"` without
 shows the other roaster with this bean's name, and the next shot is recorded
 that way. Storing all three together - as Decaid's own API examples do - would
 keep the labels and the batch in step.
+
+## Third observation: a bean id where a batch id belongs
+
+Six of the eight live favourites store, in `snapshot.beanBatchId` and
+`workflow.context.beanBatchId`, an id that answers 404 as a batch and 200 as a
+bean - "RT Decaf" and all five untitled Yirga Santos entries. Decaid accepts
+any string there (decaid draft 4), so applying one points the machine at a
+batch that does not exist, and every shot pulled afterwards records that
+reference. The two favourites whose id is a real batch apply cleanly.

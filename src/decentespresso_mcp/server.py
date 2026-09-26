@@ -50,6 +50,8 @@ from .recipes import (
     choose,
     dye2_name,
     dye2_view,
+    favourite_name,
+    favourite_view,
     own_view,
     profile_reference_only,
     suggest_name,
@@ -204,9 +206,13 @@ Stop at the first error and say which step failed; never skip a step silently
 or carry on around it. Favourites are these per-coffee profiles plus the
 workflow - Decaid's own favourites store is not written from here.
 
-RECIPES - a coffee and how it is brewed, saved to come back to. Two sources:
-`mine` (saved here) and `dye2` (made in DYE2 on the tablet, read-only here -
-DYE2 is their only writer). A name in both needs `source`; ask, never guess.
+RECIPES - a coffee and how it is brewed, saved to come back to. Sources:
+`mine` (saved here), `dye2` and `dye2_favs` (DYE2's recipes and favourites,
+read-only here - DYE2 is their only writer). A name in several needs `source`;
+ask, never guess. DYE2 items with `applicable: false` predate its ready-made
+workflow. A favourite's `profile` is `full`, `reference` or `name`; a `name`
+one is applied without touching the profile - say so. With the tablet off,
+`mine` still come back.
 If save_recipe is refused because the profile exists only in the workflow,
 offer save_workflow_profile, and save the recipe once that is confirmed.
 AFTER `update_profile`, always offer the follow-ups it names: `set_workflow`
@@ -947,11 +953,8 @@ def _register_recipe_reader(
 
     @mcp.tool(annotations=READ_ONLY)
     async def list_recipes(source: str = "all") -> dict[str, Any]:
-        """Saved recipes: `mine` (this server's), `dye2` (the tablet's), or `all`.
-
-        Both sources share one shape. A DYE2 recipe with `applicable: false`
-        predates DYE2's ready-made workflow and is applied on the tablet. With
-        the tablet off, mine still come back and DYE2's are marked unreachable.
+        """Saved recipes: `mine`, `dye2` (DYE2's recipes), `dye2_favs` (its
+        favourites), or `all`, in one shape - see RECIPES in the instructions.
         """
         if source not in SOURCES:
             raise ToolError("invalid_argument: source is one of " + ", ".join(SOURCES))
@@ -959,14 +962,18 @@ def _register_recipe_reader(
         if source in ("all", "mine"):
             rows = await asyncio.to_thread(db.recipes)
             out["recipes"] += [own_view(r) for r in rows]
-        if source in ("all", "dye2"):
-            if coordinator is None:
-                out["dye2"] = "not connected to Decaid"
-            else:
-                try:
+        wants = [s for s in ("dye2", "dye2_favs") if source in ("all", s)]
+        if wants and coordinator is None:
+            out["dye2"] = "not connected to Decaid"
+        elif wants:
+            try:
+                if "dye2" in wants:
                     out["recipes"] += [dye2_view(i) for i in await coordinator.dye2_recipes()]
-                except DecaidUnreachable:
-                    out["dye2"] = "waiting_for_tablet - DYE2's recipes live there"
+                if "dye2_favs" in wants:
+                    out["recipes"] += [favourite_view(f)
+                                       for f in await coordinator.dye2_favourites()]
+            except DecaidUnreachable:
+                out["dye2"] = "waiting_for_tablet - DYE2's recipes and favourites live there"
         return out
 
 
@@ -1021,22 +1028,31 @@ def _register_recipe_writes(
     async def apply_recipe(
         name: str, source: str | None = None, replace_unsaved_profile: bool = False,
     ) -> dict[str, Any]:
-        """Sets the machine to a saved recipe - mine or DYE2's.
+        """Sets the machine to a saved recipe or favourite - mine or DYE2's.
 
-        A name both sources use needs `source`. Mine run the profile's current
-        version (or the pinned snapshot); DYE2's are applied exactly as DYE2
-        stored them. The same guards as set_workflow, the unsaved-profile one
-        included.
+        A name several sources use needs `source`; DYE2's can be named by id.
+        Mine run the profile's current version or the pinned snapshot; DYE2
+        recipes go as stored; a favourite's name-only profile is not applied.
+        The same guards as set_workflow.
         """
         own = await asyncio.to_thread(db.recipes)
         try:
-            dye2 = await coordinator.dye2_recipes() if source != "mine" else []
+            dye2 = await coordinator.dye2_recipes() if source in (None, "dye2") else []
+            favs = (await coordinator.dye2_favourites()
+                    if source in (None, "dye2_favs") else [])
         except DecaidUnreachable as exc:
             raise ToolError(f"waiting_for_tablet: {exc}") from exc
         try:
-            kind, item = choose(own, dye2, name, source)
+            kind, item = choose(own, dye2, name, source, favs)
         except ValidationError as exc:
             raise ToolError("invalid_argument: " + "; ".join(exc.problems)) from exc
+
+        if kind == "dye2_favs":
+            (before, after), used = await _call(
+                coordinator.apply_dye2_favourite, item,
+                replace_unsaved=replace_unsaved_profile, what="workflow")
+            return {"source": "dye2_favs", "name": favourite_name(item),
+                    "profile": used, "changes": _diff(before, after)}
 
         if kind == "dye2":
             before_wf, after_wf, mismatch = await _call(

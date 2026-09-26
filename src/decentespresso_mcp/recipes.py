@@ -24,8 +24,42 @@ from .writes import ValidationError
 
 DYE2_NAMESPACE = "dye2.reaplugin"
 DYE2_RECIPES = "recipes"
+DYE2_FAVOURITES = "autoFavourites"
 
-SOURCES = ("all", "mine", "dye2")
+SOURCES = ("all", "mine", "dye2", "dye2_favs")
+
+#: copyMask group -> the context fields it governs. Taken one to one from
+#: DYE2's buildFavouriteWorkflow (dye2-plugin/src/utils/dev-api.ts), so that
+#: respecting the mask means what it means in DYE2. A group is on unless it is
+#: explicitly false ("absent => on", KV_CONTRACT.md).
+MASK_FIELDS: dict[str, tuple[str, ...]] = {
+    "dose": ("targetDoseWeight",),
+    "drink": ("targetYield",),
+    "grindSetting": ("grinderSetting", "extras.rpm"),
+    "grinder": ("grinderId", "grinderModel"),
+    "basket": ("extras.basketId", "extras.basketName"),
+    "beans": ("beanBatchId", "coffeeName", "coffeeRoaster"),
+    "roastDate": ("roastDate",),
+    "barista": ("baristaName",),
+    "drinker": ("drinkerName",),
+    "note": ("extras.note",),
+}
+
+#: Snapshot field -> context field, for a favourite written before DYE2 stored
+#: a ready-made `workflow` (the contract's legacy path). Same source as above.
+_SNAPSHOT_FIELDS = {
+    "dose": "targetDoseWeight", "drink": "targetYield", "grindSetting": "grinderSetting",
+    "grinderId": "grinderId", "grinderModel": "grinderModel",
+    "beanBatchId": "beanBatchId", "coffeeName": "coffeeName",
+    "coffeeRoaster": "coffeeRoaster", "roastDate": "roastDate",
+    "barista": "baristaName", "drinker": "drinkerName",
+}
+_SNAPSHOT_GROUP = {
+    "dose": "dose", "drink": "drink", "grindSetting": "grindSetting",
+    "grinderId": "grinder", "grinderModel": "grinder", "beanBatchId": "beans",
+    "coffeeName": "beans", "coffeeRoaster": "beans", "roastDate": "roastDate",
+    "barista": "barista", "drinker": "drinker",
+}
 
 #: Shown instead of applying a DYE2 recipe that predates its `workflow` field.
 #: The contract allows deriving one from the legacy fields "or skip apply";
@@ -112,37 +146,137 @@ def dye2_name(item: dict[str, Any]) -> str:
     return str(item.get("title") or item.get("name") or f"Recipe {item.get('id')}")
 
 
+# ------------------------------------------------------------- Favourites
+
+
+def favourite_name(fav: dict[str, Any]) -> str:
+    """The contract's fallbacks: title, then subtitle, then a derived label.
+
+    Five of the eight live favourites have an empty title and no subtitle, so
+    the label is derived as DYE2 does ("roaster · coffee"), and they collide -
+    which is why a favourite can also be named by its id.
+    """
+    if fav.get("title"):
+        return str(fav["title"])
+    if fav.get("subtitle"):
+        return str(fav["subtitle"])
+    snap = fav.get("snapshot") or {}
+    context = (fav.get("workflow") or {}).get("context") or {}
+    roaster = snap.get("coffeeRoaster") or context.get("coffeeRoaster")
+    coffee = snap.get("coffeeName") or context.get("coffeeName")
+    label = " · ".join(p for p in (roaster, coffee) if p)
+    return label or str(fav.get("beverage") or f"Favourite {fav.get('id')}")
+
+
+def profile_kind(profile: Any) -> str:
+    """'full' carries steps; 'reference' is an id without them (T44); 'name'
+    is a title and nothing else; 'none' is absent."""
+    if not isinstance(profile, dict):
+        return "none"
+    if profile.get("steps"):
+        return "full"
+    return "reference" if profile.get("id") else "name"
+
+
+def favourite_workflow(fav: dict[str, Any]) -> tuple[dict[str, Any], Any, list[str]]:
+    """``(context, profile, groups masked off)`` - what applying the favourite sends.
+
+    DYE2 already applies the copyMask when it builds `workflow`; applying it
+    here again is a no-op for such items and keeps an item whose mask was
+    changed afterwards honest. A favourite without `workflow` is derived from
+    snapshot and mask the way DYE2's builder does - the contract's legacy path.
+    """
+    mask = fav.get("copyMask") or {}
+    off = sorted(k for k, v in mask.items() if v is False)
+    workflow = fav.get("workflow")
+    if isinstance(workflow, dict):
+        context = json.loads(json.dumps(workflow.get("context") or {}))
+        profile = workflow.get("profile")
+    else:
+        snap = fav.get("snapshot") or {}
+        context = {field: snap[key] for key, field in _SNAPSHOT_FIELDS.items()
+                   if snap.get(key) is not None and _SNAPSHOT_GROUP[key] not in off}
+        if "grinderSetting" in context:
+            context["grinderSetting"] = str(context["grinderSetting"])
+        profile = ({"id": snap.get("profileId"), "title": snap.get("profileTitle")}
+                   if snap.get("profileId") or snap.get("profileTitle") else None)
+    for group in off:
+        for field in MASK_FIELDS.get(group, ()):
+            if field.startswith("extras."):
+                (context.get("extras") or {}).pop(field.split(".", 1)[1], None)
+            else:
+                context.pop(field, None)
+    if context.get("extras") == {}:
+        context.pop("extras")
+    if "profile" in off:
+        profile = None
+    return context, profile, off
+
+
+def favourite_view(fav: dict[str, Any]) -> dict[str, Any]:
+    context, profile, off = favourite_workflow(fav)
+    view = _compact({
+        "source": "dye2_favs",
+        "id": fav.get("id"),
+        "name": favourite_name(fav),
+        "auto": bool(fav.get("auto")) or None,
+        "beanName": context.get("coffeeName"),
+        "beanRoaster": context.get("coffeeRoaster"),
+        "profileTitle": (profile or {}).get("title") if isinstance(profile, dict) else None,
+        "profile": profile_kind(profile),
+        "dashboardVariables": _compact({
+            "dose": context.get("targetDoseWeight"),
+            "drink": context.get("targetYield"),
+            "ratio": _ratio(context.get("targetDoseWeight"), context.get("targetYield")),
+            "grind": context.get("grinderSetting"),
+            "grinderModel": context.get("grinderModel"),
+        }),
+        "maskedOff": off or None,
+        "capturedAt": fav.get("capturedAt"),
+    })
+    return view
+
+
 def choose(
     own: list[dict[str, Any]], dye2: list[dict[str, Any]], name: str,
-    source: str | None,
+    source: str | None, favs: list[dict[str, Any]] | None = None,
 ) -> tuple[str, dict[str, Any]]:
-    """The one recipe ``name`` means, and which source it came from.
+    """The one recipe or favourite ``name`` means, and which source it came from.
 
-    A name both sources use is not guessed between: DYE2's and ours can differ
-    in everything, and applying the wrong one quietly changes the machine.
+    A name more than one source uses is not guessed between: they can differ in
+    everything, and applying the wrong one quietly changes the machine. DYE2's
+    items can also be named by id - five live favourites share one label.
     """
     wanted = " ".join((name or "").split()).casefold()
-    mine = [r for r in own if " ".join(r["name"].split()).casefold() == wanted]
-    theirs = [r for r in dye2 if " ".join(dye2_name(r).split()).casefold() == wanted]
-    if source == "mine":
-        theirs = []
-    elif source == "dye2":
-        mine = []
-    if mine and theirs:
-        raise ValidationError([
-            f"recipe: {name!r} exists as one of mine and as a DYE2 recipe - say "
-            "which with source='mine' or source='dye2'"])
-    if mine:
-        return "mine", mine[0]
-    if len(theirs) == 1:
-        return "dye2", theirs[0]
-    if len(theirs) > 1:
-        ids = ", ".join(str(r.get("id")) for r in theirs)
-        raise ValidationError([f"recipe: DYE2 holds {len(theirs)} recipes named "
-                               f"{name!r} (ids {ids}) - rename one in DYE2"])
-    raise ValidationError([f"recipe: nothing called {name!r}"
-                           + (f" in {source}" if source else "")
-                           + " - list_recipes shows what there is"])
+
+    def hits(items: list[dict[str, Any]], label: Any) -> list[dict[str, Any]]:
+        return [i for i in items
+                if " ".join(label(i).split()).casefold() == wanted
+                or str(i.get("id") or "") == (name or "").strip()]
+
+    found = {
+        "mine": [r for r in own if " ".join(r["name"].split()).casefold() == wanted],
+        "dye2": hits(dye2, dye2_name),
+        "dye2_favs": hits(favs or [], favourite_name),
+    }
+    if source in found:
+        found = {source: found[source]}
+    present = [k for k, v in found.items() if v]
+    if len(present) > 1:
+        options = " or ".join(f"source='{k}'" for k in present)
+        raise ValidationError([f"recipe: {name!r} exists in {', '.join(present)} - "
+                               f"say which with {options}"])
+    if not present:
+        raise ValidationError([f"recipe: nothing called {name!r}"
+                               + (f" in {source}" if source else "")
+                               + " - list_recipes shows what there is"])
+    kind = present[0]
+    items = found[kind]
+    if len(items) > 1:
+        ids = ", ".join(str(i.get("id")) for i in items)
+        raise ValidationError([f"recipe: {len(items)} entries in {kind} are called "
+                               f"{name!r} (ids {ids}) - name one by its id"])
+    return kind, items[0]
 
 
 def row_from_workflow(
