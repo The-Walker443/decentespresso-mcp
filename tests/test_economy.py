@@ -57,7 +57,15 @@ MAX_GET_SHOT_LEAN = 2_400
 #: because the behavioural rules live centrally in INSTRUCTIONS rather than in
 #: every docstring. Now 12566 B across 18 tools - 698 B each, still below the
 #: read-only average. The surcharge only applies when writing is on.
-MAX_TOOL_DEFINITIONS_WITH_WRITE = 13_600
+#:
+#: M10 adds four tools that create (create_bean, create_batch, clone_profile,
+#: update_profile). The sum has to rise with them and does - 16469 B across 22
+#: as this test measures it. Per tool it barely moves: 710 B compact against
+#: 698 B before. clone_profile is the largest new one at 905 B because it
+#: carries the override limits, which is exactly what a caller must see. So the
+#: sum bound moves and the bound that matters is added next to it.
+MAX_TOOL_DEFINITIONS_WITH_WRITE = 17_000
+MAX_BYTES_PER_TOOL_WITH_WRITE = 800
 
 #: compare_shots with two shots including profiles. Now: 4234 B.
 #: The same information once took three calls: compare_shots (1680 B) plus
@@ -313,6 +321,11 @@ async def test_write_tool_costs_what_it_is_worth(valid_env, db) -> None:
     assert total <= MAX_TOOL_DEFINITIONS_WITH_WRITE, (
         f"tool definitions with write mode: {total} B, allowed "
         f"{MAX_TOOL_DEFINITIONS_WITH_WRITE}"
+    )
+    per_tool = total // len(tools)
+    assert per_tool <= MAX_BYTES_PER_TOOL_WITH_WRITE, (
+        f"{per_tool} B per tool with write mode - more capability costs more in "
+        f"sum, verbosity shows here (allowed {MAX_BYTES_PER_TOOL_WITH_WRITE})"
     )
 
 

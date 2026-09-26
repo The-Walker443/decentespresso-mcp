@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import json
 import logging
 import os
@@ -43,6 +44,7 @@ from .guards import (
     run_rules,
 )
 from .metrics import METRICS_VERSION, curve_shape, downsample_curve, metrics_for_shot
+from .profile_forge import made_here
 from .stats import _iso as _stats_iso
 from .stats import (
     batch_usage,
@@ -176,11 +178,22 @@ GUARDS - `audit_archive` checks four rules. What they mean:
 A finding is a hint, not a verdict. It always names the numbers it rests on -
 pass those along instead of merely repeating the message.
 
-WRITING - call the `update_*` and `set_*` tools only on an explicit instruction,
-never on your own initiative and never "just to be safe". Set exactly the fields
-that were named. Confirm afterwards from the values that come back, not from
-what was sent: if a field appears under `unchanged`, Decaid did not take it -
-say so instead of reporting success.
+WRITING - call the `update_*`, `create_*`, `clone_*` and `set_*` tools only on an
+explicit instruction, never on your own initiative and never "just to be safe".
+Set exactly the fields that were named. Confirm afterwards from the values that
+come back, not from what was sent: if a field appears under `unchanged`, Decaid
+did not take it - say so instead of reporting success.
+
+COFFEE ONBOARDING FLOW - a new bag, set up for the machine. Four steps, in this
+order, each one confirmed by the user before the next:
+1. `create_bean` (skip if `list_beans` already has it - reuse, never duplicate)
+2. `create_batch` for that bean
+3. `clone_profile` from the profile they brew it on, named after the bean
+   ("<roaster> - <bean>"), with the overrides they asked for
+4. `set_workflow` with the new `beanBatchId` and `profileId`
+Stop at the first error and say which step failed; never skip a step silently
+or carry on around it. Favourites are these per-coffee profiles plus the
+workflow - Decaid's own favourites store is not written from here.
 
 DIAGNOSIS - what the machine measured about the coffee bed itself:
 
@@ -536,13 +549,16 @@ def build_mcp(
         return _batch_summary(usage[0] if usage else dict(row), full=True)
 
     @mcp.tool(annotations=READ_ONLY)
-    async def list_profiles() -> dict[str, Any]:
-        """Every profile with its versions.
+    async def list_profiles(on_tablet: bool = False) -> dict[str, Any]:
+        """Profiles the archived shots ran on, with their versions.
 
         `version_hash` is the identity of a version, `semantic_hash` groups
-        versions with identical targets - more in the
-        Server-Anweisungen.
+        versions with identical targets. `on_tablet=true` lists what is on the
+        tablet instead, live, with the ids `set_workflow`, `clone_profile` and
+        `update_profile` take - including profiles no shot has run yet.
         """
+        if on_tablet:
+            return await _tablet_profiles(coordinator)
         rows = await asyncio.to_thread(db.profile_overview)
         grouped: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
@@ -793,9 +809,9 @@ def _register_catalog_writes(
     async def update_bean(id: str, fields: dict[str, Any]) -> dict[str, Any]:
         """Changes the master data of a bean in Decaid.
 
-        Identifier from `list_beans`. Allowed: name, roaster, species,
-        processing, notes, decaf. Applies retroactively to every shot of this
-        bean - say so beforehand.
+        Identifier from `list_beans`. An unknown field is refused with the full
+        list of allowed ones. Applies retroactively to every shot of this bean -
+        say so beforehand.
         """
         return await _write(coordinator.write_bean, BEAN, id, fields,
                             what="bean")
@@ -805,11 +821,12 @@ def _register_catalog_writes(
                      "destructiveHint": False, "openWorldHint": True},
     )
     async def update_batch(id: str, fields: dict[str, Any]) -> dict[str, Any]:
-        """Changes a bean batch (roast date, frozen state).
+        """Changes a bean batch: dates, freezer state, provenance, weights.
 
-        Allowed: roastDate, buyDate, freezeDate (each ISO YYYY-MM-DD), frozen.
-        Decaid keeps no thaw date - to thaw, set `frozen` to false; bean age is
-        an upper bound only from then on.
+        Identifier from `list_batches`; `get_batch` shows the current state.
+        Dates are ISO YYYY-MM-DD. To thaw, set `frozen` false and
+        `unfreezeDate` - with the date, bean age stays exact. An unknown field
+        is refused with the full list of allowed ones.
         """
         return await _write(coordinator.write_batch, BATCH, id, fields,
                             what="batch")
@@ -818,20 +835,185 @@ def _register_catalog_writes(
         annotations={"readOnlyHint": False, "idempotentHint": True,
                      "destructiveHint": False, "openWorldHint": True},
     )
-    async def set_workflow(fields: dict[str, Any]) -> dict[str, Any]:
+    async def set_workflow(
+        fields: dict[str, Any], replace_unsaved_profile: bool = False,
+    ) -> dict[str, Any]:
         """Sets what the next shot should run on.
 
         Changes the machine, not the archive. Allowed: grinderSetting,
-        grinderModel, targetDoseWeight, targetYield, beanBatchId. A profile
-        change is not possible - that belongs at the machine. Afterwards name
-        what is now set.
+        grinderModel, targetDoseWeight, targetYield, beanBatchId, profileId.
+        Afterwards name what is now set.
 
         `beanBatchId` also rewrites the coffee name and roastery shown on the
-        machine, resolved from the batch; they come back under `alongside`.
-        An unknown batch is refused rather than set.
+        machine; `profileId` (an id or exact title, from
+        `list_profiles(on_tablet=true)`) copies that profile in. What else
+        changed comes back under `alongside`. Unknown references are refused, and
+        so is replacing a profile that was tuned on the tablet and never saved -
+        unless the user accepts losing it (`replace_unsaved_profile`).
         """
-        return await _write(coordinator.write_workflow, WORKFLOW, None, fields,
-                            what="workflow")
+        writer = functools.partial(coordinator.write_workflow,
+                                   replace_unsaved=replace_unsaved_profile)
+        return await _write(writer, WORKFLOW, None, fields, what="workflow")
+
+    @mcp.tool(annotations=CREATES)
+    async def create_bean(fields: dict[str, Any]) -> dict[str, Any]:
+        """Creates a bean in Decaid. `name` and `roaster` are required.
+
+        The same fields as `update_bean`. Refused, naming the existing one,
+        when a bean of that name and roaster is already there.
+        """
+        payload = _validated(fields, BEAN, required=("name", "roaster"))
+        after = await _call(coordinator.create_bean, payload, what="bean")
+        return {"id": after.get("id"), "bean": _decaid_view(after)}
+
+    @mcp.tool(annotations=CREATES)
+    async def create_batch(bean_id: str, fields: dict[str, Any]) -> dict[str, Any]:
+        """Creates a batch of an existing bean. Every field is optional.
+
+        The same fields as `update_batch`. `weight` also sets `weightRemaining`
+        (Decaid initialises one from the other and never counts it down).
+        """
+        payload = _validated(fields, BATCH)
+        after = await _call(coordinator.create_batch, bean_id, payload, what="batch")
+        bean = after.pop("_bean", {})
+        return {"id": after.get("id"), "bean": bean, "batch": _decaid_view(after)}
+
+    @mcp.tool(annotations=CREATES)
+    async def clone_profile(
+        source: str, overrides: dict[str, Any], title: str | None = None,
+        bean_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Copies a profile, with lineage to it, and changes what `overrides` says.
+
+        `source`: a profile id or exact title. `overrides`: temperature_c
+        (80-96), target_weight_g (10-100), main_setpoint (the pour step: bar up
+        to 10 or ml/s up to 8). Without `title` it is named after `bean_id` as
+        "<roaster> - <bean>". A copy must differ in brewing, not only in name.
+        """
+        result = await _call(coordinator.clone_profile, source, overrides,
+                             title=title, bean_id=bean_id, what="profile")
+        return _profile_result(result, key="source")
+
+    @mcp.tool(annotations={"readOnlyHint": False, "idempotentHint": True,
+                           "destructiveHint": False, "openWorldHint": True})
+    async def update_profile(
+        id: str, overrides: dict[str, Any], allow_foreign: bool = False,
+    ) -> dict[str, Any]:
+        """Changes one of this server's profiles - the same overrides as clone.
+
+        Bundled defaults are never changed. A profile made on the tablet needs
+        `allow_foreign` - set it only when the user named that profile. The id
+        changes with the content; the new one comes back.
+        """
+        result = await _call(coordinator.update_profile, id, overrides,
+                             allow_foreign=allow_foreign, what="profile")
+        return _profile_result(result, key="before")
+
+
+#: For the tools that make something new: not idempotent - calling one twice
+#: makes two - and open-world, because it changes the machine.
+CREATES = {"readOnlyHint": False, "idempotentHint": False,
+           "destructiveHint": False, "openWorldHint": True}
+
+
+def _validated(
+    fields: dict[str, Any], ruleset: Ruleset, *, required: tuple[str, ...] = (),
+) -> dict[str, Any]:
+    """The whitelist and validation of the update tools, plus what must be there.
+
+    Nulls are dropped: on an update they clear a field, on a creation they would
+    only send an empty one.
+    """
+    try:
+        payload = validate_fields(fields, ruleset)
+    except ValidationError as exc:
+        raise ToolError("invalid_argument: " + "; ".join(exc.problems)) from exc
+    payload = {k: v for k, v in payload.items() if v is not None}
+    missing = [name for name in required if not payload.get(name)]
+    if missing:
+        raise ToolError("invalid_argument: required: " + ", ".join(missing))
+    return payload
+
+
+async def _call(method: Any, *args: Any, what: str, **kwargs: Any) -> Any:
+    """Runs one creating call and turns its failures into tool errors.
+
+    A creation that timed out is the one case with no safe answer - Decaid may
+    have acted on it. The message says so instead of inviting a retry that
+    could make a second one.
+    """
+    started = time.perf_counter()
+    try:
+        result = await method(*args, **kwargs)
+    except ValidationError as exc:
+        raise ToolError("invalid_argument: " + "; ".join(exc.problems)) from exc
+    except DecaidUnreachable as exc:
+        raise ToolError(
+            f"waiting_for_tablet: {exc} If this happened mid-request the {what} "
+            "may exist anyway - check before trying again."
+        ) from exc
+    except DecaidError as exc:
+        raise ToolError(f"{exc.code}: {exc}") from exc
+    log.info(f"{what} created or changed", extra={"fields": {
+        "what": what, "dur_ms": round((time.perf_counter() - started) * 1000, 1),
+    }})
+    return result
+
+
+def _decaid_view(entity: dict[str, Any]) -> dict[str, Any]:
+    """An entity as Decaid returned it, minus its bookkeeping."""
+    return {k: v for k, v in entity.items()
+            if k not in SERVER_MANAGED_FIELDS and v is not None}
+
+
+def _profile_result(result: dict[str, Any], *, key: str) -> dict[str, Any]:
+    """A clone or an update, with what the tablet will now show."""
+    record = result["record"]
+    other = result[key]
+    profile = record.get("profile") or {}
+    out: dict[str, Any] = {
+        "id": record.get("id"),
+        "title": profile.get("title"),
+        "changes": result["changes"],
+        "visibility": record.get("visibility"),
+        "visible_on_tablet": record.get("visibility") == "visible",
+        "parent_id": record.get("parentId"),
+    }
+    if key == "source":
+        out["cloned_from"] = {"id": other.get("id"),
+                              "title": (other.get("profile") or {}).get("title")}
+    else:
+        out["previous_id"] = other.get("id")
+        if other.get("id") != record.get("id"):
+            out["note"] = ("Decaid identifies a profile by its brewing content, "
+                           "so the id changed with it. Use the new one.")
+        if result.get("workflow_ran_previous_version"):
+            out["workflow"] = (
+                "The workflow was running the previous version and still is - "
+                "it holds a copy, not a reference. Select this profile with "
+                "set_workflow to run the change."
+            )
+    return out
+
+
+async def _tablet_profiles(coordinator: SyncCoordinator | None) -> dict[str, Any]:
+    if coordinator is None:
+        raise ToolError("sync_unavailable: this server runs without a connection to Decaid.")
+    try:
+        records = await coordinator.profile_catalogue()
+    except DecaidUnreachable as exc:
+        raise ToolError(f"waiting_for_tablet: {exc}") from exc
+    return {"profiles": [
+        _drop_empty({
+            "id": r.get("id"),
+            "title": (r.get("profile") or {}).get("title"),
+            "default": bool(r.get("isDefault")) or None,
+            "made_here": made_here(r) or None,
+            "visibility": r.get("visibility"),
+            "parent_id": r.get("parentId"),
+        })
+        for r in records if r.get("visibility") != "deleted"
+    ]}
 
 
 async def _write(

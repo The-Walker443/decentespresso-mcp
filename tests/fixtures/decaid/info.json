@@ -1,11 +1,11 @@
 {
-  "commit": "a08bc41e02c66c71f8da56b624c642264afebbc6",
-  "commitShort": "a08bc41e",
+  "commit": "d4721e5377ed176946d4b4584ec625f0c4aae45b",
+  "commitShort": "d4721e53",
   "branch": "HEAD",
-  "buildTime": "2026-09-02T12:41:50Z",
-  "version": "0.8.5",
-  "buildNumber": "2624",
+  "buildTime": "2026-09-16T06:30:56Z",
+  "version": "0.8.6",
+  "buildNumber": "2801",
   "appStore": false,
-  "fullVersion": "0.8.5+2624",
+  "fullVersion": "0.8.6+2801",
   "localIp": "10.0.0.1"
 }

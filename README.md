@@ -112,6 +112,13 @@ week." Behind a switch that is off by default, with a whitelist of fields
 verified against the real API, and every change read back before it is reported
 to you.
 
+**A new bag, set up in four steps.** "I've got a new bag of Grano Gayo from
+Coffee Circle - set it up like my D-Flow, but at 91.5 and stop at 40 g." Bean,
+batch, a copy of the profile named after the coffee, and the machine pointed at
+both - each step shown and confirmed before the next, and stopped at the first
+one that fails. Favorites live as per-coffee profiles: tune the copy as the bag
+ages, and the stock profiles stay exactly as Decent shipped them.
+
 ---
 
 ## Which app do you run?
@@ -171,7 +178,7 @@ state, not an error, and nothing will nag you about it.
 ## Requirements
 
 - A **Decent DE1** running **Decaid**, reachable on your network. Everything
-  here is verified against Decaid 0.8.5+2624 — twenty-seven findings about what
+  here is verified against Decaid 0.8.6+2801 — forty-one findings about what
   its API really does are tabulated in the specification, and `status()` says so
   when the version it meets differs from the one this was checked against.
 - **Docker** on a machine on the same network as the tablet.
@@ -255,9 +262,10 @@ inside tracebacks from libraries that know nothing about it.
 | `stats` | a period, with a comparison |
 | `sync_now` · `status` | housekeeping |
 | `update_shot` · `update_bean` · `update_batch` · `set_workflow` | writing, behind the switch |
+| `create_bean` · `create_batch` · `clone_profile` · `update_profile` | a new coffee and its profile, behind the switch |
 
-Fourteen tools cost 9.9 kB of definitions, eighteen with write mode on cost
-12.6 kB — about 700 B each, because the shared vocabulary lives in the server
+Fourteen tools cost 9.9 kB of definitions, twenty-two with write mode on cost
+15.6 kB — about 710 B each, because the shared vocabulary lives in the server
 prompt rather than being repeated in every docstring. That budget is pinned by
 tests; it is meant to stay that way.
 
@@ -311,8 +319,10 @@ an error, just nothing to fetch.
 - **Imported shots know less.** Anything de1app recorded lacks the machine's
   phase markers, so its preinfusion boundary is inferred instead of read off.
   The metric says which, per shot, and refuses comparisons it cannot support.
-- **It does not write profiles.** Reading and versioning them, yes; changing
-  them belongs at the machine.
+- **It changes three things about a profile, on copies only.** Temperature,
+  stop-at-weight and the pour's setpoint - the three whose effect was verified
+  on the machine. Everything else about a profile belongs in the tablet's
+  editor, and Decent's bundled profiles are never touched.
 - **Nothing is ever deleted.** The API can do it. This project does not build
   it.
 

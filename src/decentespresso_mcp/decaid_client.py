@@ -1,6 +1,7 @@
 """HTTP client for the Decaid REST API on the local network (SPEC §4).
 
-Verified against the running instance on 2026-09-14, Decaid 0.8.5+2624. The
+Verified against the running instance, last on 2026-09-26 against Decaid
+0.8.6+2801 (SPEC §4 says which findings were rechecked then). The
 findings are tabulated as T1-T19 in SPEC §4.2; whichever of them shapes the
 behaviour of this module is noted at the relevant constant or method.
 
@@ -25,8 +26,8 @@ from . import __version__
 log = logging.getLogger(__name__)
 
 #: The Decaid version this was verified against. status() warns on deviation;
-#: bump it here after every checked update (SPEC ss20.6).
-VERIFIED_DECAID_VERSION = "0.8.5"
+#: bump it here after every checked update (SPEC §4).
+VERIFIED_DECAID_VERSION = "0.8.6"
 
 #: T4: the API silently caps at 100. Asking for more returns 100 items without
 #: comment - not knowing that, one ends up paging in circles.
@@ -56,6 +57,18 @@ class DecaidUnreachable(DecaidError):
 
 class ShotNotFound(DecaidError):
     code = "shot_not_found"
+
+
+class AlreadyExists(DecaidError):
+    """Refused before sending: the thing to be created is already there."""
+
+    code = "already_exists"
+
+
+class Protected(DecaidError):
+    """Refused before sending: a profile this server does not get to change."""
+
+    code = "protected"
 
 
 class DecaidRejected(DecaidError):
@@ -109,17 +122,22 @@ class DecaidClient:
 
     async def _request(
         self, method: str, path: str, *, params: dict[str, Any] | None = None,
-        json_body: Any = None,
+        json_body: Any = None, retry: bool = True,
     ) -> httpx.Response:
         """One request, retried only on 5xx and network errors.
 
         No rate limiter: the tablet sits on the local network and is not a
         burden on anyone else. A network error is the normal case here (sleeping
-        tablet) and is therefore reported as ``DecaidUnreachable``, not as
-        Stoerung.
+        tablet) and is therefore reported as ``DecaidUnreachable``, not as a
+        fault.
+
+        ``retry=False`` for anything that creates. A PUT sent twice leaves the
+        same state; a POST sent twice after a timeout the server did act on
+        leaves two beans. Better to report "unclear, check the list" once than
+        to create a duplicate quietly.
         """
         last: Exception | None = None
-        for attempt in range(self._max_retries):
+        for attempt in range(self._max_retries if retry else 1):
             try:
                 response = await self._client.request(
                     method, path, params=params, json=json_body
@@ -194,7 +212,12 @@ class DecaidClient:
         return list((await self._request("GET", "/api/v1/shots/ids")).json())
 
     async def latest_shot(self) -> dict[str, Any]:
-        """``GET /api/v1/shots/latest`` (T10) - vollstaendiges Detail."""
+        """``GET /api/v1/shots/latest`` (T10).
+
+        Since Decaid 0.8.6 this carries no ``measurements`` any more - use it
+        for the id and fetch the detail with ``get_shot``. Nothing here calls
+        it for the series.
+        """
         return (await self._request("GET", "/api/v1/shots/latest")).json()
 
     async def get_shot(self, shot_id: str) -> dict[str, Any]:
@@ -238,6 +261,55 @@ class DecaidClient:
     ) -> dict[str, Any]:
         return (await self._request("PUT", f"/api/v1/bean-batches/{batch_id}",
                                     json_body=patch)).json()
+
+    async def bean(self, bean_id: str) -> dict[str, Any]:
+        return (await self._request("GET", f"/api/v1/beans/{bean_id}")).json()
+
+    async def bean_batch(self, batch_id: str) -> dict[str, Any]:
+        return (await self._request("GET", f"/api/v1/bean-batches/{batch_id}")).json()
+
+    async def create_bean(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """``POST /api/v1/beans`` - requires ``roaster`` and ``name``. Never retried."""
+        return (await self._request("POST", "/api/v1/beans", json_body=payload,
+                                    retry=False)).json()
+
+    async def create_bean_batch(
+        self, bean_id: str, payload: dict[str, Any]
+    ) -> dict[str, Any]:
+        """``POST /api/v1/beans/<id>/batches``. Never retried."""
+        return (await self._request("POST", f"/api/v1/beans/{bean_id}/batches",
+                                    json_body=payload, retry=False)).json()
+
+    # --- Profiles ------------------------------------------------------------
+
+    async def profiles(self, *, include_hidden: bool = False) -> list[dict[str, Any]]:
+        """``GET /api/v1/profiles`` - ProfileRecords, content-hash ids."""
+        params = {"includeHidden": "true"} if include_hidden else None
+        return list((await self._request("GET", "/api/v1/profiles",
+                                         params=params)).json())
+
+    async def profile(self, profile_id: str) -> dict[str, Any]:
+        return (await self._request("GET", f"/api/v1/profiles/{profile_id}")).json()
+
+    async def create_profile(
+        self, profile: dict[str, Any], *, parent_id: str | None,
+        metadata: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """``POST /api/v1/profiles``. Never retried."""
+        body: dict[str, Any] = {"profile": profile}
+        if parent_id:
+            body["parentId"] = parent_id
+        if metadata is not None:
+            body["metadata"] = metadata
+        return (await self._request("POST", "/api/v1/profiles", json_body=body,
+                                    retry=False)).json()
+
+    async def update_profile(
+        self, profile_id: str, profile: dict[str, Any]
+    ) -> dict[str, Any]:
+        """``PUT /api/v1/profiles/<id>``. The id changes with the content."""
+        return (await self._request("PUT", f"/api/v1/profiles/{profile_id}",
+                                    json_body={"profile": profile})).json()
 
     # --- Workflow ------------------------------------------------------------
 

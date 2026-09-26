@@ -99,8 +99,12 @@ class FakeDecaid:
                     body[field] = body[field] + "T00:00:00.000"
             return self._patch(self._by_id(self.batches, path), body)
         if path.endswith("/workflow"):
+            # Decaid takes a profile object here (measured 2026-09-26, T38). An
+            # earlier version of this stand-in refused it with a 400 nobody had
+            # ever seen - an invented rule that happened to agree with what the
+            # server then did, and so hid that it had never been checked.
             if "profile" in body:
-                return httpx.Response(400, json={"error": "profile is read-only"})
+                self.workflow["profile"] = body["profile"]
             self.workflow["context"].update(body.get("context") or {})
             return httpx.Response(200, json=self.workflow)
         return httpx.Response(404, json={"error": "unknown"})
@@ -364,11 +368,16 @@ async def test_set_workflow_changes_the_grind(
 async def test_a_profile_change_never_reaches_the_machine(
     writable: Config, db: Database, coordinator: SyncCoordinator, fake: FakeDecaid
 ) -> None:
-    """The one place where v1 explicitly says no."""
+    """A profile object from the caller never reaches the machine.
+
+    Selecting one is allowed now - by reference, resolved against what is on
+    the tablet. An object would be whatever the caller typed, and Decaid runs
+    whatever it is given.
+    """
     with pytest.raises(ToolError) as excinfo:
         await call(build_mcp(writable, db, coordinator), "set_workflow",
                    {"fields": {"profile": {"title": "anderes"}}})
-    assert "at the machine" in str(excinfo.value)
+    assert "by reference" in str(excinfo.value)
     assert fake.puts == []
 
 

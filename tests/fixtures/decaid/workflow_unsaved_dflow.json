@@ -1,0 +1,97 @@
+{
+ "id": "61289677-96c3-4168-8e01-f960c18c6a7a",
+ "name": "Workflow",
+ "description": "Description",
+ "profile": {
+  "version": "2",
+  "title": "D-Flow",
+  "notes": "A simple to use profiling system By Damian Brakel\n        D-Flow's Default profile is provided as an example profile for you to get started in creating your own",
+  "author": "Damian.",
+  "beverage_type": "espresso",
+  "steps": [
+   {
+    "name": "Filling",
+    "pump": "pressure",
+    "transition": "fast",
+    "exit": {
+     "type": "pressure",
+     "condition": "over",
+     "value": 1.5
+    },
+    "volume": 100.0,
+    "seconds": 25.0,
+    "weight": 4.0,
+    "temperature": 88.0,
+    "sensor": "coffee",
+    "pressure": 3.0,
+    "limiter": null
+   },
+   {
+    "name": "Infusing",
+    "pump": "pressure",
+    "transition": "fast",
+    "exit": null,
+    "volume": 100.0,
+    "seconds": 60.0,
+    "weight": 4.0,
+    "temperature": 88.0,
+    "sensor": "coffee",
+    "pressure": 3.0,
+    "limiter": null
+   },
+   {
+    "name": "Pouring",
+    "pump": "flow",
+    "transition": "fast",
+    "exit": null,
+    "volume": 0.0,
+    "seconds": 127.0,
+    "weight": 0.0,
+    "temperature": 88.0,
+    "sensor": "coffee",
+    "flow": 1.5,
+    "limiter": {
+     "value": 9.0,
+     "range": 0.2
+    }
+   }
+  ],
+  "target_volume": 0.0,
+  "target_weight": 36.0,
+  "target_volume_count_start": 2,
+  "tank_temperature": 0.0
+ },
+ "context": {
+  "targetDoseWeight": 18.0,
+  "targetYield": 36.0,
+  "grinderId": "6dd079e1-1ef0-4231-b7c0-82021cda8391",
+  "grinderModel": "Timemore Sculpture 078s",
+  "grinderSetting": "3.70",
+  "beanBatchId": "63043341-7bae-49c2-a87d-eb0a8e200163",
+  "coffeeName": "Grano Gayo",
+  "coffeeRoaster": "Coffee Circle",
+  "extras": {
+   "basketId": "d5fb625d-c25f-44de-b849-5a65daab28c1",
+   "basketName": "Decent 18g",
+   "rpm": 0,
+   "note": null
+  }
+ },
+ "steamSettings": {
+  "targetTemperature": 160,
+  "duration": 120,
+  "flow": 0.0,
+  "stopAtTemperature": 0.0
+ },
+ "hotWaterData": {
+  "targetTemperature": 95,
+  "duration": 30,
+  "volume": 100,
+  "flow": 10.0
+ },
+ "rinseData": {
+  "targetTemperature": 90,
+  "duration": 10,
+  "flow": 4.0
+ }
+}

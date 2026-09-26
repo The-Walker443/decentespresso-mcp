@@ -12,8 +12,9 @@ the first old entry would never see it. The full list costs two requests on
 the local network for 168 shots - and in exchange the sync also finds changes
 made after the fact.
 
-Backfill and incremental run are thus the same algorithm; ``full=True`` merely
-forces every shot to be fetched again.
+Backfill and incremental run are thus the same algorithm; ``full`` only
+chooses the label. It once forced every shot to be fetched again, which made a
+first backfill of more than one run's worth impossible to finish (SPEC §6).
 
 TABLET OFF. The tablet is not always on. If it cannot be reached that is not
 an error state but the normal case between two coffees: the run ends with
@@ -34,9 +35,11 @@ from .config import Config
 from .db import Database, utc_now_iso
 from .decaid_client import (
     MAX_PAGE_SIZE,
+    AlreadyExists,
     DecaidClient,
     DecaidError,
     DecaidUnreachable,
+    Protected,
     ShotNotFound,
 )
 from .decaid_mapping import (
@@ -49,6 +52,22 @@ from .decaid_profile import profile_version
 from .guards import run_rules
 from .metrics import metrics_for_shot, warm_metrics_cache
 from .notify import send as notify
+from .profile_forge import (
+    MARKER,
+    MARKER_KEY,
+    OVERRIDES,
+    TITLE_SEPARATOR,
+    apply_overrides,
+    changes_brewing,
+    check_title,
+    default_title,
+    is_default,
+    made_here,
+    resolve_profile,
+    running_profile,
+    same_brew,
+)
+from .writes import ValidationError
 
 log = logging.getLogger(__name__)
 
@@ -113,7 +132,7 @@ async def run_sync(
     full: bool = False,
     config: Config | None = None,
 ) -> SyncResult:
-    """One sync run. ``full=True`` fetches every shot again.
+    """One sync run. ``full`` labels it a backfill; what is fetched is the same.
 
     ``config`` enables the guards; without it only the sync runs. That keeps
     the ingestion tests free of guard logic and vice versa.
@@ -449,7 +468,7 @@ class SyncCoordinator:
         return before, after
 
     async def write_workflow(
-        self, fields: dict[str, Any]
+        self, fields: dict[str, Any], *, replace_unsaved: bool = False,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Change the workflow context, with read-back.
 
@@ -461,14 +480,193 @@ class SyncCoordinator:
         ``_coffee_labels`` for why that is our job rather than Decaid's.
         """
         patch = dict(fields)
+        reference = patch.pop("profileId", None)
         if patch.get("beanBatchId"):
             patch.update(await self._coffee_labels(str(patch["beanBatchId"])))
 
+        body: dict[str, Any] = {}
+        records: list[dict[str, Any]] = []
+        if reference:
+            # The workflow embeds the profile as an object and holds no id
+            # (SPEC T38), so selecting one means copying it in. An unknown
+            # reference is refused here: Decaid would take any object at all.
+            records = await self._client.profiles(include_hidden=True)
+            chosen = resolve_profile(records, str(reference))
+            current = (await self._client.workflow()).get("profile")
+            if (current and running_profile(current, records) is None
+                    and not replace_unsaved and not same_brew(current, chosen["profile"])):
+                # Measured on the live instance: the workflow was running a
+                # D-Flow tuned on the tablet (pour 1.5 ml/s, limiter 9 bar) that
+                # matched none of 85 stored profiles. It existed only here.
+                # Selecting another profile would have discarded it with no way
+                # back from this server.
+                raise Protected(
+                    f"The workflow runs {current.get('title')!r} as tuned on the "
+                    "tablet, and that version is not saved as a profile anywhere. "
+                    "Selecting another one discards it for good. Save it on the "
+                    "tablet first - or, if the user accepts losing it, say "
+                    "replace_unsaved_profile."
+                )
+            body["profile"] = chosen["profile"]
+        if patch:
+            body["context"] = patch
+
         async with self._lock:
-            before = (await self._client.workflow()).get("context") or {}
-            await self._client.update_workflow({"context": patch})
-            after = (await self._client.workflow()).get("context") or {}
+            before_wf = await self._client.workflow()
+            await self._client.update_workflow(body)
+            after_wf = await self._client.workflow()
+
+        before = dict(before_wf.get("context") or {})
+        after = dict(after_wf.get("context") or {})
+        if reference:
+            for side, workflow in ((before, before_wf), (after, after_wf)):
+                running = running_profile(workflow.get("profile"), records)
+                side["profileId"] = running.get("id") if running else None
+                side["profileTitle"] = (workflow.get("profile") or {}).get("title")
         return before, after
+
+    # ------------------------------------------------------------ Creating
+
+    async def create_bean(self, fields: dict[str, Any]) -> dict[str, Any]:
+        """A new bean, read back from Decaid and archived.
+
+        Refused before sending when a bean of the same name and roaster exists -
+        compared case- and whitespace-insensitively, because "Tugu Kawisari"
+        and "tugu  kawisari" are one roaster to a person and two records to a
+        database. A second bean by accident splits a coffee's history in two,
+        and nothing afterwards brings the halves back together.
+        """
+        async with self._lock:
+            existing = await self._client.beans()
+            twin = same_bean(existing, fields.get("name"), fields.get("roaster"))
+            if twin is not None:
+                raise AlreadyExists(
+                    f"A bean {twin.get('name')!r} by {twin.get('roaster')!r} "
+                    f"already exists as {twin.get('id')}. Nothing was created; "
+                    "use that one, or give the new bean a distinguishing name."
+                )
+            created = await self._client.create_bean(dict(fields))
+            after = await self._client.bean(str(created["id"]))
+            await asyncio.to_thread(
+                self._db.upsert_beans, [bean_row_from_decaid(after, utc_now_iso())]
+            )
+        return after
+
+    async def create_batch(self, bean_id: str, fields: dict[str, Any]) -> dict[str, Any]:
+        """A new batch of an existing bean, read back and archived.
+
+        The bean is looked up first: Decaid would answer an unknown one with a
+        404 anyway, but "no such bean" is a clearer thing to be told than "not
+        found" about a path nobody typed.
+        """
+        async with self._lock:
+            try:
+                bean = await self._client.bean(bean_id)
+            except ShotNotFound:
+                raise ShotNotFound(
+                    f"Decaid has no bean {bean_id!r}. Nothing was created."
+                ) from None
+            created = await self._client.create_bean_batch(bean_id, dict(fields))
+            after = await self._client.bean_batch(str(created["id"]))
+            await asyncio.to_thread(
+                self._db.upsert_bean_batches,
+                [batch_row_from_decaid(after, utc_now_iso())],
+            )
+        after["_bean"] = {"name": bean.get("name"), "roaster": bean.get("roaster")}
+        return after
+
+    # ------------------------------------------------------------ Profiles
+
+    async def profile_catalogue(self) -> list[dict[str, Any]]:
+        return await self._client.profiles(include_hidden=True)
+
+    async def clone_profile(
+        self, source: str, overrides: dict[str, Any], *,
+        title: str | None, bean_id: str | None,
+    ) -> dict[str, Any]:
+        """A copy of ``source`` with lineage back to it, and the overrides applied.
+
+        Refused when the result would brew exactly like an existing profile.
+        Decaid's id is a hash of the brewing content, so such a copy would not
+        be a new profile but the old one under a second name - and whatever
+        Decaid then does with it, it is not what the caller asked for.
+        """
+        async with self._lock:
+            records = await self._client.profiles(include_hidden=True)
+            original = resolve_profile(records, source)
+
+            if title is None and bean_id:
+                bean = await self._client.bean(bean_id)
+                title = default_title(bean.get("roaster"), bean.get("name"))
+            if title is None:
+                raise ValidationError([
+                    "title: give a title, or a bean to name the profile after "
+                    f"(\"<roaster>{TITLE_SEPARATOR}<bean>\")"
+                ])
+            taken = [str((r.get("profile") or {}).get("title") or "")
+                     for r in records if r.get("visibility") != "deleted"]
+            title = check_title(title, taken)
+
+            profile, changes = apply_overrides(original["profile"], overrides,
+                                               title=title)
+            if not changes_brewing(changes):
+                raise ValidationError([
+                    "overrides: a copy that brews identically is the same profile "
+                    "to Decaid - its id is a hash of the brewing content. Change at "
+                    "least one of " + ", ".join(OVERRIDES) + ", or select the "
+                    "original directly."
+                ])
+            twin = next((r for r in records if same_brew(r.get("profile"), profile)),
+                        None)
+            if twin is not None:
+                raise AlreadyExists(
+                    f"A profile that brews exactly like this already exists: "
+                    f"{(twin.get('profile') or {}).get('title')!r} "
+                    f"({twin.get('id')}, {twin.get('visibility')}). Nothing was "
+                    "created; select that one instead."
+                )
+            created = await self._client.create_profile(
+                profile, parent_id=original.get("id"),
+                metadata={MARKER_KEY: MARKER, "clonedFrom": original.get("id")},
+            )
+            after = await self._client.profile(str(created["id"]))
+        return {"record": after, "source": original, "changes": changes}
+
+    async def update_profile(
+        self, profile_id: str, overrides: dict[str, Any], *, allow_foreign: bool,
+    ) -> dict[str, Any]:
+        """Change one of our profiles; defaults are refused whatever is asked.
+
+        The id changes with the content (T37): Decaid replaces the record under
+        a new hash. So the read-back follows the id the PUT answered with, and
+        the response says so - a caller holding the old id would otherwise be
+        holding a reference to nothing.
+        """
+        async with self._lock:
+            records = await self._client.profiles(include_hidden=True)
+            record = resolve_profile(records, profile_id)
+            title = (record.get("profile") or {}).get("title")
+            if is_default(record):
+                raise Protected(
+                    f"{title!r} is one of Decaid's bundled defaults. Those are not "
+                    "changed from here - clone it and change the copy."
+                )
+            if not made_here(record) and not allow_foreign:
+                raise Protected(
+                    f"{title!r} was not made by clone_profile, so it may be a "
+                    "profile somebody tuned by hand on the tablet. Only change it "
+                    "if the user named it explicitly, and then say allow_foreign."
+                )
+            profile, changes = apply_overrides(record["profile"], overrides)
+            if not changes_brewing(changes):
+                raise ValidationError(["overrides: nothing to change"])
+
+            workflow = await self._client.workflow()
+            was_running = same_brew(workflow.get("profile"), record["profile"])
+            updated = await self._client.update_profile(str(record["id"]), profile)
+            after = await self._client.profile(str(updated["id"]))
+        return {"record": after, "before": record, "changes": changes,
+                "workflow_ran_previous_version": was_running}
 
     async def _coffee_labels(self, batch_id: str) -> dict[str, Any]:
         """``coffeeName``/``coffeeRoaster`` for a batch, resolved through its bean.
@@ -516,6 +714,21 @@ class SyncCoordinator:
 
     async def aclose(self) -> None:
         await self._client.aclose()
+
+
+def same_bean(
+    beans: list[dict[str, Any]], name: Any, roaster: Any
+) -> dict[str, Any] | None:
+    """An existing bean with this name and roaster, compared as a person would.
+
+    Case and runs of whitespace do not make a different coffee.
+    """
+    def key(value: Any) -> str:
+        return " ".join(str(value or "").split()).casefold()
+
+    wanted = (key(name), key(roaster))
+    return next((b for b in beans if (key(b.get("name")), key(b.get("roaster")))
+                 == wanted), None)
 
 
 #: Back off when the tablet is off. It only runs while coffee is being made;

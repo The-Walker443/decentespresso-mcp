@@ -1,6 +1,6 @@
 # decentespresso-mcp — specification
 
-**Applies to version 0.9.0.** This document describes the system as it is, not
+**Applies to version 0.10.0.** This document describes the system as it is, not
 how it came to be. Where a decision still explains behaviour, the reasoning is
 kept; where it only explains history, it is gone.
 
@@ -58,9 +58,17 @@ normal state, not a fault: see §6.
 
 ## 4. The source: Decaid
 
-Verified against the running instance, Decaid **0.8.5+2624**. The constant
-`VERIFIED_DECAID_VERSION` in `decaid_client.py` holds that version; `status()`
-warns when the tablet reports a different one.
+Verified against the running instance, Decaid **0.8.6+2801** (2026-09-26). The
+constant `VERIFIED_DECAID_VERSION` in `decaid_client.py` holds that version;
+`status()` warns when the tablet reports a different one.
+
+The table below was built against Decaid 0.8.5+2624. When the tablet moved to
+Decaid 0.8.6 the findings this server leans on hardest were measured again, and
+one had changed: T4, T8, T9, T11, T12, T13, T16, T22 (creation), T32 and T34
+hold; **T10 changed** - `/shots/latest` no longer carries the measurements.
+T37-T41 are new, measured on Decaid 0.8.6. The rest (T14, T15, T17-T21,
+T23-T26, T28, T29, T33) was not re-probed; where the code depends on one of
+them it checks before it writes rather than trusting the table.
 
 **Verification is a duty, not a courtesy.** Every finding below was measured
 against the live API, and each one that shapes behaviour is noted at the
@@ -80,11 +88,13 @@ instance wins and the finding goes in the table above.
 | `GET /api/v1/info` | version, commit, build time |
 | `GET /api/v1/shots?limit=&offset=&order=` | everything except `measurements`, `updatedAt` included |
 | `GET /api/v1/shots/ids` | every id in one go, unpaginated |
-| `GET /api/v1/shots/latest` | the newest shot in full |
+| `GET /api/v1/shots/latest` | the newest shot, without measurements since Decaid 0.8.6 (T10) |
 | `GET /api/v1/shots/<id>` | one shot in full, including `measurements` |
 | `GET /api/v1/beans`, `GET /api/v1/bean-batches` | beans and batches, unpaginated |
 | `GET /api/v1/workflow` | the setting for the next shot, including the profile |
-| `PUT /api/v1/shots/<id>`, `/beans/<id>`, `/bean-batches/<id>`, `/workflow` | write paths, see §10 |
+| `PUT /api/v1/shots/<id>`, `/beans/<id>`, `/bean-batches/<id>`, `/workflow` | write paths, see §11 |
+| `POST /api/v1/beans`, `/beans/<id>/batches` | creation, 201 with the new record (T41) |
+| `GET/POST /api/v1/profiles`, `GET/PUT /profiles/<id>` | profile records with content-hash ids (T37) |
 
 ### 4.2 What the API actually does
 
@@ -99,7 +109,7 @@ instance wins and the finding goes in the table above.
 | T7 | Filters | `beanId` works. `profileId` is **ignored** |
 | T8 | Server-side time filter | **Does not exist.** `updated_after`, `since`, `sort` are silently ignored |
 | T9 | `/shots/ids` | All ids, unpaginated, as a flat array |
-| T10 | `/shots/latest` | Full detail including `measurements` |
+| T10 | `/shots/latest` | **Changed in Decaid 0.8.6:** everything except `measurements`; it was the full detail before. Nothing here reads the series from it |
 | T11 | `/shots/<id>` | Full detail |
 | T12 | `measurements` shape | `{machine{…}, scale{…}, volume}` per point. **No `time` field** - the axis comes from `machine.timestamp` minus the first. `profileFrame` sits under `machine` |
 | T13 | `PUT` semantics | Deep merge: sending one annotation leaves the others and all measurements untouched |
@@ -110,10 +120,10 @@ instance wins and the finding goes in the table above.
 | T18 | `enjoyment` scale | 0–100 as a float. No star scale |
 | T19 | Retention | No pruning endpoint; the archive reaches back without gaps |
 | T20 | Writable annotations | `espressoNotes`, `enjoyment`, `actualDoseWeight`, `actualYield` |
-| T21 | Writable on a bean | `name`, `roaster`, `species`, `processing`, `notes`, `decaf` |
+| T21 | Writable on a bean | `name`, `roaster`, `species`, `processing`, `notes`, `decaf`, and the origin fields of T31 |
 | T22 | Writable on a batch | `roastDate`, `buyDate`, `openDate`, `bestBeforeDate`, `freezeDate`, `unfreezeDate`, `frozen`, `weight`, `weightRemaining`, `roastLevel`, `harvestDate`, `qualityScore`, `price`, `currency`, `notes`. Dates come back with a time attached - the long-standing three with a trailing `Z`, the later ones without |
 | T23 | **`unfreezeDate`** | **Exists and is writable.** An earlier entry here said it did not exist; that was read off a response where it was unset, and an absent key is not an absent field. Written and read back 2026-09-16. With it the freezer time is subtracted exactly instead of the age becoming an upper bound |
-| T24 | Writable on the workflow | `context.grinderSetting`, `context.grinderModel`, `context.targetDoseWeight`, `context.targetYield`, `context.beanBatchId` |
+| T24 | Writable on the workflow | `context.grinderSetting`, `context.grinderModel`, `context.targetDoseWeight`, `context.targetYield`, `context.beanBatchId`, and `profile` as a whole object (T38) |
 | T25 | Protected on write | `id` → 400 ("ID in path does not match"), `createdAt`/`updatedAt` → 400 ("system-managed") |
 | T26 | **`timestamp`** | **Not protected.** A `PUT` carrying it returns 200 and the value stands |
 | T27 | **Weight on a batch** | **Exists and is in use.** `weight` and `weightRemaining` are writable, and the reference batch now carries 500 g. The earlier entry called them nonexistent on the strength of a response that omitted them while unset. See T34 for why only the first of the two can be trusted |
@@ -126,6 +136,11 @@ instance wins and the finding goes in the table above.
 | T34 | **`weightRemaining` does not count down** | It is initialised to `weight` when the batch is created and nothing decrements it. On the reference batch it reads 500 g of a 500 g bag after 27 shots that consumed 486 g. A remainder worth having is derived from the recorded doses; Decaid's figure is reported beside it, never instead of it |
 | T35 | **`harvestDate` is not a date** | The API calls it "harvest date or season" and the real value is `"2026"`. Stored and validated as text - parsing it would either fail or invent a first of January |
 | T36 | **Future dates are legitimate** | `bestBeforeDate` lies ahead by nature, and the operator's `openDate` did too. A blanket "no future dates" rule refused both |
+| T37 | **A profile's id is its content** | `profile:<20 hex>`, hashed from the brewing-relevant fields; the title is not among them. A `PUT` that changes brewing content moves the record to a new id and the old id answers 404 - replaced, not kept alongside. `parentId` and `metadata` survive the move. Identical content gives the identical id on every creation: a probe and the acceptance run produced `profile:0291c850b4407417dd79` independently |
+| T38 | **The workflow embeds, it does not refer** | `workflow.profile` is a full profile object with no id anywhere in the workflow. Selecting a profile means copying it in; which record it came from can only be told by comparing content. A `PUT` carrying `profile` is accepted and leaves `context` untouched |
+| T39 | **A duplicate creation reports success** | A `POST /profiles` whose content already exists answers **201** with the *existing* record and silently drops the new title, `parentId` and `metadata`. Nothing is created. A client trusting the status code reports a new profile that is not there |
+| T40 | **Deleting a bean does not cascade** | `DELETE /beans/<id>` on a bean with batches fails with 500 (SQLite foreign key, code 787) although the API description says it deletes the batches too. Nothing is deleted. Batches first, then the bean. Not used by this server, which deletes nothing - found while cleaning up probes |
+| T41 | **Creation: required and returned** | `POST /beans` needs `name` and `roaster` (both refused alone with 400, a type-cast error rather than a message) and returns 201 with the new id. `POST /beans/<id>/batches` needs nothing and sets `weightRemaining` from `weight`. `POST /profiles` returns 201 with the record, visible, not default. Titles are not length-limited by the API - 300 characters were taken |
 
 T26 is why the block list in `writes.py` is not a second line of defence but the
 only one for the telemetry fields.
@@ -523,7 +538,7 @@ is read-only except `sync_now` and the write tools from §11.
 | `get_shot(id \| "latest", bean?, include_curve, max_points)` | metadata, metrics, curve shape, profile summary |
 | `get_shot_metrics(id)` | the metrics alone |
 | `compare_shots(ids[2..4], include_profile, include_curves)` | side by side with deltas to the first and a divergence note |
-| `list_profiles()` | profiles with their versions |
+| `list_profiles(on_tablet?)` | profiles the shots ran on, with versions; `on_tablet` lists the tablet's records live, with the ids the profile tools take |
 | `get_profile(shot_id? \| name? \| version_hash?)` | the complete targets |
 | `get_workflow()` | the setting for the next shot, live from the tablet |
 | `sync_now()` | an immediate sync, idempotent |
@@ -731,7 +746,7 @@ carries on; only delivered messages count as reported.
 
 ## 11. Writing
 
-Four tools, each behind `WRITE_ENABLED` and each with its own whitelist. When
+Eight tools, each behind `WRITE_ENABLED` and each with its own whitelist. When
 the switch is off the tools are **not registered** - they do not appear in the
 tool list and do not refuse. A tool that exists and refuses invites asking
 again; one that does not exist does not.
@@ -739,15 +754,22 @@ again; one that does not exist does not.
 | Tool | Fields |
 |---|---|
 | `update_shot` | `espressoNotes`, `enjoyment` (0–100), `actualDoseWeight`, `actualYield` |
-| `update_bean` | `name`, `roaster`, `species`, `processing`, `notes`, `decaf` |
-| `update_batch` | `roastDate`, `buyDate`, `freezeDate`, `frozen` |
-| `set_workflow` | `grinderSetting`, `grinderModel`, `targetDoseWeight`, `targetYield`, `beanBatchId` |
+| `update_bean`, `create_bean` | T21 and T31; `name` and `roaster` required to create |
+| `update_batch`, `create_batch` | T22 |
+| `set_workflow` | `grinderSetting`, `grinderModel`, `targetDoseWeight`, `targetYield`, `beanBatchId`, `profileId` |
+| `clone_profile`, `update_profile` | the three overrides of §11.5, nothing else |
+
+The docstrings do not repeat the field lists: they drifted - `update_batch` went
+on telling every request that Decaid keeps no thaw date for ten days after T23
+had been corrected everywhere else. A wrong field is refused with the full list
+of allowed ones, and that list is generated from the whitelist itself.
 
 **A field goes on a whitelist only after it was written against the real API and
 read back.** Better one field too few than one that gets discarded silently.
 
-**No profile change in v1.** It changes brewing behaviour fundamentally and
-belongs at the machine.
+**A profile is never taken from the caller as an object.** Selection goes by
+reference (`profileId`), change goes through the overrides of §11.5. An object
+would be whatever the caller typed, and Decaid runs whatever it is given.
 
 **Nothing is ever deleted.** The API can do it; this does not build it.
 
@@ -801,6 +823,89 @@ machine-readable format is worth more than uniformity with an ambiguous one.
 
 One line per write with the target, the **field names** and the duration - no
 values. Notes can hold private things and a log is the wrong place for them.
+
+### 11.5 Coffee onboarding and the profile forge
+
+A new bag, set up for the machine, in four steps the model runs one at a time
+with the user's confirmation between them: `create_bean` → `create_batch` →
+`clone_profile` → `set_workflow`. There is deliberately no single tool doing
+all four. A combined call either succeeds whole or leaves the user to work out
+which part did not; four confirmed steps make each change visible as it
+happens, and a failure stops the flow at the step that failed. The order and the
+rule "stop, never skip" are in `INSTRUCTIONS`.
+
+**Favourites are per-coffee profiles plus the workflow.** Decaid's own
+favourites store (the DYE2 key-value store) is not written from here.
+
+**Creating is never retried.** Reads and updates are retried on 5xx and network
+errors; a `POST` is sent exactly once. A request the tablet acted on before it
+failed to answer would otherwise create a second bean, and the message on such
+a failure says the thing may exist anyway.
+
+**A duplicate bean is refused before sending.** Same name and roaster, compared
+case- and whitespace-insensitively, is the same coffee; the refusal names the
+existing one. Verified live: "probe-m10" / "PROBE-M10  Roaster" was caught
+against "PROBE-M10" / "PROBE-M10 Roaster".
+
+**What a clone may change** - three overrides, each verified by writing it and
+reading it back on the live instance, and nothing else:
+
+| Override | Sets | Limits |
+|---|---|---|
+| `temperature_c` | the main step to this value, every other step shifted by the same amount | 80–96 °C for **every** resulting step |
+| `target_weight_g` | stop-at-weight | 10–100 g |
+| `main_setpoint` | pressure or flow of the main step | ≤ 10 bar, ≤ 8 ml/s |
+
+The **main step** is the last step, provided it is also the longest - the pour,
+in every profile where the question has an obvious answer. Where it has none
+(Blooming Espresso ends on a 1 s reset step at zero flow) `main_setpoint` is
+refused, and so is `temperature_c` on a temperature curve with no anchor.
+
+The temperature is **shifted, not flattened**. A first version set every step to
+one value and refused any profile whose steps differed. The live instance showed
+why that was wrong: the operator's D-Flow fills at 88.5 and pours at 88.0 -
+D-Flow's editor has separate fill and pour temperatures - and the rule would
+have refused the very profile the acceptance was built on. Shifted, a clone at
+91.5 °C pours at 91.5 and fills at 92.0, and the half degree survives. Because
+every shifted step is a value written here, every one is bounded: Adaptive v3 at
+92 °C would fill at 97 and is refused.
+
+**A copy must brew differently.** Decaid's id is the content (T37). A copy that
+differs only in title is the original to Decaid, and it answers the `POST` with
+201 and the original's record (T39) - so a naive clone reports success for
+something that never happened. Refused before sending, as is a copy whose
+content matches any existing record (that one is named instead).
+
+**Titles.** Default `"<roaster> – <bean>"` with an en dash, taken from `bean_id`.
+A taken title - compared case-insensitively against every profile not deleted -
+is refused with a free one suggested. Sixty characters at most: Decaid took 300
+without complaint, so the limit is readability on the tablet, not an API rule.
+
+**By title means the visible one.** Every edit on the tablet leaves the
+previous version behind as a hidden record with the same title; the live
+instance holds four "D-Flow"s. A title resolves to the visible one; an id finds
+any record that is not deleted.
+
+**What `update_profile` will not touch.** A bundled default, ever - Decaid
+refuses that itself (400, verified), and this refuses it earlier with a reason.
+A profile not made by `clone_profile` (recognised by a marker in its metadata,
+which survives the id change of T37) only with `allow_foreign`, set when the
+user named that profile. The id changes with the content; the response names
+the new one and says whether the workflow is still running the old version - it
+holds a copy (T38), so it does not follow.
+
+**Selecting a profile.** `set_workflow` takes `profileId` (an id or exact
+title), resolves it against the tablet and copies the profile in. Unknown
+references are refused; Decaid would take any object at all. And **a profile
+that exists only in the workflow is not overwritten by accident**: measured on
+2026-09-26, the workflow was running a D-Flow tuned on the tablet (pour
+1.5 ml/s, limiter 9 bar, fill weight 4 g) that matched none of 85 stored
+profiles. Selecting another would have discarded it with no way back from this
+server, so that needs `replace_unsaved_profile`.
+
+**Visible on the tablet** is what the API says (`visibility: visible`). Whether
+the tablet's UI shows it in the list it shows is not something the API can
+answer; the acceptance run confirmed the flag, not the pixels.
 
 ## 12. Security
 

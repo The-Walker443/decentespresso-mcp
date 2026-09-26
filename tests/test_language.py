@@ -40,18 +40,21 @@ GERMAN_WORDS = frozenset({
     "wenn", "werden", "wie", "wird", "wurde", "wurden", "zum", "zur", "zwei",
 })
 
-#: The specific words the M8 switch left behind, so this test would have caught
-#: that one and not only the shape of it.
-GERMAN_WORDS |= frozenset({
-    "angefordert", "bauzeit", "berechnet", "einmaliger", "einzelfehler",
-    "endpunkte", "enthaelt", "enthält", "fehlende", "frische", "geprueft",
-    "inkrementeller", "konfiguration", "kuerzel", "kürzel", "laeuft", "läuft",
-    "messwert", "metriken", "netzzugriff", "profilnamen", "rueckgabe",
-    "schritte", "sollwerte", "steigung", "ungueltig", "ungueltige", "ungültig",
-    "unzuverlaessig", "unzuverlaessiger", "veraltete", "verbindung",
-    "vollstaendiger", "vorhanden", "voruebergehend", "voruebergehende",
-    "waage", "waechter", "wiederholbar", "zeitreihe",
-})
+#: Stems of the distinctive words that slipped through before. Matched as
+#: prefixes, because German inflects: the first version of this list held
+#: "vollstaendiger" and so missed "vollstaendiges" in decaid_client.py, one
+#: milestone later. A stem catches every ending. None of these starts an
+#: English word.
+GERMAN_STEMS = (
+    "angeford", "anweisung", "bauzeit", "berechn", "einmalig", "einzelfehl",
+    "endpunkt", "enthaelt", "enthält", "fehlend", "frische", "gepruef",
+    "inkrementell", "konfiguration", "kuerzel", "kürzel", "laeuft", "läuft",
+    "messwert", "metriken", "netzzugriff", "profilnam", "rueckgab",
+    "schritte", "sollwert", "steigung", "stoerung", "störung", "ungueltig",
+    "ungültig", "unzuverlaessig", "veraltet", "verbindung", "vollstaendig",
+    "vollständig", "vorhanden", "voruebergehend", "waage", "waechter",
+    "wiederholbar", "zeitreihe",
+)
 
 #: Deliberately German, with the reason. Everything else is a finding.
 #: User data is never translated (CLAUDE.md) - if a bean name or a note ever
@@ -109,7 +112,8 @@ def german_in(text: str) -> set[str]:
     for word in WORD.findall(text):
         if word.isupper() or word in ALLOWED_WORDS:
             continue  # MIT, UTC, API - acronyms are not prose
-        if word.lower() in GERMAN_WORDS:
+        lowered = word.lower()
+        if lowered in GERMAN_WORDS or lowered.startswith(GERMAN_STEMS):
             found.add(word)
     return found
 
@@ -143,6 +147,9 @@ def test_no_umlauts(path: pathlib.Path) -> None:
     "Dieser Server laeuft ohne Decaid-Verbindung.",     # a tool error
     "beliebig wiederholbar",                            # inside a docstring
     "Berechnet fehlende oder veraltete Metriken.",      # a module docstring
+    "vollstaendiges Detail",                            # missed by the word list
+    "more in the Server-Anweisungen",                   # a compound in English
+    "reported as Stoerung",                             # a noun in English
 ])
 def test_the_guard_catches_what_slipped_through_before(sentence: str) -> None:
     """A stopword list that cannot fail is decoration.

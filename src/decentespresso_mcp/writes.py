@@ -195,6 +195,10 @@ WORKFLOW = Ruleset(
             "identifier of the batch being pulled from; the coffee name and "
             "roastery follow from it"
         ),
+        "profileId": (
+            "the profile to run: a Decaid profile id (profile:...) or its exact "
+            "title; the whole profile is copied into the workflow"
+        ),
     },
     kinds={
         "targetDoseWeight": "weight",
@@ -203,8 +207,9 @@ WORKFLOW = Ruleset(
     },
     blocked={
         "profile": (
-            "Changing the profile changes brewing behaviour fundamentally and "
-            "belongs at the machine, not in a conversation."
+            "A profile is selected by reference (profileId), never sent as an "
+            "object: an object would be whatever the caller typed, and Decaid "
+            "runs whatever it is given. To change a profile, clone_profile it."
         ),
         "id": "The identifier of the workflow is immutable.",
         "coffeeName": (

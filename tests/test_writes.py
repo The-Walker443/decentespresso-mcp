@@ -56,6 +56,9 @@ def test_the_whitelist_is_exactly_the_verified_set() -> None:
     assert set(WORKFLOW.allowed) == {
         "grinderSetting", "grinderModel", "targetDoseWeight", "targetYield",
         "beanBatchId",
+        # Not a Decaid field: a reference this server resolves to the profile
+        # object the workflow actually takes (SPEC T38).
+        "profileId",
     }
 
 
@@ -101,10 +104,11 @@ def test_the_timestamp_block_is_the_only_protection() -> None:
     assert "not writable" in problems[0]
 
 
-def test_a_profile_change_is_refused_with_its_reason() -> None:
-    """In v1 a profile change stays reserved for the machine."""
+def test_a_profile_object_is_refused_with_the_way_out() -> None:
+    """Selection goes by reference; the refusal says which field does it."""
     problems = problems_of({"profile": {}}, WORKFLOW)
-    assert "at the machine" in problems[0]
+    assert "profileId" in problems[0]
+    assert "clone_profile" in problems[0]
 
 
 def test_the_thaw_date_is_writable_after_all() -> None:
