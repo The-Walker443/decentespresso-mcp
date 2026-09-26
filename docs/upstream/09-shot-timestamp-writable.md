@@ -29,8 +29,11 @@ In our own case a verification probe changed one shot's timestamp and the
 original could only be recovered to within a few milliseconds, from the first
 measurement point.
 
+`rest_v1.yml` agrees that it should not be: `ShotUpdateRequest` lists
+`annotations`, `stopReason` and the two deprecated aliases as the editable
+fields, and `timestamp` is not among them.
+
 ## Suggestion
 
-Refuse `timestamp` on `PUT /shots/{id}` with 400 like the other
-system-managed fields, or list it as writable in `rest_v1.yml` if changing it is
-meant to be possible.
+Refuse `timestamp` on `PUT /shots/{id}` with 400, like `createdAt` and
+`updatedAt`.

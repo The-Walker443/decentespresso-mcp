@@ -4,6 +4,52 @@ Findings from verifying this server against Decaid and DYE2 that belong with
 the people who maintain them. **Drafts, not filed.** Each was measured on the
 live instance; the finding number (T…) points into the specification's table.
 
+## What to file - a strict triage
+
+The operator files bugs only: reproducible, clearly wrong against the
+documented behaviour, no design opinions. Reviewed once more on 2026-09-26 with
+that filter.
+
+**File as bugs (four):**
+
+| Draft | Project | Why it is clearly a bug |
+|---|---|---|
+| 02 | decaid | Documented as "deletes a bean and all its batches"; answers 500 with a raw SQLite foreign-key error, deletes nothing |
+| 03 | decaid | `name` and `roaster` are documented as required; empty strings are accepted and a nameless bean is created. A missing one fails with a Dart type-cast message |
+| 09 | decaid | `timestamp` is not an editable field in `ShotUpdateRequest`, yet a PUT changes it; `createdAt`/`updatedAt` are refused as intended |
+| 12 | streamline | The profile-drift guard compares `workflow.profile.id`, which Decaid never returns, so it can never fire - a guard that protects nothing |
+
+**Verify on the tablet first, then file if confirmed (two):**
+
+- **08 (DYE2)** - a saved favourite stores its profile as `{id, title}` without
+  steps, and Decaid does not resolve that. The conclusion that tapping a
+  favourite therefore does not change the profile comes from reading the
+  source and from the API, not from watching the dashboard. Check: run a
+  visibly different profile (Adaptive v3, say), tap "Seniman House Blend" on
+  the DYE2 dashboard, look at which profile the machine then shows. If it is
+  still Adaptive v3, file 08.
+- **T45 (DYE2, in draft 08, third observation)** - six favourites store a bean
+  id where a batch id belongs. That may be what an older DYE2 wrote. Check:
+  open one of them in DYE2, save it again, and see whether the new entry stores
+  a batch id (`list_recipes(source="dye2_favs")` shows it, or the store URL in
+  the contract). If a fresh save still stores a bean id, file it; if it stores
+  a batch id, the old entries are just stale and worth re-saving, not a report.
+
+**Do not file - not bugs (six):**
+
+| Draft | Why not |
+|---|---|
+| 01 | Content-addressed profile ids are a design choice; the 201 for existing content and the dropped title are arguably wrong, but a maintainer can fairly answer "by design". Debatable, so out |
+| 04 | Missing reference validation and label derivation - a wish, not a defect. If T45 is confirmed, one sentence about the unchecked id belongs in that report instead |
+| 05 | `weightRemaining` is documented as initialised on creation; nothing says it counts down. A question, not a bug |
+| 06 | A documentation note |
+| 07 | A feature proposal |
+| 10 | Licence hygiene, not a bug |
+| 11 | Streamline's auto-save writes DYE2's keys knowingly - the code comments say so. A policy disagreement between two projects, not a defect to report from outside |
+
+The drafts stay here for reference; the ones to file are 02, 03, 09 and 12,
+and 08 after the check above.
+
 | # | Project | Finding | Draft |
 |---|---|---|---|
 | 1 | decaid | T39 | [A profile POST answers 201 for content that already exists](01-profile-post-201-for-existing-content.md) |
