@@ -96,19 +96,19 @@ period before.
 You:    How was the last month?
 
 Claude: 117 shots in 30 days, just under four a day, with 13 flushes and aborts
-        left out. You rated 18 of them, averaging 53. Typical shot: 17.9 g in,
+        left out. You rated 18 of them, averaging 5.3 out of 10. Typical shot: 17.9 g in,
         38.4 g out, 1:2.1 in 29 seconds.
 
         The incahuasi accounts for 57 of those and you moved the grinder eleven
-        times on it — 4.3 down to 2.5, then settling around 2.7. It averages 47
-        across nine ratings, while the Arabica Honey Process sits at 67 across
+        times on it — 4.3 down to 2.5, then settling around 2.7. It averages 4.7
+        across nine ratings, while the Arabica Honey Process sits at 6.7 across
         four. That is the one to keep.
 
         Busiest day was 28 August: 34 pulls, 27 of them coffee.
 ```
 
-**Writing back, by asking.** "Give that one a 90 and note it was the best this
-week." Behind a switch that is off by default, with a whitelist of fields
+**Writing back, by asking.** "Give that one four and a half stars and note it was
+the best this week." Behind a switch that is off by default, with a whitelist of fields
 verified against the real API, and every change read back before it is reported
 to you.
 

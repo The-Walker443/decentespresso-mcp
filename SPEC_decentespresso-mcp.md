@@ -1,6 +1,6 @@
 # decentespresso-mcp — specification
 
-**Applies to version 0.11.0.** This document describes the system as it is, not
+**Applies to version 0.12.0.** This document describes the system as it is, not
 how it came to be. Where a decision still explains behaviour, the reasoning is
 kept; where it only explains history, it is gone.
 
@@ -117,7 +117,7 @@ instance wins and the finding goes in the table above.
 | T15 | `updatedAt` | Set server-side on a content change; `createdAt` untouched |
 | T16 | Beans and batches | `/api/v1/bean-batches` or `/api/v1/beans/<id>/batches`; `/api/v1/batches` → 404. Single-item fetches **do** exist: `/api/v1/beans/<id>` and `/api/v1/bean-batches/<id>` both return 200 |
 | T17 | WebSocket | `/ws/v1/machine/shotState` → 101 Upgrade. `/ws/v1/machine/state` → 404 |
-| T18 | `enjoyment` scale | 0–100 as a float. No star scale |
+| T18 | `enjoyment` scale | 0–100 as a float up to 0.8.6. **Superseded by T46**: Decaid's own 0–10 from decaid#887 on |
 | T19 | Retention | No pruning endpoint; the archive reaches back without gaps |
 | T20 | Writable annotations | `espressoNotes`, `enjoyment`, `actualDoseWeight`, `actualYield` |
 | T21 | Writable on a bean | `name`, `roaster`, `species`, `processing`, `notes`, `decaf`, and the origin fields of T31 |
@@ -144,6 +144,7 @@ instance wins and the finding goes in the table above.
 | T42 | **A DYE2 recipe can mislabel the coffee** | The live recipe "Decaf" stores `context.coffeeName` and neither `coffeeRoaster` nor `beanBatchId`. Applied as stored on a Grano Gayo batch, the machine showed "Coffee Circle / Sugar Cane Decaf". `apply_recipe` applies it unchanged, as the contract asks, and reports the mismatch |
 | T43 | *(withdrawn)* | Recorded on 2026-09-26 as "every DYE2 favourite carries a D-Flow stored nowhere". Wrong: the comparison hashed stubs without steps against each other. T44 is what the data shows |
 | T44 | **A DYE2 `workflow.profile` may be a name without a profile** | Seven of eight live favourites store `{"id": null, "title": "D-Flow"}`, one an id without steps - and Decaid drops a profile `id` sent to the workflow and does not resolve it (measured with a real id); the recipe stores no profile. PUT as stored, such a stub only renames the running profile (T13) - applying "Seniman House Blend" left the previously running tune brewing. Reported on apply; the unsaved-profile guard does not fire for it, because nothing is replaced |
+| T46 | **Ratings move to 0–10** (decaid#887, on main after 0.8.7-beta.1, in no release yet; read from the source 2026-09-26) | `annotations.enjoyment` becomes Decaid's own 0–10 field; `PUT /shots` refuses values outside it with 400, and that check runs **before** the shot is looked up. The schema-6 migration divides by ten every value over 10, and at 10 or below only an untouched de1app import (`id LIKE 'de1app-%'`, `created_at != timestamp`, `updated_at <= created_at`); it does **not** set `updated_at`. Everything else from 1 to 10 stays as it is - Decaid calls these ambiguous and does not guess. DYE2 moved to 0–10 with dye2#8 (0.1.15, stars ×2) and **already runs on the 0.8.6 tablet**, so new DYE2 ratings there are 0–10 inside a 0–100 field. Live, read-only: 88 imports, all `createdAt == timestamp`, so none untouched; two native shots at 4.0 and 5.0 (DYE2's raw star index before dye2#7). The probe - `PUT` of `enjoyment: 11` to a non-existent id - answers 404 "Shot not found" on 0.8.6+2801 and changes nothing |
 | T45 | **A bean id where a batch belongs** | Six of eight live DYE2 favourites store a bean's id as `beanBatchId` (404 as a batch, 200 as a bean). Decaid would take it (T29). Applying such a favourite is refused, naming the bean's batches |
 
 T26 is why the block list in `writes.py` is not a second line of defence but the
@@ -185,7 +186,9 @@ server acted as if it were current.
 - **`raw_json`** holds the response **without** the measurements. Those live in
   `shot_series`; a detail response weighs about 140 kB with them, which across
   the archive would be a multiple of everything else, stored twice.
-- **`enjoyment`** is 0–100 or NULL. NULL means not rated. See §5.3.
+- **`enjoyment`** is 0–10 or NULL, whatever scale the tablet runs. NULL means
+  not rated. `enjoyment_ambiguous` marks a value whose scale cannot be told.
+  See §5.3 and §5.4.
 
 `shot_series` — one row per data point, `(shot_id, elapsed)` as the key.
 Carries the measured channels, the **target** channels
@@ -226,6 +229,41 @@ with a de1app identifier, a 0 is therefore archived as `NULL`.
 Without this rule, 75 phantom ratings would enter the archive and the guards in
 §9 would take them at face value. When **writing**, the rule does not apply:
 what the user explicitly sets to 0 is an input.
+
+### 5.4 Rating scale: the archive keeps Decaid's 0-10
+
+Decaid moves `enjoyment` from a pass-through of de1app's 0-100 to its own 0-10
+(T46). The archive takes 0-10 as canonical on either side of that change, so a
+rating means the same whenever it was read.
+
+**The scale is asked of the tablet, not inferred from its version.** Once per
+Decaid version, a `PUT` of `enjoyment: 11` goes to a shot id that cannot exist:
+with #887 the range check refuses it (400), before it the lookup does (404).
+Neither writes anything. The build number is only the fallback when the answer
+is neither: builds are numbered by commits on main, #887 is in every build from
+2836 on, but a build off another branch can carry that count without it.
+
+**Read from a 0-100 tablet, ratings are converted by Decaid's own rule**, so the
+archive holds before the update what the tablet will hold after it: over 10
+divided by ten, 10 and below only on an untouched import. What that rule leaves
+alone is kept as it is and marked `enjoyment_ambiguous`: a low 0-100 rating,
+DYE2's raw star index and a 0-10 write by today's DYE2 on a 0-100 tablet look
+identical. `stats` leaves those out of means and counts them; `audit_archive`
+lists them, so they can be rated again. Migration 005 converted the archive by
+the same rule.
+
+**Once the tablet is on 0-10, every archived shot's annotations are read again**,
+once, from the shot list. Decaid's migration does not move `updatedAt`, so the
+cursor of §6 would never see a value it changed. Where the archive's conversion
+predicted the result, nothing changes; where it did not, the tablet wins. A mark
+survives the switch as long as value and `updatedAt` stand - Decaid left such a
+value as it was - and goes when the shot is rated again.
+
+**Writing follows the tablet's scale.** `update_shot` takes `enjoyment` as
+Decaid will check it: 0-10 with one decimal after #887, whole numbers 0-100
+before - and there not 1 to 10, which Decaid's migration would keep and so read
+ten times higher afterwards. The answer reports the tablet's scale and the
+archived value.
 
 ## 6. Ingestion
 
@@ -758,7 +796,7 @@ again; one that does not exist does not.
 
 | Tool | Fields |
 |---|---|
-| `update_shot` | `espressoNotes`, `enjoyment` (0–100), `actualDoseWeight`, `actualYield` |
+| `update_shot` | `espressoNotes`, `enjoyment` (tablet's scale, §5.4), `actualDoseWeight`, `actualYield` |
 | `update_bean`, `create_bean` | T21 and T31; `name` and `roaster` required to create |
 | `update_batch`, `create_batch` | T22 |
 | `set_workflow` | `grinderSetting`, `grinderModel`, `targetDoseWeight`, `targetYield`, `beanBatchId`, `profileId` |
@@ -817,7 +855,7 @@ Consequences that follow from it:
 
 Before the first API call, with every violation collected. The API validates no
 value ranges at all, so this is the only protection against a typo reaching the
-archive. Weights are bounded, ratings are whole numbers 0–100, dates are ISO and
+archive. Weights are bounded, ratings follow the tablet's scale (§5.4), dates are ISO and
 not in the future, free text is capped.
 
 Decimal commas are accepted (`"18,5"` → `18.5`). For roast dates the error

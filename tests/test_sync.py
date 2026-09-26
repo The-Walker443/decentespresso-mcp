@@ -51,6 +51,14 @@ class FakeDecaid:
         self._check()
         return load("info.json")
 
+    #: The answer of the scale probe (T46). 0.8.6+2801, the fixture's version,
+    #: answers the probe with 404: ratings on 0-100.
+    rates_on_ten = False
+
+    async def rejects_enjoyment_over_ten(self):
+        self._check()
+        return self.rates_on_ten
+
     async def beans(self):
         self._check()
         return load("beans.json")
@@ -443,7 +451,7 @@ async def test_import_era_zeros_never_reach_the_archive(db):
     await run_sync(FakeDecaid(shots), db, full=True)
 
     assert db.get_shot_row("de1app-1785525360")["enjoyment"] is None
-    assert db.get_shot_row("de1app-1785525999")["enjoyment"] == 80.0
+    assert db.get_shot_row("de1app-1785525999")["enjoyment"] == 8.0, "0-100 -> 0-10 (T46)"
     assert db.get_shot_row("aaaa1111-0000-4000-8000-000000000001")["enjoyment"] is None
 
 

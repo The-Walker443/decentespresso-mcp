@@ -33,6 +33,10 @@ MIN_REAL_YIELD_G = 5.0
 #: being a summary.
 TOP_N = 5
 
+#: Ratings are 0-10 (T46). Two decimals keep the resolution one decimal gave
+#: on 0-100: a mean of 53.4 is now 5.34, not 5.3.
+ENJOYMENT_DIGITS = 2
+
 _SHORTHAND = re.compile(r"^(\d+)\s*([hdwmy])$", re.I)
 _UNITS = {"h": "hours", "d": "days", "w": "weeks", "m": "days", "y": "days"}
 _SCALE = {"h": 1, "d": 1, "w": 1, "m": 30, "y": 365}
@@ -90,7 +94,8 @@ def summarise(
     excluded = len(shots) - len(real)
     days = max(1.0, (until - since).total_seconds() / 86400)
 
-    rated = [s["enjoyment"] for s in real if s.get("enjoyment") is not None]
+    rated = _rated(real)
+    ambiguous = sum(1 for s in real if s.get("enjoyment_ambiguous"))
 
     return {
         "from": _iso(since),
@@ -101,8 +106,9 @@ def summarise(
         "per_day": round(len(real) / days, 2),
         "enjoyment": {
             "rated": len(rated),
-            "unrated": len(real) - len(rated),
-            "mean": _round(statistics.fmean(rated), 1) if rated else None,
+            "unrated": len(real) - len(rated) - ambiguous,
+            **({"ambiguous": ambiguous} if ambiguous else {}),
+            "mean": _round(statistics.fmean(rated), ENJOYMENT_DIGITS) if rated else None,
         },
         "averages": {
             "dose_g": _avg(real, "dose_g", 1),
@@ -128,7 +134,7 @@ def compare(current: Mapping[str, Any], previous: Mapping[str, Any]) -> dict[str
         deltas[key] = _round(a - b, 2) if a is not None and b is not None else None
     a, b = current["enjoyment"]["mean"], previous["enjoyment"]["mean"]
     deltas["enjoyment_mean"] = (
-        _round(a - b, 1) if a is not None and b is not None else None
+        _round(a - b, ENJOYMENT_DIGITS) if a is not None and b is not None else None
     )
     return {"previous": previous, "deltas": deltas}
 
@@ -189,11 +195,12 @@ def _top(shots: Sequence[Mapping[str, Any]], key: str) -> list[dict[str, Any]]:
 
     rows = []
     for label, group in groups.items():
-        rated = [s["enjoyment"] for s in group if s.get("enjoyment") is not None]
+        rated = _rated(group)
         rows.append({
             "name": label,
             "shots": len(group),
-            "mean_enjoyment": _round(statistics.fmean(rated), 1) if rated else None,
+            "mean_enjoyment": (_round(statistics.fmean(rated), ENJOYMENT_DIGITS)
+                               if rated else None),
             "rated": len(rated),
         })
     rows.sort(key=lambda r: (-r["shots"], r["name"]))
@@ -256,6 +263,12 @@ def _busiest_day(shots: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
     real = sum(1 for s in group if is_real_shot(s))
     return {"date": day, "total": len(group), "real_shots": real,
             "maintenance": len(group) - real}
+
+
+def _rated(shots: Sequence[Mapping[str, Any]]) -> list[float]:
+    """Ratings a mean may use: set, and on a known scale (T46)."""
+    return [s["enjoyment"] for s in shots
+            if s.get("enjoyment") is not None and not s.get("enjoyment_ambiguous")]
 
 
 def _avg(shots: Sequence[Mapping[str, Any]], key: str, digits: int) -> float | None:

@@ -93,10 +93,11 @@ def test_zero_from_the_import_era_is_not_a_rating() -> None:
 
 
 def test_real_ratings_from_the_import_era_survive() -> None:
+    """They survive on the archive's 0-10 scale (T46)."""
     for value in (40.0, 50.0, 80.0, 100.0):
         assert normalize_enjoyment(
             imported("2026-08-01T05:32:50", enjoyment=value)
-        ) == value
+        ) == value / 10
 
 
 def test_zero_on_a_native_shot_is_kept() -> None:

@@ -63,7 +63,19 @@ class FakeDecaid:
         self.patches: list[dict[str, Any]] = []
         self.gets = 0
 
+    #: 0.8.6+2801 answers the scale probe (a PUT to an unknown id) with 404;
+    #: #887 answers it with 400 (T46).
+    rates_on_ten = False
+
     def handler(self, request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/info":
+            info = {"fullVersion": "0.8.6+2801" if not self.rates_on_ten else "0.8.7+2840"}
+            return httpx.Response(200, json=info)
+        if not request.url.path.endswith(str(self.detail["id"])):
+            if self.rates_on_ten and request.method == "PUT":
+                return httpx.Response(400, json={
+                    "error": "annotations.enjoyment must be between 0 and 10, got 11"})
+            return httpx.Response(404, json={"error": "Shot not found"})
         if request.method == "GET":
             self.gets += 1
             return httpx.Response(200, json=self.detail)
@@ -197,9 +209,10 @@ async def test_write_through_updates_api_then_database(
     }
     assert "unchanged" not in result
 
-    # 3. Updated locally.
+    # 3. Updated locally - on the archive's 0-10 scale, and said so (T46).
     row = db.get_shot_row(REFERENCE)
-    assert row["enjoyment"] == 88
+    assert row["enjoyment"] == 8.8
+    assert result["enjoyment"] == {"tablet_scale": "0-100", "archived": 8.8}
     assert row["notes"] == "schmeckt jetzt rund"
 
 
@@ -294,3 +307,32 @@ async def test_log_names_fields_but_never_values(
     blob = "\n".join(r.getMessage() + str(getattr(r, "fields", "")) for r in caplog.records)
     assert "streng vertraulich" not in blob
     assert "60" not in fields["wrote"]
+
+
+async def test_the_rating_goes_out_on_the_tablets_scale(writable: Config, db: Database) -> None:
+    """After decaid#887 Decaid refuses anything over 10 (T46). The scale is
+    asked of the tablet before validating, so 80 is refused here and never
+    sent, while 8.5 goes out as it is and is archived unchanged."""
+    fake = FakeDecaid(reference_detail())
+    fake.rates_on_ten = True
+    mcp = build_mcp(writable, db, make_coordinator(fake, db))
+
+    with pytest.raises(ToolError, match="outside the range 0 to 10"):
+        await call(mcp, "update_shot", {"id": REFERENCE, "fields": {"enjoyment": 80}})
+    assert fake.patches == []
+
+    result = await call(mcp, "update_shot", {"id": REFERENCE, "fields": {"enjoyment": 8.5}})
+    assert fake.patches == [{"enjoyment": 8.5}]
+    assert result["enjoyment"] == {"tablet_scale": "0-10", "archived": 8.5}
+
+
+async def test_on_a_hundred_point_tablet_one_to_ten_is_refused(
+    writable: Config, db: Database
+) -> None:
+    """A 5 written on 0.8.6 survives Decaid's migration as 5 - two and a half
+    stars instead of a twentieth of one."""
+    fake = FakeDecaid(reference_detail())
+    mcp = build_mcp(writable, db, make_coordinator(fake, db))
+    with pytest.raises(ToolError, match="ten times higher"):
+        await call(mcp, "update_shot", {"id": REFERENCE, "fields": {"enjoyment": 5}})
+    assert fake.patches == []

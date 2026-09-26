@@ -35,6 +35,15 @@ VERIFIED_DECAID_VERSION = "0.8.6+2801"
 #: comment - not knowing that, one ends up paging in circles.
 MAX_PAGE_SIZE = 100
 
+#: T46: the shot id the scale probe writes to. It must never exist; the probe
+#: relies on the lookup failing.
+SCALE_PROBE_ID = "decentespresso-mcp-scale-probe"
+
+#: T46: builds are numbered by commits on main, and #887 is in every build from
+#: 2836 on. Only the fallback when the probe gives no clear answer: a build off
+#: another branch can carry that count without the change.
+ENJOYMENT_0_10_FROM_BUILD = 2836
+
 #: T12: there is no time field. The time axis comes from machine.timestamp
 #: minus the first data point.
 MEASUREMENT_TIME_FIELD = "timestamp"
@@ -225,6 +234,25 @@ class DecaidClient:
     async def get_shot(self, shot_id: str) -> dict[str, Any]:
         """``GET /api/v1/shots/<id>`` (T11) - Detail inklusive ``measurements``."""
         return (await self._request("GET", f"/api/v1/shots/{shot_id}")).json()
+
+    async def rejects_enjoyment_over_ten(self) -> bool | None:
+        """Whether this Decaid keeps ratings on 0-10 (decaid#887, T46).
+
+        Asks the behaviour rather than the version, and changes nothing: a PUT
+        of ``enjoyment: 11`` to a shot id that does not exist. With #887 the
+        range check runs before the lookup and answers 400; before it, the
+        lookup answers 404 (measured on 0.8.6+2801). ``None`` for any other
+        answer - the caller then falls back to the build number.
+        """
+        try:
+            await self._request("PUT", f"/api/v1/shots/{SCALE_PROBE_ID}",
+                                json_body={"annotations": {"enjoyment": 11}},
+                                retry=False)
+        except ShotNotFound:
+            return False
+        except DecaidRejected as exc:
+            return "enjoyment" in str(exc) or None
+        return None
 
     async def update_shot(self, shot_id: str, patch: dict[str, Any]) -> dict[str, Any]:
         """``PUT /api/v1/shots/<id>`` (T13/T14).

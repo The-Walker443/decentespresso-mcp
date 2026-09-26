@@ -36,6 +36,7 @@ from .decaid_client import (
     DecaidError,
     DecaidUnreachable,
 )
+from .decaid_mapping import SCALE_100
 from .guards import (
     ALL_RULES,
     as_datetime,
@@ -69,6 +70,7 @@ from .sync import (
     QUICK_SYNC_MAX_AGE_S,
     STATE_BACKFILL_DONE,
     STATE_DECAID_VERSION,
+    STATE_ENJOYMENT_SCALE,
     STATE_LAST_REACHABLE,
     STATE_LAST_RESULT,
     STATE_LAST_SYNC,
@@ -153,6 +155,11 @@ TERMS that appear in the metrics:
   0.0 in Decaid, which is not a rating. Ingestion stores those as `null`, so a
   0 that does reach you is a deliberate rating by the user.
 
+- `enjoyment` is 0-10 throughout the archive (DYE2 stars x2), whatever scale
+  the tablet runs. `enjoyment_ambiguous: true` marks a rating from 1 to 10 read
+  off a tablet still on 0-100: it could be either scale and is left as it was.
+  Say so rather than reading it as low; stats leave it out of means.
+
 CURVE - two representations, and the first one is almost always enough:
 
 - `curve_shape` always comes along. It describes the shot segment by segment
@@ -195,7 +202,9 @@ WRITING - call the `update_*`, `create_*`, `clone_*` and `set_*` tools only on a
 explicit instruction, never on your own initiative and never "just to be safe".
 Set exactly the fields that were named. Confirm afterwards from the values that
 come back, not from what was sent: if a field appears under `unchanged`, Decaid
-did not take it - say so instead of reporting success.
+did not take it - say so instead of reporting success. `update_shot` takes
+`enjoyment` on the tablet's scale, which `status` shows as `enjoyment_scale`:
+on `0-100` stars x20 (1 to 10 refused), on `0-10` stars x2.
 
 COFFEE ONBOARDING FLOW - a new bag, set up for the machine. Four steps, in this
 order, each one confirmed by the user before the next:
@@ -285,8 +294,9 @@ shots that produced under 5 g (aborts, which often run under an ordinary
 profile name). `busiest_day` is the exception and counts everything, giving
 the split - a day of flushes was still a day at the machine. Top lists carry
 `rated` next to `shots`, because a mean over one rating is not the claim a
-mean over ten is. Batches report what was used, not what is left: Decaid
-stores no weight on a batch, so a remainder would be invented.\
+mean over ten is. Means are on 0-10 and leave out `ambiguous` ratings.
+Batches report what was used, not what is left: Decaid stores no weight on a
+batch, so a remainder would be invented.\
 """
 
 
@@ -736,6 +746,7 @@ def build_mcp(
             "findings": [f.as_dict() for f in capped],
             "by_rule": _count_by_rule(findings),
             "not_checked": _drop_empty(bean_age_not_checkable(shots, batches)),
+            **_ambiguous_ratings(shots),
         }
 
 
@@ -1372,11 +1383,17 @@ def _register_update_shot(mcp: FastMCP, db: Database, coordinator: SyncCoordinat
         """Changes the note, rating or weights of a shot in Decaid.
 
         `fields` maps field name -> new value; `null` clears a field. Allowed:
-        espressoNotes, enjoyment (0-100), actualDoseWeight, actualYield (each in
-        g). Timestamps, telemetry and profile are not.
+        espressoNotes, enjoyment (tablet's scale), actualDoseWeight, actualYield
+        (each in g). Timestamps, telemetry and profile are not.
         """
+        scale = None
+        if isinstance(fields, dict) and fields.get("enjoyment") is not None:
+            try:
+                scale = await coordinator.enjoyment_scale()
+            except DecaidError as exc:
+                raise ToolError(f"{exc.code}: {exc}") from exc
         try:
-            payload = validate_fields(fields)
+            payload = validate_fields(fields, enjoyment_scale=scale or SCALE_100)
         except ValidationError as exc:
             raise ToolError("invalid_argument: " + "; ".join(exc.problems)) from exc
 
@@ -1409,6 +1426,10 @@ def _register_update_shot(mcp: FastMCP, db: Database, coordinator: SyncCoordinat
         )
 
         result: dict[str, Any] = {"id": id, "changes": changes}
+        if scale:
+            archived = await asyncio.to_thread(db.get_shot_row, id)
+            result["enjoyment"] = {"tablet_scale": scale,
+                                   "archived": archived["enjoyment"] if archived else None}
         if ignored:
             result["unchanged"] = ignored
             result["note"] = (
@@ -1421,6 +1442,14 @@ def _register_update_shot(mcp: FastMCP, db: Database, coordinator: SyncCoordinat
 
 
 # ------------------------------------------------------------------ Aufbereitung
+
+
+def _ambiguous_ratings(shots: list[dict[str, Any]]) -> dict[str, Any]:
+    """Ratings whose scale cannot be told (T46) - worth rating again."""
+    ids = [s["id"] for s in shots if s.get("enjoyment_ambiguous")]
+    if not ids:
+        return {}
+    return {"ambiguous_ratings": {"count": len(ids), "shots": ids[-10:]}}
 
 
 async def _refresh(coordinator: SyncCoordinator) -> dict[str, Any]:
@@ -1472,6 +1501,7 @@ def _compact_shot(row: Any, metrics: dict[str, Any] | None) -> dict[str, Any]:
         "duration_s": row["duration_s"],
         "peak_pressure_infusion": metrics.get("peak_pressure_infusion"),
         "enjoyment": row["enjoyment"],
+        **({"enjoyment_ambiguous": True} if row["enjoyment_ambiguous"] else {}),
         "notes": _short(row["notes"]),
         "warnings": len(metrics.get("warnings") or []),
     }
@@ -1496,6 +1526,7 @@ def _full_shot(row: Any) -> dict[str, Any]:
         "target_yield_g": row["target_yield_g"],
         "stop_reason": row["stop_reason"],
         "enjoyment": row["enjoyment"],
+        **({"enjoyment_ambiguous": True} if row["enjoyment_ambiguous"] else {}),
         "notes": row["notes"],
     }
 
@@ -1974,6 +2005,7 @@ def _status_payload(config: Config, db: Database) -> dict[str, Any]:
             "url": config.decaid_url,
             "version": decaid_version,
             "verified_version": VERIFIED_DECAID_VERSION,
+            "enjoyment_scale": db.get_state(STATE_ENJOYMENT_SCALE),
             "last_reachable": last_reachable,
             "waiting_for_tablet": bool(last_result.get("waiting_for_tablet")),
         },

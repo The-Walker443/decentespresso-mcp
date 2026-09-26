@@ -81,7 +81,7 @@ def test_upsert_updates_mutable_fields(archive: Database, reference: dict) -> No
 
     row = archive.get_shot_row(reference["id"])
     assert row["notes"] == "schmeckt jetzt besser"
-    assert row["enjoyment"] == 88
+    assert row["enjoyment"] == 8.8, "read on 0-100, archived on 0-10 (T46)"
     assert row["updated_at"] == "2026-09-02T10:00:00Z"
     assert archive.count_shots() == 1
 

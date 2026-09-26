@@ -28,7 +28,10 @@ log = logging.getLogger(__name__)
 #:         preinfusion is read off rather than inferred (SPEC §8.2).
 #: 3 -> 4: puck diagnostics. Resistance, the channeling indicators and profile
 #:         compliance join the cached result (SPEC §8.5-8.7).
-METRICS_VERSION = 4
+#: 4 -> 5: ratings move to 0-10 (T46). No metric reads the rating; the bump
+#:         marks the change for anything comparing results across versions,
+#:         at the price of one recompute.
+METRICS_VERSION = 5
 
 FIRST_DROPS_WEIGHT_G = 0.3
 #: Window within which a tared scale must still read 0.

@@ -16,6 +16,11 @@ real ratings run from 40 to 100 and **not a single** natively recorded shot
 ever carries 0.0. A 0 from the import era is therefore archived as ``NULL``.
 Without this rule 75 phantom ratings would enter the archive, and guards such
 as ``audit_archive`` would take them at face value.
+
+**Scale.** The archive keeps ratings on Decaid's 0-10 scale (T46). Read from a
+tablet still on 0-100, they are converted by Decaid's own migration rule, and
+the values that rule cannot decide are kept as they are and marked - see
+:func:`enjoyment_of`.
 """
 
 from __future__ import annotations
@@ -116,33 +121,91 @@ def started_at_utc(shot: dict[str, Any]) -> tuple[str | None, str]:
     return _iso(moment), source
 
 
-def normalize_enjoyment(shot: dict[str, Any]) -> float | None:
-    """Rating, with the zero rule from the module docstring applied."""
+#: The scale Decaid keeps ``annotations.enjoyment`` on. Up to 0.8.6 it passed
+#: de1app's and Visualizer's 0-100 through; decentespresso/decaid#887 made it
+#: Decaid's own 0-10 field (T46). The archive keeps 0-10 throughout.
+SCALE_100 = "0-100"
+SCALE_10 = "0-10"
+ENJOYMENT_MAX = 10.0
+
+
+def _untouched_import(shot: dict[str, Any]) -> bool:
+    """Decaid's own test for a de1app import nobody has edited since (#887).
+
+    Revision stamps set at import time and no content change afterwards. The
+    strings are compared as Decaid compares them in its migration.
+    """
+    created, updated = shot.get("createdAt"), shot.get("updatedAt")
+    # Decaid's prefix test, not is_import_era: the two must pick the same rows.
+    return (str(shot.get("id") or "").startswith("de1app-")
+            and bool(created) and bool(updated)
+            and created != shot.get("timestamp") and str(updated) <= str(created))
+
+
+def enjoyment_of(shot: dict[str, Any], scale: str = SCALE_100) -> tuple[float | None, bool]:
+    """``(rating on 0-10, ambiguous)``, with the zero rule applied first.
+
+    On a 0-100 tablet the conversion is Decaid's own schema-6 rule, so the
+    archive holds before the update what the tablet will hold after it: over
+    10 is divided by ten, always; 10 and below only on an untouched de1app
+    import. Any other value from 1 to 10 cannot be told apart - a low 0-100
+    rating, DYE2's raw star index (dye2#7) or a 0-10 write by DYE2 0.1.15 on a
+    0.8.6 tablet all look the same. Decaid leaves those as they are, and so
+    does this; ``ambiguous`` says so. 0 is 0 on either scale.
+    """
     annotations = shot.get("annotations") or {}
     value = annotations.get("enjoyment")
     if value is None:
-        return None
+        return None, False
     try:
         rating = float(value)
     except (TypeError, ValueError):
-        return None
+        return None, False
     if rating == 0 and is_import_era(shot.get("id", "")):
         # 75 of 88 imported shots sit like this - it is the import default,
         # not a rating.
-        return None
-    return rating
+        return None, False
+    if scale == SCALE_10 or rating == 0:
+        return rating, False
+    if rating > ENJOYMENT_MAX or _untouched_import(shot):
+        return round(min(rating / 10, ENJOYMENT_MAX), 3), False
+    return rating, True
 
 
-def shot_row_from_decaid(detail: dict[str, Any], synced_at: str) -> dict[str, Any]:
-    """Detail response -> a row for ``shots``."""
-    annotations = detail.get("annotations") or {}
+def normalize_enjoyment(shot: dict[str, Any], scale: str = SCALE_100) -> float | None:
+    """The rating on the archive's 0-10 scale; see :func:`enjoyment_of`."""
+    return enjoyment_of(shot, scale)[0]
+
+
+def annotation_fields(shot: dict[str, Any], scale: str = SCALE_100) -> dict[str, Any]:
+    """The columns that come from ``annotations``, from a detail or a list item.
+
+    Separate because the list carries annotations too: re-reading them
+    after Decaid rescaled its ratings needs no detail request (T46).
+    """
+    annotations = shot.get("annotations") or {}
+    dose = _number(annotations.get("actualDoseWeight"))
+    yielded = _number(annotations.get("actualYield"))
+    enjoyment, ambiguous = enjoyment_of(shot, scale)
+    return {
+        "dose_g": dose,
+        "yield_g": yielded,
+        "ratio": round(yielded / dose, 3) if dose and yielded else None,
+        "enjoyment": enjoyment,
+        "enjoyment_ambiguous": int(ambiguous),
+        "notes": _text(annotations.get("espressoNotes")) or _text(shot.get("shotNotes")),
+    }
+
+
+def shot_row_from_decaid(
+    detail: dict[str, Any], synced_at: str, scale: str = SCALE_100,
+) -> dict[str, Any]:
+    """Detail response -> a row for ``shots``. ``scale`` is the tablet's (T46)."""
     workflow = detail.get("workflow") or {}
     context = workflow.get("context") or {}
     extras = context.get("extras") or {}
 
     started, source = started_at_utc(detail)
-    dose = _number(annotations.get("actualDoseWeight"))
-    yielded = _number(annotations.get("actualYield"))
 
     times = measurement_times(detail.get("measurements") or [])
 
@@ -167,11 +230,7 @@ def shot_row_from_decaid(detail: dict[str, Any], synced_at: str) -> dict[str, An
         "grinder_setting": _text(context.get("grinderSetting")),
         "target_dose_g": _number(context.get("targetDoseWeight")),
         "target_yield_g": _number(context.get("targetYield")),
-        "dose_g": dose,
-        "yield_g": yielded,
-        "ratio": round(yielded / dose, 3) if dose and yielded else None,
-        "enjoyment": normalize_enjoyment(detail),
-        "notes": _text(annotations.get("espressoNotes")) or _text(detail.get("shotNotes")),
+        **annotation_fields(detail, scale),
         # Without the measurements: those live in shot_series, and a detail
         # response weighs about 140 kB with them - across all shots that would
         # be a multiple of the rest of the archive, stored twice.

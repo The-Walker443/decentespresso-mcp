@@ -36,6 +36,7 @@ from typing import Any
 from .config import Config
 from .db import Database, utc_now_iso
 from .decaid_client import (
+    ENJOYMENT_0_10_FROM_BUILD,
     MAX_PAGE_SIZE,
     AlreadyExists,
     DecaidClient,
@@ -45,6 +46,9 @@ from .decaid_client import (
     ShotNotFound,
 )
 from .decaid_mapping import (
+    SCALE_10,
+    SCALE_100,
+    annotation_fields,
     batch_row_from_decaid,
     bean_row_from_decaid,
     series_rows_from_decaid,
@@ -93,6 +97,11 @@ STATE_LAST_RESULT = "last_sync_result"
 STATE_BACKFILL_DONE = "backfill_completed_at"
 STATE_LAST_REACHABLE = "decaid_last_reachable_at"
 STATE_DECAID_VERSION = "decaid_version"
+#: T46: the tablet's rating scale, the Decaid version it was determined for,
+#: and when the annotations were re-read after the switch to 0-10.
+STATE_ENJOYMENT_SCALE = "enjoyment_scale"
+STATE_ENJOYMENT_SCALE_FOR = "enjoyment_scale_version"
+STATE_ENJOYMENT_REREAD = "enjoyment_reread_at"
 
 #: Cap on detail requests per run. A detail weighs about 140 kB; for the first
 #: backfill of 168 shots that is a good 23 MB which would otherwise have to go
@@ -120,6 +129,10 @@ class SyncResult:
     waiting_for_tablet: bool = False
     #: Detail requests still outstanding when the cap kicked in.
     pending: int = 0
+    #: T46: the tablet's rating scale, and how many shots the one-off re-read
+    #: of annotations after the switch to 0-10 changed.
+    enjoyment_scale: str = SCALE_100
+    annotations_reread: int | None = None
     #: Blocking: transient problems where a later attempt can help.
     errors: list[str] = field(default_factory=list)
     #: Non-blocking: deterministic findings. A retry changes nothing about
@@ -158,7 +171,7 @@ async def run_sync(
     result = SyncResult(mode="backfill" if full else "incremental")
 
     try:
-        await _sync_beans(client, db, result)
+        result.enjoyment_scale = await _sync_beans(client, db, result)
         listed = await _list_all_shots(client)
     except DecaidUnreachable:
         result.waiting_for_tablet = True
@@ -172,6 +185,12 @@ async def run_sync(
         await asyncio.to_thread(_persist, db, result)
         log.error("sync aborted", extra={"fields": {"error": exc.code}})
         return result
+
+    if (result.enjoyment_scale == SCALE_10
+            and not await asyncio.to_thread(db.get_state, STATE_ENJOYMENT_REREAD)):
+        result.annotations_reread = await asyncio.to_thread(
+            _reread_annotations, db, listed)
+        await asyncio.to_thread(db.set_state, STATE_ENJOYMENT_REREAD, utc_now_iso())
 
     known = await asyncio.to_thread(db.known_shot_versions)
     # A shot is fetched when it is new or has changed - in a backfill too.
@@ -207,7 +226,8 @@ async def run_sync(
     )
 
     for item in stale:
-        if await _ingest_shot(client, db, item["id"], result) is False:
+        if await _ingest_shot(client, db, item["id"], result,
+                              result.enjoyment_scale) is False:
             break
 
     result.metrics_computed = await asyncio.to_thread(warm_metrics_cache, db)
@@ -257,7 +277,8 @@ async def _run_guards(db: Database, config: Config, result: SyncResult) -> None:
 
 
 async def _ingest_shot(
-    client: DecaidClient, db: Database, shot_id: str, result: SyncResult
+    client: DecaidClient, db: Database, shot_id: str, result: SyncResult,
+    scale: str = SCALE_100,
 ) -> bool:
     """Fetch and store one shot. ``False`` means: tablet gone, end the run."""
     try:
@@ -275,7 +296,8 @@ async def _ingest_shot(
 
     try:
         synced_at = utc_now_iso()
-        shot = shot_row_from_decaid(detail, synced_at)
+        shot = shot_row_from_decaid(detail, synced_at, scale)
+        _carry_ambiguity(shot, await asyncio.to_thread(db.get_shot_row, shot_id), scale)
         series = series_rows_from_decaid(detail)
         is_new = await asyncio.to_thread(db.upsert_shot, shot, series)
     except Exception as exc:  # noqa: BLE001 - a single failure must not kill the run
@@ -316,17 +338,14 @@ async def _link_profile(
     result.profiles_linked += 1
 
 
-async def _sync_beans(client: DecaidClient, db: Database, result: SyncResult) -> None:
+async def _sync_beans(client: DecaidClient, db: Database, result: SyncResult) -> str:
     """Beans and batches. Both lists are small and come unpaginated.
 
     Decaid's version is noted along the way: ``status()`` works on the database
-    only and cannot ask for itself.
+    only and cannot ask for itself. So is its rating scale, which the shots
+    are read with; that is what this returns.
     """
-    info = await client.info()
-    await asyncio.to_thread(
-        db.set_state, STATE_DECAID_VERSION,
-        str(info.get("fullVersion") or info.get("version") or "")
-    )
+    scale = await enjoyment_scale(client, db)
     synced_at = utc_now_iso()
     beans = [bean_row_from_decaid(b, synced_at) for b in await client.beans()]
     batches = [batch_row_from_decaid(b, synced_at) for b in await client.bean_batches()]
@@ -334,6 +353,7 @@ async def _sync_beans(client: DecaidClient, db: Database, result: SyncResult) ->
         result.beans = await asyncio.to_thread(db.upsert_beans, beans)
     if batches:
         result.bean_batches = await asyncio.to_thread(db.upsert_bean_batches, batches)
+    return scale
 
 
 async def _list_all_shots(client: DecaidClient) -> list[dict[str, Any]]:
@@ -349,6 +369,80 @@ async def _list_all_shots(client: DecaidClient) -> list[dict[str, Any]]:
         if offset >= page.total:
             break
     return items
+
+
+async def enjoyment_scale(client: DecaidClient, db: Database) -> str:
+    """The tablet's rating scale, determined once per Decaid version (T46).
+
+    The probe asks the behaviour (``rejects_enjoyment_over_ten``); the build
+    number is only the fallback when it gives no clear answer.
+    """
+    info = await client.info()
+    version = str(info.get("fullVersion") or info.get("version") or "")
+    await asyncio.to_thread(db.set_state, STATE_DECAID_VERSION, version)
+    known = await asyncio.to_thread(db.get_state, STATE_ENJOYMENT_SCALE)
+    if known and await asyncio.to_thread(db.get_state, STATE_ENJOYMENT_SCALE_FOR) == version:
+        return known
+    refused = await client.rejects_enjoyment_over_ten()
+    if refused is None:
+        refused = _build_number(info) >= ENJOYMENT_0_10_FROM_BUILD
+    scale = SCALE_10 if refused else SCALE_100
+    await asyncio.to_thread(db.set_state, STATE_ENJOYMENT_SCALE, scale)
+    await asyncio.to_thread(db.set_state, STATE_ENJOYMENT_SCALE_FOR, version)
+    if scale != known:
+        log.info("enjoyment scale", extra={"fields": {"scale": scale, "version": version}})
+    return scale
+
+
+def _build_number(info: dict[str, Any]) -> int:
+    raw = info.get("buildNumber") or str(info.get("fullVersion") or "").partition("+")[2]
+    try:
+        return int(str(raw))
+    except ValueError:
+        return 0
+
+
+def _carry_ambiguity(row: dict[str, Any], previous: Any, scale: str) -> None:
+    """Keep a rating marked ambiguous across the switch to 0-10 (T46).
+
+    Decaid's migration leaves such a value as it was and does not touch
+    ``updatedAt``, so read on 0-10 it would pass for canonical. It still is
+    not - until someone rates the shot again, which moves ``updatedAt``.
+    """
+    if (scale == SCALE_10 and previous is not None and previous["enjoyment_ambiguous"]
+            and previous["enjoyment"] == row["enjoyment"]
+            and previous["updated_at"] == row["updated_at"]):
+        row["enjoyment_ambiguous"] = 1
+
+
+def _reread_annotations(db: Database, listed: list[dict[str, Any]]) -> int:
+    """Re-read every archived shot's annotations from the list, once (T46).
+
+    Decaid's schema-6 migration rescales ratings without touching
+    ``updatedAt``, so the cursor in ``run_sync`` never sees it. The list
+    carries the annotations, so this costs no detail request. Returns how many
+    shots changed.
+    """
+    stored = db.annotation_rows()
+    synced_at = utc_now_iso()
+    rows = []
+    for item in listed:
+        previous = stored.get(item.get("id"))
+        if previous is None:
+            continue           # not archived yet - the normal path fetches it
+        fields = annotation_fields(item, SCALE_10)
+        probe = {**fields, "updated_at": _stamp(item.get("updatedAt"))}
+        _carry_ambiguity(probe, previous, SCALE_10)
+        fields["enjoyment_ambiguous"] = probe["enjoyment_ambiguous"]
+        if all(previous[k] == v for k, v in fields.items()):
+            continue
+        rows.append({
+            **fields, "id": item["id"], "synced_at": synced_at,
+            "weights_changed": (previous["dose_g"], previous["yield_g"])
+                               != (fields["dose_g"], fields["yield_g"]),
+            "raw_json": json.dumps(item, ensure_ascii=False, separators=(",", ":")),
+        })
+    return db.update_annotations(rows)
 
 
 def _stamp(value: Any) -> str | None:
@@ -388,11 +482,10 @@ async def refresh_shot(client: DecaidClient, db: Database, shot_id: str) -> dict
     """
     detail = await client.get_shot(shot_id)
     synced_at = utc_now_iso()
-    await asyncio.to_thread(
-        db.upsert_shot,
-        shot_row_from_decaid(detail, synced_at),
-        series_rows_from_decaid(detail),
-    )
+    scale = await asyncio.to_thread(db.get_state, STATE_ENJOYMENT_SCALE) or SCALE_100
+    shot = shot_row_from_decaid(detail, synced_at, scale)
+    _carry_ambiguity(shot, await asyncio.to_thread(db.get_shot_row, shot_id), scale)
+    await asyncio.to_thread(db.upsert_shot, shot, series_rows_from_decaid(detail))
     await asyncio.to_thread(metrics_for_shot, db, shot_id, refresh=True)
     return detail
 
@@ -442,6 +535,10 @@ class SyncCoordinator:
         except ValueError:
             return None
         return (datetime.now(UTC) - last).total_seconds()
+
+    async def enjoyment_scale(self) -> str:
+        """The tablet's rating scale, checked against its current version."""
+        return await enjoyment_scale(self._client, self._db)
 
     async def write_shot(
         self, shot_id: str, fields: dict[str, Any]
@@ -1087,6 +1184,8 @@ __all__ = [
     "QUICK_SYNC_MAX_AGE_S",
     "STATE_BACKFILL_DONE",
     "STATE_DECAID_VERSION",
+    "STATE_ENJOYMENT_REREAD",
+    "STATE_ENJOYMENT_SCALE",
     "STATE_LAST_REACHABLE",
     "STATE_LAST_RESULT",
     "STATE_LAST_SYNC",

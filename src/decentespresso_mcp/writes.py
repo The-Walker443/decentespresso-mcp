@@ -25,6 +25,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+from .decaid_mapping import ENJOYMENT_MAX, SCALE_10, SCALE_100
+
 #: Maximum length of free-text fields.
 MAX_NOTE_CHARS = 5_000
 
@@ -83,7 +85,7 @@ SHOT = Ruleset(
     name="shot",
     allowed={
         "espressoNotes": "note on the shot",
-        "enjoyment": "rating 0-100 (0 is a rating, not an empty value)",
+        "enjoyment": "rating on the tablet's scale (0 is a rating, not an empty value)",
         "actualDoseWeight": "dose actually used, in g",
         "actualYield": "yield actually pulled, in g",
     },
@@ -240,12 +242,13 @@ def allowed_field_help(ruleset: Ruleset = SHOT) -> str:
 
 
 def validate_fields(
-    fields: dict[str, Any], ruleset: Ruleset = SHOT
+    fields: dict[str, Any], ruleset: Ruleset = SHOT, *, enjoyment_scale: str = SCALE_100,
 ) -> dict[str, Any]:
     """Check the whitelist and every value range before anything goes out.
 
     Returns the fields in the shape the API expects. ``None`` stays ``None`` -
-    that is how a field gets cleared.
+    that is how a field gets cleared. ``enjoyment_scale`` is the tablet's
+    (T46): a rating goes out on the scale Decaid checks it against.
     """
     if not isinstance(fields, dict) or not fields:
         raise ValidationError(
@@ -268,7 +271,7 @@ def validate_fields(
             continue
 
         try:
-            payload[name] = _coerce(ruleset, name, value)
+            payload[name] = _coerce(ruleset, name, value, enjoyment_scale)
         except ValueError as exc:
             problems.append(f"{name}: {exc}")
 
@@ -277,13 +280,13 @@ def validate_fields(
     return payload
 
 
-def _coerce(ruleset: Ruleset, name: str, value: Any) -> Any:
+def _coerce(ruleset: Ruleset, name: str, value: Any, scale: str = SCALE_100) -> Any:
     if value is None:
         return None
 
     kind = ruleset.kinds.get(name, "text")
     if kind == "enjoyment":
-        return _enjoyment(value)
+        return _enjoyment(value, scale)
     if kind == "weight":
         return _weight(name, value)
     if kind == "date":
@@ -369,19 +372,36 @@ def _int_pair(value: Any) -> list[int]:
     return [low, high]
 
 
-def _enjoyment(value: Any) -> int:
+def _enjoyment(value: Any, scale: str = SCALE_100) -> int | float:
+    """A rating on the tablet's scale (T46).
+
+    On 0-10 one decimal, which is what a 0-100 rating comes down to. On 0-100
+    whole numbers - and not 1 to 10: Decaid's migration to 0-10 leaves those as
+    they are, so a 10 written today would read as five stars tomorrow.
+    """
+    top = ENJOYMENT_MAX if scale == SCALE_10 else 100.0
+    expected = ("a number from 0 to 10, one decimal at most" if scale == SCALE_10
+                else "a whole number from 0 to 100")
     if isinstance(value, bool) or not isinstance(value, int | float | str):
-        raise ValueError("a whole number from 0 to 100 is expected")
+        raise ValueError(f"{expected} is expected")
     try:
-        number = float(value)
+        number = float(str(value).replace(",", "."))
     except ValueError:
         raise ValueError(f"{value!r} is not a number") from None
+    if not 0 <= number <= top:
+        raise ValueError(f"{value} is outside the range 0 to {top:g} (tablet scale {scale})")
+    if scale == SCALE_10:
+        if round(number, 1) != number:
+            raise ValueError(f"{value!r} has more than one decimal")
+        return number
     if number != int(number):
         raise ValueError(f"{value!r} is not a whole number")
-    number = int(number)
-    if not 0 <= number <= 100:
-        raise ValueError(f"{number} is outside the range 0 to 100")
-    return number
+    if 0 < number <= ENJOYMENT_MAX:
+        raise ValueError(
+            f"{int(number)} cannot be told from a 0-10 rating once Decaid moves to "
+            "0-10, and would then read ten times higher - use 0 or a value over 10"
+        )
+    return int(number)
 
 
 def _weight(name: str, value: Any) -> float:

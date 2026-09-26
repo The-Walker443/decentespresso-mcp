@@ -61,7 +61,7 @@ _SHOT_COLUMNS = (
     "bean_batch_id", "bean_id", "bean_name", "bean_roaster", "basket_name",
     "grinder_model", "grinder_setting",
     "target_dose_g", "target_yield_g", "dose_g", "yield_g", "ratio",
-    "enjoyment", "notes", "raw_json", "synced_at",
+    "enjoyment", "enjoyment_ambiguous", "notes", "raw_json", "synced_at",
 )
 
 _BEAN_COLUMNS = (
@@ -223,6 +223,34 @@ class Database:
             self._conn.commit()
             return is_new
 
+    def annotation_rows(self) -> dict[str, dict[str, Any]]:
+        """Per shot the annotation columns, to compare a re-read against."""
+        with self._lock:
+            return {row["id"]: dict(row) for row in self._conn.execute(
+                "SELECT id, dose_g, yield_g, ratio, enjoyment, enjoyment_ambiguous, "
+                "       notes, updated_at FROM shots"
+            )}
+
+    def update_annotations(self, rows: Sequence[dict[str, Any]]) -> int:
+        """Overwrite annotation columns and the stored response; series untouched.
+
+        For a re-read from the shot list, which carries annotations but no
+        measurements (T46). Metrics are dropped where dose or yield moved.
+        """
+        with self._lock:
+            for row in rows:
+                self._conn.execute(
+                    "UPDATE shots SET dose_g = :dose_g, yield_g = :yield_g, "
+                    "ratio = :ratio, enjoyment = :enjoyment, "
+                    "enjoyment_ambiguous = :enjoyment_ambiguous, notes = :notes, "
+                    "raw_json = :raw_json, synced_at = :synced_at WHERE id = :id", row,
+                )
+                if row.get("weights_changed"):
+                    self._conn.execute("DELETE FROM shot_metrics WHERE shot_id = ?",
+                                       (row["id"],))
+            self._conn.commit()
+        return len(rows)
+
     # -------------------------------------------------- Beans and batches
 
     def upsert_beans(self, beans: Sequence[dict[str, Any]]) -> int:
@@ -271,7 +299,8 @@ class Database:
         with self._lock:
             return [dict(row) for row in self._conn.execute(
                 f"SELECT id, started_at, bean_id, bean_batch_id, grinder_setting, "
-                f"       dose_g, target_dose_g, yield_g, target_yield_g, enjoyment "
+                f"       dose_g, target_dose_g, yield_g, target_yield_g, enjoyment, "
+                f"       enjoyment_ambiguous "
                 f"FROM shots {clause} ORDER BY started_at ASC", params,
             )]
 
@@ -286,7 +315,7 @@ class Database:
             return [dict(row) for row in self._conn.execute(
                 "SELECT id, started_at, bean_name, bean_id, bean_batch_id, "
                 "       profile_name, grinder_setting, dose_g, yield_g, ratio, "
-                "       duration_s, enjoyment "
+                "       duration_s, enjoyment, enjoyment_ambiguous "
                 "FROM shots WHERE started_at >= ? AND started_at < ? "
                 "ORDER BY started_at ASC", (since, until),
             )]
