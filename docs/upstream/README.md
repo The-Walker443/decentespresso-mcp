@@ -21,13 +21,16 @@ that filter.
 
 **Verify on the tablet first, then file if confirmed (two):**
 
-- **08 (DYE2)** - a saved favourite stores its profile as `{id, title}` without
-  steps, and Decaid does not resolve that. The conclusion that tapping a
-  favourite therefore does not change the profile comes from reading the
-  source and from the API, not from watching the dashboard. Check: run a
-  visibly different profile (Adaptive v3, say), tap "Seniman House Blend" on
-  the DYE2 dashboard, look at which profile the machine then shows. If it is
-  still Adaptive v3, file 08.
+- **08 (DYE2) - checked 2026-09-26, not filed.** On the tablet, with Blooming
+  Espresso running, the operator applied "Seniman House Blend" through DYE2's
+  Settings -> Favourites; afterwards the workflow ran a full D-Flow (6 steps),
+  not Blooming Espresso with a new name. So DYE2's own apply path does change
+  the profile, and the draft's central claim does not hold for DYE2's users.
+  What was measured stays true for the API alone: a `PUT /workflow` with the
+  stored `{id: null, title}` stub renames the running profile and keeps its
+  steps (Adaptive v3 kept its steps under the title "D-Flow", same day). That
+  only concerns a second client applying the stored item as it is - this
+  server, which guards against it (T44). Nothing to report.
 - **T45 (DYE2, in draft 08, third observation)** - six favourites store a bean
   id where a batch id belongs. That may be what an older DYE2 wrote. Check:
   open one of them in DYE2, save it again, and see whether the new entry stores
@@ -47,8 +50,7 @@ that filter.
 | 10 | Licence hygiene, not a bug |
 | 11 | Streamline's auto-save writes DYE2's keys knowingly - the code comments say so. A policy disagreement between two projects, not a defect to report from outside |
 
-The drafts stay here for reference; the ones to file are 02, 03, 09 and 12,
-and 08 after the check above.
+The drafts stay here for reference; the ones to file are 02, 03, 09 and 12.
 
 | # | Project | Finding | Draft |
 |---|---|---|---|
