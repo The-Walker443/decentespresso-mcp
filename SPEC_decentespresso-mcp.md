@@ -1002,6 +1002,40 @@ Names follow the contract's fallbacks (title, subtitle, a derived "roaster ·
 coffee"); five live favourites derive the same label, so DYE2's items can also
 be named by id.
 
+**Issues are listed before anything is applied.** Each entry of `list_recipes`
+carries `issues` when something is wrong with it, and no key when nothing is -
+so a broken favourite is recognisable in the listing, not only in the refusal
+or the read-back of `apply_recipe`. The rules are pure (`recipes.issues_of`)
+and judge what the entry would apply against one catalogue of batches, beans
+and profiles, fetched once per listing:
+
+| issue | meaning | source of the finding |
+|---|---|---|
+| `name_only_profile` | profile is `{id: null, title}`; applying keeps the current one | T44 |
+| `profile_reference_unresolved` | a profile id no stored record has | T44 |
+| `profile_missing` | an unpinned own recipe whose title no longer resolves | §11.6 above |
+| `no_workflow` | a DYE2 recipe from before `workflow`; listed, not applied | contract |
+| `batch_is_bean_id` | the batch field holds a bean id; apply refuses it | T45 |
+| `batch_unknown` | the batch id is neither a batch nor a bean | T29 |
+| `labels_without_batch` | coffee name or roaster set, no batch | T42 |
+| `labels_mismatch_batch` | labels differ from the named batch's bean | T28 |
+| `duplicate` | same source, same name, same values; `duplicate_of` lists the others | measured |
+| `name_not_unique` | same source and name, different values; apply by id | measured |
+
+"Same values" means the context and profile that applying would send - the
+payload, not the stored item, whose ids and creation times always differ. That
+line matters on the live store: of the five Yirga Santos favourites four are
+identical, the fifth carries a profile reference instead of a name and no rpm.
+Calling all five duplicates would invite deleting the one that differs. Own
+recipes are not compared: their names are unique by constraint. With the
+tablet off only what an entry shows by itself is judged (`name_only_profile`,
+`no_workflow`); whether a batch exists cannot be told unseen.
+
+Measured read-only against the live instance on 2026-09-26: the recipe "Decaf"
+`labels_without_batch`; seven favourites `name_only_profile`; RT Decaf and all
+five Yirga Santos `batch_is_bean_id`; four `duplicate`, one `name_not_unique`;
+no `labels_mismatch_batch`, no unresolved reference.
+
 **What the tablet cannot see.** Recipes saved here do not appear on the tablet:
 the only way to put them there would be to write DYE2's key. A documented path
 for a second writer is proposed upstream (`docs/upstream/07`).

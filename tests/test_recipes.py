@@ -547,3 +547,94 @@ async def test_favourites_are_never_written_either(writable, db) -> None:
 
 PROFILES_BY_TITLE = {r["profile"]["title"]: r["profile"] for r in fake_profiles()
                      if r["visibility"] == "visible"}
+
+
+# ------------------------------------------------------ Issues, duplicates
+
+YIRGA = "Coffee Circle · Coffee Circle Yirga Santos"
+YIRGA_TWINS = ["83208701-b188-4068-a8d1-899d96cded16", "4ed2bb1b-c361-472d-bdab-ef71cd874959",
+               "1fe127b1-04fc-4102-b0fe-ff3962e03c6f", "0b097e5f-258c-46bf-8fa9-c444e88691ed"]
+
+
+async def listed(fake: StoreFake, config: Config, db: Database) -> dict[str, dict[str, Any]]:
+    out = (await call(server(fake, config, db), "list_recipes", {}))["recipes"]
+    return {str(r.get("id") or r["name"]): r for r in out}
+
+
+async def test_broken_favourites_are_flagged_before_anyone_applies_them(writable, db) -> None:
+    """The live store as measured on 2026-09-26: without these flags a listing
+    shows eight usable favourites, and applying most of them either leaves the
+    profile alone (T44) or points the machine at a batch that does not exist (T45).
+    """
+    entries = await listed(FavFake(), writable, db)
+    assert entries["af-1789560226867"]["issues"] == ["name_only_profile"]
+    assert entries["af-1789560386859"]["issues"] == ["name_only_profile", "batch_is_bean_id"]
+    reference = entries["a3f6c671-7313-46c1-9cef-db8ef7210385"]
+    assert "batch_is_bean_id" in reference["issues"]
+    assert "name_only_profile" not in reference["issues"], "its profile is a real reference"
+    assert entries["1"]["issues"] == ["labels_without_batch"], "T42"
+
+
+async def test_identical_favourites_are_marked_and_point_at_each_other(writable, db) -> None:
+    """Four of the five Yirga Santos favourites are the same values under the
+    same label; the fifth differs (reference profile, no rpm) and must not be
+    reported as a copy, or deleting "the duplicates" would lose it.
+    """
+    entries = await listed(FavFake(), writable, db)
+    for twin in YIRGA_TWINS:
+        assert "duplicate" in entries[twin]["issues"]
+        assert sorted(entries[twin]["duplicate_of"]) == sorted(set(YIRGA_TWINS) - {twin})
+    fifth = entries["a3f6c671-7313-46c1-9cef-db8ef7210385"]
+    assert "name_not_unique" in fifth["issues"]
+    assert "duplicate" not in fifth["issues"] and "duplicate_of" not in fifth
+
+
+async def test_a_sound_entry_carries_no_issues_key(writable, db) -> None:
+    """The key only appears when something is wrong, so its absence reads as fine."""
+    fake = StoreFake()
+    mcp = server(fake, writable, db)
+    await saved(fake, mcp)
+    (mine,) = (await call(mcp, "list_recipes", {}))["recipes"]
+    assert "issues" not in mine
+
+
+async def test_duplicates_are_counted_within_a_source_only(writable, db) -> None:
+    """A DYE2 favourite and a DYE2 recipe with one name are two different things."""
+    fake = FavFake()
+    entries = (await call(server(fake, writable, db), "list_recipes", {}))["recipes"]
+    decafs = [r for r in entries if r["name"] == "Decaf"]
+    assert {r["source"] for r in decafs} == {"dye2", "dye2_favs"}
+    for entry in decafs:
+        assert not {"duplicate", "name_not_unique"} & set(entry.get("issues", []))
+
+
+async def test_with_the_tablet_off_only_what_the_entry_shows_is_judged(writable, db) -> None:
+    """No catalogue, no guessing: a batch cannot be called unknown unseen."""
+    from decentespresso_mcp.recipes import issues_of
+    rt_decaf = favourite("RT Decaf")
+    assert issues_of("dye2_favs", rt_decaf, None) == ["name_only_profile"]
+    fake = StoreFake()
+    mcp = server(fake, writable, db)
+    await saved(fake, mcp)
+    fake.offline = True
+    (mine,) = (await call(mcp, "list_recipes", {}))["recipes"]
+    assert "issues" not in mine
+
+
+def test_an_own_recipe_whose_profile_is_gone_says_so() -> None:
+    """Unpinned recipes apply the profile by title; with that title deleted
+    apply would fail halfway, so the listing says it first.
+    """
+    from decentespresso_mcp.recipes import Catalogue, issues_of
+    row = {"name": "house", "profile_title": "Gone", "pin_profile": 0}
+    empty = Catalogue(batches={}, beans={}, profile_ids=frozenset(),
+                      profile_titles=frozenset({"d-flow"}))
+    assert issues_of("mine", row, empty) == ["profile_missing"]
+    assert issues_of("mine", {**row, "profile_title": "D-FLOW"}, empty) == []
+
+
+def test_a_reference_to_a_missing_profile_is_flagged() -> None:
+    from decentespresso_mcp.recipes import Catalogue, issues_of
+    fav = next(f for f in FAVS if f.get("id") == "a3f6c671-7313-46c1-9cef-db8ef7210385")
+    none = Catalogue(batches={}, beans={}, profile_ids=frozenset(), profile_titles=frozenset())
+    assert "profile_reference_unresolved" in issues_of("dye2_favs", fav, none)

@@ -17,6 +17,7 @@ back (dyeStrip.js, saveItemFields). That is noted upstream, not copied.
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from typing import Any
 
 from .profile_forge import TITLE_SEPARATOR, default_title
@@ -339,6 +340,114 @@ def _compact(block: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in block.items() if v not in (None, {}, [])}
 
 
-__all__ = ["DYE2_NAMESPACE", "DYE2_RECIPES", "SOURCES", "TITLE_SEPARATOR",
+__all__ = ["ISSUES", "Catalogue", "issues_of", "mark_duplicates", "payload_of",
+           "DYE2_NAMESPACE", "DYE2_RECIPES", "SOURCES", "TITLE_SEPARATOR",
            "choose", "context_patch", "default_name", "dye2_name", "dye2_view",
            "own_view", "row_from_workflow", "suggest_name"]
+
+
+# ------------------------------------------------------------------ Issues
+
+#: Problem codes on a listed recipe or favourite, found before anything is
+#: applied. Their meaning is spelled out once, in INSTRUCTIONS.
+ISSUES = (
+    "name_only_profile",            # profile is a title without steps or id (T44)
+    "profile_reference_unresolved", # profile is an id that is not on the tablet
+    "profile_missing",              # mine, unpinned: its profile title is gone
+    "no_workflow",                  # DYE2 item from before the ready-made workflow
+    "batch_is_bean_id",             # beanBatchId holds a bean's id (T45)
+    "batch_unknown",                # beanBatchId is neither a batch nor a bean
+    "labels_without_batch",         # sets a coffee name but no batch (T42)
+    "labels_mismatch_batch",        # coffee name/roaster differ from the batch's bean
+    "duplicate",                    # same name and same values as another entry
+    "name_not_unique",              # same name as another entry, different values
+)
+
+
+@dataclass(frozen=True, slots=True)
+class Catalogue:
+    """What the tablet holds right now, fetched once per listing."""
+
+    batches: dict[str, str]                    # batch id -> bean id
+    beans: dict[str, tuple[Any, Any]]          # bean id -> (name, roaster)
+    profile_ids: frozenset[str]
+    profile_titles: frozenset[str]             # casefolded, not deleted
+
+
+def payload_of(source: str, raw: dict[str, Any]) -> tuple[dict[str, Any], Any]:
+    """``(context, profile)`` an entry would apply - what its issues are judged on."""
+    if source == "dye2_favs":
+        context, profile, _ = favourite_workflow(raw)
+        return context, profile
+    if source == "dye2":
+        workflow = raw.get("workflow") or {}
+        return dict(workflow.get("context") or {}), workflow.get("profile")
+    return context_patch(raw), None
+
+
+def issues_of(
+    source: str, raw: dict[str, Any], catalogue: Catalogue | None,
+) -> list[str]:
+    """Everything wrong with one entry that can be told without applying it.
+
+    Without a catalogue (tablet off) only what the entry itself shows is
+    judged; the rest would be a guess.
+    """
+    found: list[str] = []
+    context, profile = payload_of(source, raw)
+    if source == "dye2" and not isinstance(raw.get("workflow"), dict):
+        found.append("no_workflow")
+    kind = profile_kind(profile)
+    if kind == "name":
+        found.append("name_only_profile")
+    if catalogue is None:
+        return found
+    if kind == "reference" and profile["id"] not in catalogue.profile_ids:
+        found.append("profile_reference_unresolved")
+    if (source == "mine" and not raw.get("pin_profile")
+            and str(raw.get("profile_title") or "").casefold()
+            not in catalogue.profile_titles):
+        found.append("profile_missing")
+
+    batch = context.get("beanBatchId")
+    if batch:
+        bean_id = catalogue.batches.get(str(batch))
+        if bean_id is None:
+            found.append("batch_is_bean_id" if str(batch) in catalogue.beans
+                         else "batch_unknown")
+        elif source != "mine":
+            name, roaster = catalogue.beans.get(bean_id, (None, None))
+            shown = (context.get("coffeeName"), context.get("coffeeRoaster"))
+            if any(v is not None for v in shown) and shown != (name, roaster):
+                found.append("labels_mismatch_batch")
+    elif context.get("coffeeName") or context.get("coffeeRoaster"):
+        found.append("labels_without_batch")
+    return found
+
+
+def mark_duplicates(entries: list[tuple[dict[str, Any], str, dict[str, Any]]]) -> None:
+    """Within one source: same name and same values is a duplicate; same name
+    and different values is a name that does not pick one entry.
+
+    Measured on the live store: five favourites share one derived label, four
+    of them identical in every value that would be applied, the fifth with a
+    real profile reference instead of a name - so only four are duplicates.
+    ``entries`` are ``(view, source, raw)``; views are changed in place.
+    """
+    groups: dict[tuple[str, str], list[tuple[dict[str, Any], str]]] = {}
+    for view, source, raw in entries:
+        key = (source, " ".join(str(view.get("name") or "").split()).casefold())
+        fingerprint = json.dumps(payload_of(source, raw), sort_keys=True, default=str)
+        groups.setdefault(key, []).append((view, fingerprint))
+    for members in groups.values():
+        if len(members) < 2:
+            continue
+        for view, fingerprint in members:
+            twins = [v.get("id") or v.get("name") for v, f in members
+                     if f == fingerprint and v is not view]
+            view.setdefault("issues", [])
+            if twins:
+                view["issues"].append("duplicate")
+                view["duplicate_of"] = twins
+            else:
+                view["issues"].append("name_not_unique")

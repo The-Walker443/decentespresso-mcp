@@ -52,6 +52,8 @@ from .recipes import (
     dye2_view,
     favourite_name,
     favourite_view,
+    issues_of,
+    mark_duplicates,
     own_view,
     profile_reference_only,
     suggest_name,
@@ -212,7 +214,13 @@ read-only here - DYE2 is their only writer). A name in several needs `source`;
 ask, never guess. DYE2 items with `applicable: false` predate its ready-made
 workflow. A favourite's `profile` is `full`, `reference` or `name`; a `name`
 one is applied without touching the profile - say so. With the tablet off,
-`mine` still come back.
+`mine` still come back. `issues` on an entry, before applying it: name_only_profile
+(profile not changed), profile_reference_unresolved / profile_missing (its
+profile is not on the tablet), no_workflow (not applicable), batch_is_bean_id /
+batch_unknown (refused on apply - offer a real batch), labels_without_batch /
+labels_mismatch_batch (would mislabel the coffee), duplicate (identical to
+`duplicate_of` - one is enough), name_not_unique (apply it by id). Mention the
+issues when listing; never apply a broken entry without saying what will happen.
 If save_recipe is refused because the profile exists only in the workflow,
 offer save_workflow_profile, and save the recipe once that is confirmed.
 AFTER `update_profile`, always offer the follow-ups it names: `set_workflow`
@@ -959,21 +967,32 @@ def _register_recipe_reader(
         if source not in SOURCES:
             raise ToolError("invalid_argument: source is one of " + ", ".join(SOURCES))
         out: dict[str, Any] = {"recipes": []}
+        entries: list[tuple[dict[str, Any], str, dict[str, Any]]] = []
         if source in ("all", "mine"):
             rows = await asyncio.to_thread(db.recipes)
-            out["recipes"] += [own_view(r) for r in rows]
+            entries += [(own_view(r), "mine", r) for r in rows]
         wants = [s for s in ("dye2", "dye2_favs") if source in ("all", s)]
-        if wants and coordinator is None:
-            out["dye2"] = "not connected to Decaid"
-        elif wants:
+        catalogue = None
+        if coordinator is None:
+            if wants:
+                out["dye2"] = "not connected to Decaid"
+        else:
             try:
                 if "dye2" in wants:
-                    out["recipes"] += [dye2_view(i) for i in await coordinator.dye2_recipes()]
+                    entries += [(dye2_view(i), "dye2", i)
+                                for i in await coordinator.dye2_recipes()]
                 if "dye2_favs" in wants:
-                    out["recipes"] += [favourite_view(f)
-                                       for f in await coordinator.dye2_favourites()]
+                    entries += [(favourite_view(f), "dye2_favs", f)
+                                for f in await coordinator.dye2_favourites()]
+                catalogue = await coordinator.catalogue()
             except DecaidUnreachable:
-                out["dye2"] = "waiting_for_tablet - DYE2's recipes and favourites live there"
+                out["dye2"] = ("waiting_for_tablet - DYE2's entries live there, and "
+                               "batches and profiles could not be checked")
+        for view, kind, raw in entries:
+            if found := issues_of(kind, raw, catalogue):
+                view["issues"] = found
+        mark_duplicates([e for e in entries if e[1] != "mine"])
+        out["recipes"] = [view for view, _, _ in entries]
         return out
 
 

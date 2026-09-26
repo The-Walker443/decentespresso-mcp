@@ -75,6 +75,7 @@ from .recipes import (
     DYE2_NAMESPACE,
     DYE2_RECIPES,
     LEGACY_NOTE,
+    Catalogue,
     context_patch,
     default_name,
     dye2_name,
@@ -718,6 +719,20 @@ class SyncCoordinator:
             await self._client.update_workflow(workflow)
             after_wf = await self._client.workflow()
         return before_wf, after_wf, await self._label_mismatch(after_wf)
+
+    async def catalogue(self) -> Catalogue:
+        """Batches, beans and profiles in one go, to judge listed entries by."""
+        batches, beans, records = await asyncio.gather(
+            self._client.bean_batches(), self._client.beans(),
+            self._client.profiles(include_hidden=True))
+        live = [r for r in records if r.get("visibility") != "deleted"]
+        return Catalogue(
+            batches={str(b["id"]): str(b.get("beanId")) for b in batches},
+            beans={str(b["id"]): (b.get("name"), b.get("roaster")) for b in beans},
+            profile_ids=frozenset(str(r.get("id")) for r in live),
+            profile_titles=frozenset(str((r.get("profile") or {}).get("title") or "")
+                                     .casefold() for r in live),
+        )
 
     async def dye2_favourites(self) -> list[dict[str, Any]]:
         """DYE2's favourites, read. Like its recipes, never written from here."""
