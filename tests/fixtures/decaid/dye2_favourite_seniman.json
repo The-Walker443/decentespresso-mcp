@@ -1,0 +1,62 @@
+{
+ "snapshot": {
+  "profileId": null,
+  "profileTitle": "D-Flow",
+  "beanBatchId": "140c8857-55a9-44c6-87f1-a381af1bf85f",
+  "coffeeName": "House Blend",
+  "coffeeRoaster": "Seniman",
+  "roastDate": "2026-08-15T00:00:00.000Z",
+  "grinderId": null,
+  "grinderModel": "Timemore Sculpture 078s",
+  "basketId": "d5fb625d-c25f-44de-b849-5a65daab28c1",
+  "basketName": "Decent 18g",
+  "grindSetting": 2.9,
+  "rpm": 0,
+  "dose": 18,
+  "drink": 36,
+  "barista": null,
+  "drinker": null,
+  "note": null
+ },
+ "alwaysOnDashboard": true,
+ "title": "Seniman House Blend",
+ "beverage": "",
+ "favSlot": 1,
+ "copyMask": {
+  "profile": true,
+  "beans": true,
+  "roastDate": true,
+  "grinder": true,
+  "basket": true,
+  "grindSetting": true,
+  "dose": true,
+  "drink": true,
+  "barista": false,
+  "drinker": false,
+  "note": false
+ },
+ "id": "af-1789560226867",
+ "capturedAt": "2026-09-16T12:03:46.867Z",
+ "subtitle": "Seniman · House Blend",
+ "workflow": {
+  "context": {
+   "targetDoseWeight": 18,
+   "targetYield": 36,
+   "grinderSetting": "2.9",
+   "extras": {
+    "rpm": 0,
+    "basketId": "d5fb625d-c25f-44de-b849-5a65daab28c1",
+    "basketName": "Decent 18g"
+   },
+   "grinderModel": "Timemore Sculpture 078s",
+   "beanBatchId": "140c8857-55a9-44c6-87f1-a381af1bf85f",
+   "coffeeName": "House Blend",
+   "coffeeRoaster": "Seniman",
+   "roastDate": "2026-08-15T00:00:00.000Z"
+  },
+  "profile": {
+   "id": null,
+   "title": "D-Flow"
+  }
+ }
+}

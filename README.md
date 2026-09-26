@@ -119,6 +119,12 @@ both - each step shown and confirmed before the next, and stopped at the first
 one that fails. Favorites live as per-coffee profiles: tune the copy as the bag
 ages, and the stock profiles stay exactly as Decent shipped them.
 
+**Recipes you can come back to.** "Save this as my House Blend recipe" keeps
+batch, grind, dose, yield and the profile; "back to House Blend" tomorrow puts
+the machine there again, on the profile's newest tuning - or pinned to today's,
+if you ask. The recipes you made in DYE2 on the tablet are listed and applied
+too, read exactly as DYE2 stores them and never written: DYE2 owns those.
+
 ---
 
 ## Which app do you run?
@@ -263,9 +269,10 @@ inside tracebacks from libraries that know nothing about it.
 | `sync_now` · `status` | housekeeping |
 | `update_shot` · `update_bean` · `update_batch` · `set_workflow` | writing, behind the switch |
 | `create_bean` · `create_batch` · `clone_profile` · `update_profile` | a new coffee and its profile, behind the switch |
+| `list_recipes` · `apply_recipe` · `save_recipe` · `update_recipe` · `delete_recipe` · `save_workflow_profile` | recipes - listing always, the rest behind the switch |
 
-Fourteen tools cost 9.9 kB of definitions, twenty-two with write mode on cost
-15.6 kB — about 710 B each, because the shared vocabulary lives in the server
+Fifteen tools cost about 10 kB of definitions, twenty-eight with write mode on
+cost 19.5 kB — about 700 B each, because the shared vocabulary lives in the server
 prompt rather than being repeated in every docstring. That budget is pinned by
 tests; it is meant to stay that way.
 

@@ -346,6 +346,40 @@ async def test_update_warns_when_the_workflow_still_runs_the_old_version(
     assert "still is" in result["workflow"]
 
 
+async def test_the_refresh_update_profile_offers_is_not_refused(writable, db) -> None:
+    """A bug M10 shipped with, found while building recipes in M11.
+
+    After update_profile the workflow still runs the previous version, which
+    Decaid no longer stores (T37). The unsaved-profile guard took that for a
+    tablet tune and refused the very set_workflow update_profile offers next.
+    A content this server replaced on purpose is not something to protect.
+    """
+    fake = FakeDecaid()
+    mcp = server(fake, writable, db)
+    clone = await call(mcp, "clone_profile", {
+        "source": "D-Flow", "title": "Favourite", "overrides": {"temperature_c": 91.5}})
+    await call(mcp, "set_workflow", {"fields": {"profileId": clone["id"]},
+                                     "replace_unsaved_profile": True})
+    tuned = await call(mcp, "update_profile", {
+        "id": clone["id"], "overrides": {"temperature_c": 93}})
+
+    await call(mcp, "set_workflow", {"fields": {"profileId": tuned["id"]}})
+    assert fake.workflow["profile"]["steps"][-1]["temperature"] == 93.0
+
+
+async def test_a_real_tablet_tune_is_still_protected_after_that(writable, db) -> None:
+    """The exemption covers what this server replaced - nothing tuned by hand."""
+    fake = FakeDecaid()
+    mcp = server(fake, writable, db)
+    clone = await call(mcp, "clone_profile", {
+        "source": "D-Flow", "title": "Favourite", "overrides": {"temperature_c": 91.5}})
+    await call(mcp, "update_profile", {"id": clone["id"], "overrides": {"temperature_c": 93}})
+    fake.workflow["profile"] = dict(PROFILES[1]["profile"], target_weight=37.5)
+
+    message = await refused(mcp, "set_workflow", {"fields": {"profileId": "Adaptive v3"}})
+    assert "not saved as a profile" in message
+
+
 async def test_a_bundled_default_is_never_changed(writable, db) -> None:
     fake = FakeDecaid()
     message = await refused(server(fake, writable, db), "update_profile", {

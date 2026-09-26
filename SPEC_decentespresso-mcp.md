@@ -1,6 +1,6 @@
 # decentespresso-mcp — specification
 
-**Applies to version 0.10.0.** This document describes the system as it is, not
+**Applies to version 0.11.0.** This document describes the system as it is, not
 how it came to be. Where a decision still explains behaviour, the reasoning is
 kept; where it only explains history, it is gone.
 
@@ -141,6 +141,9 @@ instance wins and the finding goes in the table above.
 | T39 | **A duplicate creation reports success** | A `POST /profiles` whose content already exists answers **201** with the *existing* record and silently drops the new title, `parentId` and `metadata`. Nothing is created. A client trusting the status code reports a new profile that is not there |
 | T40 | **Deleting a bean does not cascade** | `DELETE /beans/<id>` on a bean with batches fails with 500 (SQLite foreign key, code 787) although the API description says it deletes the batches too. Nothing is deleted. Batches first, then the bean. Not used by this server, which deletes nothing - found while cleaning up probes |
 | T41 | **Creation: required and returned** | `POST /beans` needs `name` and `roaster` (both refused alone with 400, a type-cast error rather than a message) and returns 201 with the new id. `POST /beans/<id>/batches` needs nothing and sets `weightRemaining` from `weight`. `POST /profiles` returns 201 with the record, visible, not default. Titles are not length-limited by the API - 300 characters were taken |
+| T42 | **A DYE2 recipe can mislabel the coffee** | The live recipe "Decaf" stores `context.coffeeName` and neither `coffeeRoaster` nor `beanBatchId`. Applied as stored on a Grano Gayo batch, the machine showed "Coffee Circle / Sugar Cane Decaf". `apply_recipe` applies it unchanged, as the contract asks, and reports the mismatch |
+| T43 | *(withdrawn)* | Recorded on 2026-09-26 as "every DYE2 favourite carries a D-Flow stored nowhere". Wrong: the comparison hashed stubs without steps against each other. T44 is what the data shows |
+| T44 | **A DYE2 `workflow.profile` may be a name without a profile** | Seven of eight live favourites store `{"id": null, "title": "D-Flow"}`, one an id without steps; the recipe stores no profile. PUT as stored, such a stub only renames the running profile (T13) - applying "Seniman House Blend" left the previously running tune brewing. Reported on apply; the unsaved-profile guard does not fire for it, because nothing is replaced |
 
 T26 is why the block list in `writes.py` is not a second line of defence but the
 only one for the telemetry fields.
@@ -547,6 +550,7 @@ is read-only except `sync_now` and the write tools from §11.
 | `list_batches(bean?)` | batches with roast date and usage - where batch identifiers come from |
 | `get_batch(id)` | one batch in full: all dates, freezer state, weights |
 | `stats(period, compare_previous)` | what was pulled in a period, and how it tasted |
+| `list_recipes(source?)` | saved recipes - mine, DYE2's, or both - in one shape |
 
 Filters are case-insensitive substrings. Dates take ISO8601 or a relative
 shorthand (`12h`, `7d`, `2w`, `1m`, `1y`).
@@ -746,7 +750,7 @@ carries on; only delivered messages count as reported.
 
 ## 11. Writing
 
-Eight tools, each behind `WRITE_ENABLED` and each with its own whitelist. When
+Thirteen tools, each behind `WRITE_ENABLED` and each with its own whitelist. When
 the switch is off the tools are **not registered** - they do not appear in the
 tool list and do not refuse. A tool that exists and refuses invites asking
 again; one that does not exist does not.
@@ -758,6 +762,7 @@ again; one that does not exist does not.
 | `update_batch`, `create_batch` | T22 |
 | `set_workflow` | `grinderSetting`, `grinderModel`, `targetDoseWeight`, `targetYield`, `beanBatchId`, `profileId` |
 | `clone_profile`, `update_profile` | the three overrides of §11.5, nothing else |
+| `save_workflow_profile`, `save_recipe`, `apply_recipe`, `update_recipe`, `delete_recipe` | §11.6 - recipes of our own |
 
 The docstrings do not repeat the field lists: they drifted - `update_batch` went
 on telling every request that Decaid keeps no thaw date for ten days after T23
@@ -906,6 +911,79 @@ server, so that needs `replace_unsaved_profile`.
 **Visible on the tablet** is what the API says (`visibility: visible`). Whether
 the tablet's UI shows it in the list it shows is not something the API can
 answer; the acceptance run confirmed the flag, not the pixels.
+
+### 11.6 Recipes and favourites
+
+A recipe is a coffee and how it is brewed, saved to come back to: batch, grind,
+dose, target yield and a profile. There are two sources, and they are kept
+apart by one rule.
+
+**DYE2's recipes are read, never written.** DYE2 keeps its recipes in Decaid's
+plugin store (`dye2.reaplugin/recipes`), and its contract
+(`docs/KV_CONTRACT.md` in decentespresso/dye2) makes DYE2 the single writer.
+The store checks no ownership and has no ETag or field-level write, so a second
+writer does not fail - it silently overwrites a concurrent DYE2 edit. The
+client has a method that reads the store and none that writes it. DYE2's
+recipes are listed in the contract's shape, with its fallbacks (`title` →
+`name` → "Recipe <id>"), and applied the way the contract says: their `workflow`
+field, PUT as it is. One from an older DYE2 without that field is listed and not
+applied - the contract allows deriving one from the legacy fields, but that
+means reimplementing DYE2's own mapping, which is DYE2's to change.
+
+**Ours live in SQLite** (migration 004), shaped after the contract's items so
+the two read alike: a name, the bean and batch with their display names, the
+profile by title plus an embedded snapshot, and the dashboard variables dose,
+drink, ratio and grind. Steam, hot water and flush are deliberately not
+captured; the contract documents why applying them needs a live merge, and that
+is backlog.
+
+**Referenced by title, snapshotted besides.** A profile's id changes with every
+tuning (T37), so an id would point at nothing after the first `update_profile`.
+The title follows. Applied unpinned, a recipe runs the current version of that
+title; with `pin_profile` it runs the snapshot. A title that no longer resolves
+is refused rather than replaced by the snapshot - the user asked for the
+profile as it is, and an old copy is a different answer.
+
+**A recipe never points at a profile that exists only in the workflow.** The
+tablet lets a profile be tuned in the workflow without storing it (§11.5), and
+a recipe of that would point at nothing the moment the workflow moves on. So
+`save_recipe` is refused and names `save_workflow_profile`, which stores the
+workflow's profile under a name. That in turn is refused when the content is
+already stored - Decaid would answer 201 with the old record (T39) - and names
+the existing profile instead.
+
+**The guard asks whether something would be lost.** Not whether the running
+profile is a stored record: after `update_profile` the workflow runs the
+previous version, which Decaid no longer stores (T37), and the first version of
+the guard blocked the very refresh `update_profile` offers. A content is safe
+when it is stored, held by a recipe as its snapshot, or was replaced by this
+server on purpose (table `superseded_profiles`). A tune made on the tablet is
+none of these and stays protected.
+
+**Applying goes through the one guarded path.** Ours through the same code as
+`set_workflow`: batch labels (T28), the unsaved-profile guard, read-back. DYE2's
+unchanged, but the unsaved-profile guard runs first, because it only ever
+refuses and changes nothing that is sent - and only when the recipe carries a
+profile with steps; a stub (T44) replaces nothing. The read-back reports two
+things the stored workflow can do that a person would not expect: a coffee name
+that does not match the batch (T42), and a profile that is only a name (T44).
+
+**A name in both sources is not guessed between.** Listing shows both; applying
+needs `source`.
+
+**Keeping recipes current.** `update_profile` lists the recipes that use the
+profile's title: those that follow the change, and those pinned to the old
+version. `INSTRUCTIONS` has the model offer `update_recipe` with
+`refresh_snapshot` for the pinned ones and a workflow refresh when the workflow
+still runs the old copy.
+
+**Favourites** are these recipes plus the per-coffee profiles of §11.5. DYE2's
+`autoFavourites` are its own, computed from shot history and rewritten after
+every shot; they are not listed here.
+
+**What the tablet cannot see.** Recipes saved here do not appear on the tablet:
+the only way to put them there would be to write DYE2's key. A documented path
+for a second writer is proposed upstream (`docs/upstream/07`).
 
 ## 12. Security
 

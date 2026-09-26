@@ -303,6 +303,12 @@ def running_profile(
     return next((r for r in records if same_brew(r.get("profile"), embedded)), None)
 
 
+def brew_hash(profile: dict[str, Any]) -> str:
+    """A stable fingerprint of what a profile brews - ours, not Decaid's id."""
+    import hashlib
+    return hashlib.sha256(_brewing(profile).encode("utf-8")).hexdigest()
+
+
 def is_default(record: dict[str, Any]) -> bool:
     return bool(record.get("isDefault"))
 

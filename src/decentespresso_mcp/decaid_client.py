@@ -25,9 +25,11 @@ from . import __version__
 
 log = logging.getLogger(__name__)
 
-#: The Decaid version this was verified against. status() warns on deviation;
-#: bump it here after every checked update (SPEC §4).
-VERIFIED_DECAID_VERSION = "0.8.6"
+#: The Decaid build this was verified against, version and build number both.
+#: status() warns on any deviation; bump it here after every checked update
+#: (SPEC §4). The build counts: T10 changed between 0.8.5+2624 and 0.8.6+2801,
+#: so "0.8.6" alone would say less than what was actually checked.
+VERIFIED_DECAID_VERSION = "0.8.6+2801"
 
 #: T4: the API silently caps at 100. Asking for more returns 100 items without
 #: comment - not knowing that, one ends up paging in circles.
@@ -279,6 +281,20 @@ class DecaidClient:
         """``POST /api/v1/beans/<id>/batches``. Never retried."""
         return (await self._request("POST", f"/api/v1/beans/{bean_id}/batches",
                                     json_body=payload, retry=False)).json()
+
+    # --- Plugin store (read-only) --------------------------------------------
+
+    async def store_array(self, namespace: str, key: str) -> list[dict[str, Any]]:
+        """``GET /api/v1/store/<namespace>/<key>`` as a list - never written from here.
+
+        DYE2's KV contract: a key never written answers 200 with ``null``, and
+        any non-array is to be read as empty. There is deliberately no writing
+        counterpart in this client; the contract makes DYE2 the single writer.
+        """
+        value = (await self._request("GET", f"/api/v1/store/{namespace}/{key}")).json()
+        if not isinstance(value, list):
+            return []
+        return [item for item in value if isinstance(item, dict)]
 
     # --- Profiles ------------------------------------------------------------
 

@@ -137,7 +137,7 @@ def test_verified_decaid_version_is_pinned() -> None:
     """status() warns when the tablet reports something else."""
     from decentespresso_mcp.decaid_client import VERIFIED_DECAID_VERSION
 
-    assert re.fullmatch(r"\d+\.\d+\.\d+", VERIFIED_DECAID_VERSION)
+    assert re.fullmatch(r"\d+\.\d+\.\d+\+\d+", VERIFIED_DECAID_VERSION)
 
 
 def test_the_spec_and_the_readme_are_not_empty() -> None:

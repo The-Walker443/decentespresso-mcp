@@ -64,7 +64,11 @@ MAX_GET_SHOT_LEAN = 2_400
 #: 698 B before. clone_profile is the largest new one at 905 B because it
 #: carries the override limits, which is exactly what a caller must see. So the
 #: sum bound moves and the bound that matters is added next to it.
-MAX_TOOL_DEFINITIONS_WITH_WRITE = 17_000
+#:
+#: M11 adds six recipe tools. 20522 B across 28 as measured here; per tool it
+#: went *down*, to 695 B compact against 720 B - the recipe tools are narrow,
+#: and their shared rules went into INSTRUCTIONS rather than six docstrings.
+MAX_TOOL_DEFINITIONS_WITH_WRITE = 21_500
 MAX_BYTES_PER_TOOL_WITH_WRITE = 800
 
 #: compare_shots with two shots including profiles. Now: 4234 B.

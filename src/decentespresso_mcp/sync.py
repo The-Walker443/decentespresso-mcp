@@ -25,6 +25,8 @@ error list.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 import logging
 import time
 from dataclasses import asdict, dataclass, field
@@ -58,6 +60,7 @@ from .profile_forge import (
     OVERRIDES,
     TITLE_SEPARATOR,
     apply_overrides,
+    brew_hash,
     changes_brewing,
     check_title,
     default_title,
@@ -66,6 +69,15 @@ from .profile_forge import (
     resolve_profile,
     running_profile,
     same_brew,
+)
+from .recipes import (
+    DYE2_NAMESPACE,
+    DYE2_RECIPES,
+    LEGACY_NOTE,
+    context_patch,
+    default_name,
+    dye2_name,
+    row_from_workflow,
 )
 from .writes import ValidationError
 
@@ -307,7 +319,8 @@ async def _sync_beans(client: DecaidClient, db: Database, result: SyncResult) ->
     """
     info = await client.info()
     await asyncio.to_thread(
-        db.set_state, STATE_DECAID_VERSION, str(info.get("version") or "")
+        db.set_state, STATE_DECAID_VERSION,
+        str(info.get("fullVersion") or info.get("version") or "")
     )
     synced_at = utc_now_iso()
     beans = [bean_row_from_decaid(b, synced_at) for b in await client.beans()]
@@ -481,20 +494,33 @@ class SyncCoordinator:
         """
         patch = dict(fields)
         reference = patch.pop("profileId", None)
-        if patch.get("beanBatchId"):
-            patch.update(await self._coffee_labels(str(patch["beanBatchId"])))
-
-        body: dict[str, Any] = {}
+        profile: dict[str, Any] | None = None
         records: list[dict[str, Any]] = []
         if reference:
             # The workflow embeds the profile as an object and holds no id
             # (SPEC T38), so selecting one means copying it in. An unknown
             # reference is refused here: Decaid would take any object at all.
             records = await self._client.profiles(include_hidden=True)
-            chosen = resolve_profile(records, str(reference))
+            profile = resolve_profile(records, str(reference))["profile"]
+        return await self._apply(patch, profile, records, replace_unsaved=replace_unsaved)
+
+    async def _apply(
+        self, patch: dict[str, Any], profile: dict[str, Any] | None,
+        records: list[dict[str, Any]], *, replace_unsaved: bool,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """The one path that writes the workflow, with every guard rail on it.
+
+        `set_workflow` and `apply_recipe` both end here, so the batch labels
+        (T28) and the unsaved-profile guard cannot be had by one and missed by
+        the other.
+        """
+        patch = dict(patch)
+        if patch.get("beanBatchId"):
+            patch.update(await self._coffee_labels(str(patch["beanBatchId"])))
+        if profile is not None:
             current = (await self._client.workflow()).get("profile")
-            if (current and running_profile(current, records) is None
-                    and not replace_unsaved and not same_brew(current, chosen["profile"])):
+            if (current and not replace_unsaved and not same_brew(current, profile)
+                    and await self._would_be_lost(current, records)):
                 # Measured on the live instance: the workflow was running a
                 # D-Flow tuned on the tablet (pour 1.5 ml/s, limiter 9 bar) that
                 # matched none of 85 stored profiles. It existed only here.
@@ -503,11 +529,14 @@ class SyncCoordinator:
                 raise Protected(
                     f"The workflow runs {current.get('title')!r} as tuned on the "
                     "tablet, and that version is not saved as a profile anywhere. "
-                    "Selecting another one discards it for good. Save it on the "
-                    "tablet first - or, if the user accepts losing it, say "
-                    "replace_unsaved_profile."
+                    "Selecting another one discards it for good. Keep it with "
+                    "save_workflow_profile first - or, if the user accepts losing "
+                    "it, say replace_unsaved_profile."
                 )
-            body["profile"] = chosen["profile"]
+
+        body: dict[str, Any] = {}
+        if profile is not None:
+            body["profile"] = profile
         if patch:
             body["context"] = patch
 
@@ -518,12 +547,198 @@ class SyncCoordinator:
 
         before = dict(before_wf.get("context") or {})
         after = dict(after_wf.get("context") or {})
-        if reference:
+        if profile is not None:
             for side, workflow in ((before, before_wf), (after, after_wf)):
                 running = running_profile(workflow.get("profile"), records)
                 side["profileId"] = running.get("id") if running else None
                 side["profileTitle"] = (workflow.get("profile") or {}).get("title")
         return before, after
+
+    async def _would_be_lost(
+        self, current: dict[str, Any], records: list[dict[str, Any]]
+    ) -> bool:
+        """Would replacing this workflow profile lose it for good?
+
+        Not when it is a stored profile, not when a recipe holds it as its
+        snapshot, and not when this server replaced it itself with
+        update_profile. The last is the case the first version of this guard
+        got wrong: after an update the workflow still runs the previous version,
+        which Decaid no longer stores (T37), and the guard then blocked the very
+        set_workflow that update_profile offers as the next step.
+        """
+        if running_profile(current, records) is not None:
+            return False
+        known = await asyncio.to_thread(self._db.known_brews)
+        return brew_hash(current) not in known
+
+    # -------------------------------------------------------------- Recipes
+
+    async def save_workflow_profile(self, title: str | None) -> dict[str, Any]:
+        """Keep the profile the workflow is running as a named profile.
+
+        Refused when that content is already stored: Decaid would answer the
+        POST with 201 and the existing record, dropping the new title (T39) -
+        a success report for a profile that was never made. The existing one is
+        named instead.
+
+        Afterwards the workflow is given the stored copy back. Same brewing
+        content, so nothing about the next shot changes; but the workflow then
+        carries the new title, and machine and tablet list say the same thing.
+        """
+        async with self._lock:
+            workflow = await self._client.workflow()
+            embedded = workflow.get("profile")
+            if not embedded:
+                raise ValidationError(["profile: the workflow carries no profile"])
+            records = await self._client.profiles(include_hidden=True)
+            existing = running_profile(embedded, records)
+            if existing is not None:
+                raise AlreadyExists(
+                    "The workflow's profile is already stored as "
+                    f"{(existing.get('profile') or {}).get('title')!r} "
+                    f"({existing.get('id')}, {existing.get('visibility')}). Nothing "
+                    "was created."
+                )
+            context = workflow.get("context") or {}
+            title = title or default_title(context.get("coffeeRoaster"),
+                                           context.get("coffeeName"))
+            if not title:
+                raise ValidationError(["title: give one - the workflow names no "
+                                       "coffee to call it after"])
+            taken = [str((r.get("profile") or {}).get("title") or "")
+                     for r in records if r.get("visibility") != "deleted"]
+            title = check_title(title, taken)
+            profile = dict(embedded, title=title)
+            created = await self._client.create_profile(
+                profile, parent_id=None,
+                metadata={MARKER_KEY: MARKER, "savedFromWorkflow": True},
+            )
+            after = await self._client.profile(str(created["id"]))
+            await self._client.update_workflow({"profile": after["profile"]})
+        return {"record": after, "was_titled": embedded.get("title")}
+
+    async def dye2_recipes(self) -> list[dict[str, Any]]:
+        """DYE2's recipes, read. There is no method here that writes them."""
+        return await self._client.store_array(DYE2_NAMESPACE, DYE2_RECIPES)
+
+    async def capture_recipe(self, name: str | None, *, pin: bool) -> dict[str, Any]:
+        """What the machine is set to now, as a recipe row - not yet stored.
+
+        Refused when the profile exists only in the workflow. A recipe pointing
+        at such a profile would point at nothing the moment the workflow moves
+        on; `save_workflow_profile` keeps it first.
+        """
+        workflow = await self._client.workflow()
+        records = await self._client.profiles(include_hidden=True)
+        record = running_profile(workflow.get("profile"), records)
+        context = workflow.get("context") or {}
+        if record is None:
+            raise Protected(
+                f"The workflow runs {(workflow.get('profile') or {}).get('title')!r}"
+                " as tuned on the tablet, and that version is stored nowhere - a "
+                "recipe would point at nothing once the workflow moves on. Keep it "
+                "with save_workflow_profile first"
+                + (f" (suggested title: {default_name(context)!r})"
+                   if default_name(context) else "") + "."
+            )
+        name = name or default_name(context)
+        if not name:
+            raise ValidationError(["name: give one - the workflow names no coffee"])
+        bean_id = None
+        if context.get("beanBatchId"):
+            with contextlib.suppress(ShotNotFound):
+                bean_id = (await self._client.bean_batch(
+                    str(context["beanBatchId"]))).get("beanId")
+        return row_from_workflow(" ".join(name.split()), context, record,
+                                 bean_id=bean_id, pin=pin)
+
+    async def apply_own_recipe(
+        self, row: dict[str, Any], *, replace_unsaved: bool,
+    ) -> tuple[tuple[dict[str, Any], dict[str, Any]], dict[str, Any]]:
+        """Our recipe onto the machine: current profile version, or the pin.
+
+        Unpinned, the profile is looked up by title and so follows every tuning
+        despite the id changing each time (T37). A title that no longer
+        resolves is refused rather than quietly replaced by the snapshot - the
+        user asked for the profile as it is now, and an old copy is a different
+        answer to that question.
+        """
+        records = await self._client.profiles(include_hidden=True)
+        snapshot = json.loads(row["profile_snapshot"])
+        if row.get("pin_profile"):
+            profile, used = snapshot, {"pinned": True, "title": snapshot.get("title")}
+        else:
+            try:
+                record = resolve_profile(records, str(row["profile_title"]))
+            except ValidationError:
+                raise ValidationError([
+                    f"profile: {row['profile_title']!r} is no longer on the tablet. "
+                    "Pin the recipe to its snapshot with update_recipe, or save it "
+                    "again from a profile that exists."]) from None
+            profile = record["profile"]
+            used = {"pinned": False, "id": record.get("id"),
+                    "title": profile.get("title"),
+                    "differs_from_snapshot": not same_brew(profile, snapshot)}
+        result = await self._apply(context_patch(row), profile, records,
+                                   replace_unsaved=replace_unsaved)
+        return result, used
+
+    async def apply_dye2_recipe(
+        self, item: dict[str, Any], *, replace_unsaved: bool,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """A DYE2 recipe's `workflow`, PUT as it is - the contract's apply.
+
+        Nothing is added to it and nothing taken away; the batch labels in its
+        context are DYE2's to write. The unsaved-profile guard still runs
+        first, because it only ever refuses and changes nothing it sends.
+        """
+        workflow = item.get("workflow")
+        if not isinstance(workflow, dict):
+            raise ValidationError([f"recipe: {dye2_name(item)!r} was {LEGACY_NOTE}"])
+        records = await self._client.profiles(include_hidden=True)
+        profile = workflow.get("profile")
+        async with self._lock:
+            before_wf = await self._client.workflow()
+            current = before_wf.get("profile")
+            # A stub without steps (T44) replaces no brewing content - the
+            # running profile survives it - so there is nothing to protect.
+            if (profile and profile.get("steps") and current and not replace_unsaved
+                    and not same_brew(current, profile)
+                    and await self._would_be_lost(current, records)):
+                raise Protected(
+                    f"The workflow runs {current.get('title')!r} as tuned on the "
+                    "tablet, stored nowhere. Applying this recipe discards it. Keep "
+                    "it with save_workflow_profile first - or say "
+                    "replace_unsaved_profile."
+                )
+            await self._client.update_workflow(workflow)
+            after_wf = await self._client.workflow()
+        return before_wf, after_wf, await self._label_mismatch(after_wf)
+
+    async def _label_mismatch(self, workflow: dict[str, Any]) -> str | None:
+        """Does the machine now name a different coffee than its batch holds?
+
+        Measured (T42): DYE2's live recipe "Decaf" sets coffeeName and neither
+        the roaster nor the batch, so applied on another coffee's batch the
+        machine labels that batch "Sugar Cane Decaf". Applying unchanged is the
+        contract; saying what came of it is the least a read-back owes.
+        """
+        context = workflow.get("context") or {}
+        batch_id = context.get("beanBatchId")
+        if not batch_id:
+            return None
+        try:
+            labels = await self._coffee_labels(str(batch_id))
+        except ShotNotFound:
+            return f"the workflow names batch {batch_id!r}, which Decaid does not have"
+        shown = (context.get("coffeeRoaster"), context.get("coffeeName"))
+        actual = (labels["coffeeRoaster"], labels["coffeeName"])
+        if shown == actual:
+            return None
+        return (f"the machine now shows {shown[0]} / {shown[1]} on a batch of "
+                f"{actual[0]} / {actual[1]}. Shots pulled like this are labelled "
+                "with the wrong coffee - set_workflow with the right beanBatchId "
+                "puts it right.")
 
     # ------------------------------------------------------------ Creating
 
@@ -665,6 +880,9 @@ class SyncCoordinator:
             was_running = same_brew(workflow.get("profile"), record["profile"])
             updated = await self._client.update_profile(str(record["id"]), profile)
             after = await self._client.profile(str(updated["id"]))
+            await asyncio.to_thread(
+                self._db.remember_superseded, brew_hash(record["profile"]),
+                (record.get("profile") or {}).get("title"), after.get("id"))
         return {"record": after, "before": record, "changes": changes,
                 "workflow_ran_previous_version": was_running}
 

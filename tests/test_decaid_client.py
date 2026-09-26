@@ -71,8 +71,8 @@ def route(request: httpx.Request) -> httpx.Response:
 async def test_info_reports_the_version() -> None:
     async with client(route) as api:
         info = await api.info()
-    assert info["version"] == VERIFIED_DECAID_VERSION
-    assert info["fullVersion"].startswith(VERIFIED_DECAID_VERSION)
+    assert info["fullVersion"] == VERIFIED_DECAID_VERSION
+    assert VERIFIED_DECAID_VERSION.startswith(info["version"] + "+")
     assert len(info["commit"]) == 40
 
 
@@ -260,7 +260,7 @@ async def test_transient_failure_recovers() -> None:
         return httpx.Response(200, json=load("info.json"))
 
     async with client(handler) as api:
-        assert (await api.info())["version"] == VERIFIED_DECAID_VERSION
+        assert (await api.info())["fullVersion"] == VERIFIED_DECAID_VERSION
     assert calls["n"] == 2
 
 

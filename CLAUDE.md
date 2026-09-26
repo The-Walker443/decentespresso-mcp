@@ -117,11 +117,16 @@ itself.
 
 One load-bearing block per commit, not half of everything. The message says what
 changed and **why**, names deviations from the brief with their evidence, and
-reports own mistakes found along the way. End with:
+reports own mistakes found along the way. End with a `Co-Authored-By:` line
+naming the model that actually did the work, as the harness gives it -
+for example:
 
 ```
-Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>
+Co-Authored-By: Claude <model name> <noreply@anthropic.com>
 ```
+
+A fixed model name here went stale the day the model changed, and a commit that
+names the wrong author is a small falsehood in a history nobody rewrites.
 
 ## Data that must not be touched
 
