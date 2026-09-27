@@ -1,17 +1,21 @@
-"""Recipes: ours in SQLite, DYE2's read from its plugin store (SPEC §11.6).
+"""Recipes: one per bean, derived; DYE2's read from its plugin store (SPEC §11.6).
 
 Pure functions, like the guards and the profile forge.
 
-THE ONE RULE THAT SHAPES THIS. DYE2's KV contract (docs/KV_CONTRACT.md in
-decentespresso/dye2) makes DYE2 the single writer of its keys; every other
-consumer reads. The store checks no ownership and offers no ETag and no
-field-level write, so a second writer does not fail - it silently clobbers a
-concurrent DYE2 edit. Nothing here writes those keys, and there is no code path
-that could.
+OURS ARE A DERIVATION, NOT AN OBJECT. Per bean there is exactly one recipe,
+named "<roaster> – <bean>": where that bean was last dialled in - batch,
+grind, dose, yield and the profile as the workflow ran it, embedded whole.
+Every write that changes the workflow rewrites it. Nothing to name, pin or
+version.
 
-Streamline, the contract's own reference consumer, does not keep to it: its
-recipe auto-save reads the array, patches one item and writes the whole array
-back (dyeStrip.js, saveItemFields). That is noted upstream, not copied.
+PROJECTED INTO DYE2'S LIST, MARKED. So the tablet can call a recipe up with
+one tap, each of ours is written into ``dye2.reaplugin/recipes`` as an item
+carrying ``origin`` and ``recipeId``. Items without that marker are DYE2's and
+are passed through untouched, in their place. This breaks the contract's
+single-writer rule on purpose, the way Streamline's recipe auto-save already
+does (dyeStrip.js, saveItemFields): read immediately before the write, replace
+only our own items, read back. The store has no ETag, so a DYE2 edit in the
+same instant can still be lost; the window is one request wide.
 """
 
 from __future__ import annotations
@@ -70,31 +74,151 @@ LEGACY_NOTE = ("written by an older DYE2 without a ready-made workflow - apply i
                "on the tablet, or open and save it once in DYE2")
 
 
-def default_name(context: dict[str, Any]) -> str | None:
-    """"<roaster> - <bean>" from the workflow, the same convention as profiles."""
-    return default_title(context.get("coffeeRoaster"), context.get("coffeeName"))
+#: The marker on every item we write into DYE2's list. Items without it are
+#: never touched.
+ORIGIN = "decentespresso-mcp"
+_ENTRY_PREFIX = "mcp-"
+
+
+def recipe_name(row: dict[str, Any]) -> str:
+    """"<roaster> – <bean>", the same convention as the per-coffee profiles."""
+    return (default_title(row.get("bean_roaster"), row.get("bean_name"))
+            or str(row.get("bean_name") or row.get("bean_id")))
+
+
+def recipe_fields(workflow: dict[str, Any], batch_id: str | None) -> dict[str, Any]:
+    """The recipe columns from a workflow, as it stands after a write."""
+    context = workflow.get("context") or {}
+    return {
+        "bean_batch_id": batch_id,
+        "grinder_setting": _text(context.get("grinderSetting")),
+        "grinder_model": _text(context.get("grinderModel")),
+        "dose_g": _number(context.get("targetDoseWeight")),
+        "yield_g": _number(context.get("targetYield")),
+        "profile_json": json.dumps(workflow.get("profile") or {}, ensure_ascii=False,
+                                   separators=(",", ":"), sort_keys=True),
+    }
+
+
+def recipe_workflow(row: dict[str, Any]) -> dict[str, Any]:
+    """What applying the recipe PUTs: context plus the whole profile.
+
+    Only what the recipe holds; a field it never captured is left as it is on
+    the machine rather than cleared. The coffee labels go along with the batch
+    (T28), so the tablet shows the bean the batch belongs to.
+    """
+    context = _compact({
+        "beanBatchId": row.get("bean_batch_id"),
+        "coffeeName": row.get("bean_name") if row.get("bean_batch_id") else None,
+        "coffeeRoaster": row.get("bean_roaster") if row.get("bean_batch_id") else None,
+        "grinderSetting": row.get("grinder_setting"),
+        "grinderModel": row.get("grinder_model"),
+        "targetDoseWeight": row.get("dose_g"),
+        "targetYield": row.get("yield_g"),
+    })
+    body: dict[str, Any] = {"context": context}
+    profile = json.loads(row.get("profile_json") or "{}")
+    if profile.get("steps"):
+        body["profile"] = profile
+    return body
 
 
 def own_view(row: dict[str, Any]) -> dict[str, Any]:
     """Our recipe, shaped after the contract's items so both sources read alike."""
+    profile = json.loads(row.get("profile_json") or "{}")
     return _compact({
         "source": "mine",
-        "name": row["name"],
-        "beanName": row.get("bean_name"),
-        "beanRoaster": row.get("bean_roaster"),
+        "name": recipe_name(row),
+        "beanId": row.get("bean_id"),
         "beanBatchId": row.get("bean_batch_id"),
-        "profileTitle": row.get("profile_title"),
-        "pinProfile": bool(row.get("pin_profile")),
+        "profileTitle": profile.get("title"),
         "dashboardVariables": _compact({
             "dose": row.get("dose_g"),
             "drink": row.get("yield_g"),
             "ratio": _ratio(row.get("dose_g"), row.get("yield_g")),
-            "grind": row.get("grind"),
+            "grind": row.get("grinder_setting"),
             "grinderModel": row.get("grinder_model"),
         }),
-        "capturedAt": row.get("captured_at"),
         "updatedAt": row.get("updated_at"),
     })
+
+
+# ---------------------------------------------------- Projection into DYE2
+
+
+def is_ours(item: Any) -> bool:
+    return isinstance(item, dict) and item.get("origin") == ORIGIN
+
+
+def entry_id(bean_id: str) -> str:
+    return _ENTRY_PREFIX + str(bean_id)
+
+
+def dial_in(row: dict[str, Any]) -> dict[str, Any]:
+    """The dashboardVariables of our entry - what Streamline's auto-save edits.
+
+    Grind as a number where it is one: that is what DYE2's editor and
+    Streamline's auto-save write there, and a string would read as a change.
+    """
+    return _compact({"dose": row.get("dose_g"), "drink": row.get("yield_g"),
+                     "grind": _grind_number(row.get("grinder_setting")),
+                     "grinderModel": row.get("grinder_model")})
+
+
+def projection_entry(row: dict[str, Any], captured_at: str) -> dict[str, Any]:
+    """Our recipe as an item of ``dye2.reaplugin/recipes`` (KV_CONTRACT.md).
+
+    The ready-to-PUT ``workflow`` is what Streamline's strip applies, profile
+    and all (dyeStrip.js applyStoredWorkflow). ``profileId``/``profileTitle``
+    are left out on purpose: DYE2's own dashboard ignores ``workflow`` and
+    PUTs those two as a stub, which only renames the running profile (T44,
+    T52) - without them it sets dose, drink and grind and leaves the profile.
+    """
+    name = recipe_name(row)
+    return {
+        "id": entry_id(row["bean_id"]),
+        "origin": ORIGIN,
+        "recipeId": row["bean_id"],
+        "name": name,
+        "title": name,
+        "subtitle": row.get("bean_name") or "",
+        "beverage": "espresso",
+        "beanId": row["bean_id"],
+        "beanName": row.get("bean_name"),
+        "showOnStreamlineDashboard": True,
+        "dashboardVariables": dial_in(row),
+        "capturedAt": captured_at,
+        "workflow": recipe_workflow(row),
+    }
+
+
+def merged_list(store: list[Any], ours: list[dict[str, Any]]) -> list[Any]:
+    """DYE2's items where they were, then ours - replaced as a block.
+
+    Ours go after theirs because Streamline's strip shows the first five
+    recipes only (dyeStrip.js renderStrip); an item the user made in DYE2
+    keeps its place.
+    """
+    return [item for item in store if not is_ours(item)] + list(ours)
+
+
+def tablet_dial_in(entry: dict[str, Any], projected: str | None) -> dict[str, Any]:
+    """Recipe columns the tablet changed on our entry since we wrote it.
+
+    Streamline's auto-save folds a dashboard edit of dose, drink or grind into
+    the active recipe's dashboardVariables (dyeStrip.js recipeAutoSaveFields) -
+    and nothing else. That is the dial-in the chat never saw.
+    """
+    before = json.loads(projected) if projected else None
+    now = entry.get("dashboardVariables") or {}
+    if before is None:
+        return {}
+    changes: dict[str, Any] = {}
+    for key, column in (("dose", "dose_g"), ("drink", "yield_g"), ("grind", "grinder_setting")):
+        if now.get(key) is not None and now.get(key) != before.get(key):
+            changes[column] = (_grind_text(now[key]) if key == "grind"
+                               else _number(now[key]))
+    return changes
 
 
 def dye2_view(item: dict[str, Any]) -> dict[str, Any]:
@@ -256,8 +380,10 @@ def choose(
                 or str(i.get("id") or "") == (name or "").strip()]
 
     found = {
-        "mine": [r for r in own if " ".join(r["name"].split()).casefold() == wanted],
-        "dye2": hits(dye2, dye2_name),
+        "mine": [r for r in own if wanted in (
+            " ".join(recipe_name(r).split()).casefold(),
+            " ".join(str(r.get("bean_name") or "").split()).casefold())],
+        "dye2": hits([i for i in dye2 if not is_ours(i)], dye2_name),
         "dye2_favs": hits(favs or [], favourite_name),
     }
     if source in found:
@@ -280,55 +406,6 @@ def choose(
     return kind, items[0]
 
 
-def row_from_workflow(
-    name: str, context: dict[str, Any], record: dict[str, Any], *,
-    bean_id: str | None, pin: bool,
-) -> dict[str, Any]:
-    """A recipe row from what the machine is set to right now."""
-    profile = record.get("profile") or {}
-    return {
-        "name": name,
-        "bean_id": bean_id,
-        "bean_name": context.get("coffeeName"),
-        "bean_roaster": context.get("coffeeRoaster"),
-        "bean_batch_id": context.get("beanBatchId"),
-        "profile_title": profile.get("title"),
-        "profile_snapshot": json.dumps(profile, ensure_ascii=False,
-                                       separators=(",", ":")),
-        "pin_profile": pin,
-        "dose_g": context.get("targetDoseWeight"),
-        "yield_g": context.get("targetYield"),
-        "grind": context.get("grinderSetting"),
-        "grinder_model": context.get("grinderModel"),
-    }
-
-
-def context_patch(row: dict[str, Any]) -> dict[str, Any]:
-    """What applying our recipe writes into the workflow context.
-
-    Only what the recipe holds. A field it never captured is left as it is on
-    the machine rather than cleared - a recipe saved without a grinder model
-    is not a statement that there is none.
-    """
-    patch = {
-        "beanBatchId": row.get("bean_batch_id"),
-        "targetDoseWeight": row.get("dose_g"),
-        "targetYield": row.get("yield_g"),
-        "grinderSetting": row.get("grind"),
-        "grinderModel": row.get("grinder_model"),
-    }
-    return {k: v for k, v in patch.items() if v is not None}
-
-
-def suggest_name(name: str, taken: list[str]) -> str:
-    lowered = {t.casefold() for t in taken}
-    for n in range(2, 100):
-        candidate = f"{name} ({n})"
-        if candidate.casefold() not in lowered:
-            return candidate
-    return f"{name} (new)"
-
-
 def _ratio(dose: Any, drink: Any) -> float | None:
     try:
         return round(float(drink) / float(dose), 2) if dose and drink else None
@@ -340,10 +417,35 @@ def _compact(block: dict[str, Any]) -> dict[str, Any]:
     return {k: v for k, v in block.items() if v not in (None, {}, [])}
 
 
-__all__ = ["ISSUES", "Catalogue", "issues_of", "mark_duplicates", "payload_of",
+def _number(value: Any) -> float | None:
+    try:
+        return float(str(value).replace(",", ".")) if value not in (None, "") else None
+    except ValueError:
+        return None
+
+
+def _text(value: Any) -> str | None:
+    return str(value) if value not in (None, "") else None
+
+
+def _grind_number(value: Any) -> Any:
+    number = _number(value)
+    return number if number is not None else value
+
+
+def _grind_text(value: Any) -> str:
+    """Back to the workflow's spelling: a string, without a trailing ".0"."""
+    number = _number(value)
+    if number is None:
+        return str(value)
+    return f"{number:g}"
+
+
+__all__ = ["ISSUES", "ORIGIN", "Catalogue", "issues_of", "mark_duplicates", "payload_of",
            "DYE2_NAMESPACE", "DYE2_RECIPES", "SOURCES", "TITLE_SEPARATOR",
-           "choose", "context_patch", "default_name", "dye2_name", "dye2_view",
-           "own_view", "row_from_workflow", "suggest_name"]
+           "choose", "dial_in", "dye2_name", "dye2_view", "entry_id", "is_ours",
+           "merged_list", "own_view", "projection_entry", "recipe_fields",
+           "recipe_name", "recipe_workflow", "tablet_dial_in"]
 
 
 # ------------------------------------------------------------------ Issues
@@ -353,7 +455,6 @@ __all__ = ["ISSUES", "Catalogue", "issues_of", "mark_duplicates", "payload_of",
 ISSUES = (
     "name_only_profile",            # profile is a title without steps or id (T44)
     "profile_reference_unresolved", # profile is an id that is not on the tablet
-    "profile_missing",              # mine, unpinned: its profile title is gone
     "no_workflow",                  # DYE2 item from before the ready-made workflow
     "batch_is_bean_id",             # beanBatchId holds a bean's id (T45)
     "batch_unknown",                # beanBatchId is neither a batch nor a bean
@@ -382,7 +483,8 @@ def payload_of(source: str, raw: dict[str, Any]) -> tuple[dict[str, Any], Any]:
     if source == "dye2":
         workflow = raw.get("workflow") or {}
         return dict(workflow.get("context") or {}), workflow.get("profile")
-    return context_patch(raw), None
+    body = recipe_workflow(raw)
+    return body["context"], body.get("profile")
 
 
 def issues_of(
@@ -404,11 +506,6 @@ def issues_of(
         return found
     if kind == "reference" and profile["id"] not in catalogue.profile_ids:
         found.append("profile_reference_unresolved")
-    if (source == "mine" and not raw.get("pin_profile")
-            and str(raw.get("profile_title") or "").casefold()
-            not in catalogue.profile_titles):
-        found.append("profile_missing")
-
     batch = context.get("beanBatchId")
     if batch:
         bean_id = catalogue.batches.get(str(batch))

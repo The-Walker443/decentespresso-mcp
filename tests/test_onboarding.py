@@ -339,8 +339,7 @@ async def test_update_warns_when_the_workflow_still_runs_the_old_version(
     mcp = server(fake, writable, db)
     clone = await call(mcp, "clone_profile", {
         "source": "D-Flow", "title": "Favourite", "overrides": {"temperature_c": 91.5}})
-    await call(mcp, "set_workflow", {"fields": {"profileId": clone["id"]},
-                                     "replace_unsaved_profile": True})
+    await call(mcp, "set_workflow", {"fields": {"profileId": clone["id"]}})
     result = await call(mcp, "update_profile", {
         "id": clone["id"], "overrides": {"temperature_c": 93}})
     assert "still is" in result["workflow"]
@@ -358,26 +357,12 @@ async def test_the_refresh_update_profile_offers_is_not_refused(writable, db) ->
     mcp = server(fake, writable, db)
     clone = await call(mcp, "clone_profile", {
         "source": "D-Flow", "title": "Favourite", "overrides": {"temperature_c": 91.5}})
-    await call(mcp, "set_workflow", {"fields": {"profileId": clone["id"]},
-                                     "replace_unsaved_profile": True})
+    await call(mcp, "set_workflow", {"fields": {"profileId": clone["id"]}})
     tuned = await call(mcp, "update_profile", {
         "id": clone["id"], "overrides": {"temperature_c": 93}})
 
     await call(mcp, "set_workflow", {"fields": {"profileId": tuned["id"]}})
     assert fake.workflow["profile"]["steps"][-1]["temperature"] == 93.0
-
-
-async def test_a_real_tablet_tune_is_still_protected_after_that(writable, db) -> None:
-    """The exemption covers what this server replaced - nothing tuned by hand."""
-    fake = FakeDecaid()
-    mcp = server(fake, writable, db)
-    clone = await call(mcp, "clone_profile", {
-        "source": "D-Flow", "title": "Favourite", "overrides": {"temperature_c": 91.5}})
-    await call(mcp, "update_profile", {"id": clone["id"], "overrides": {"temperature_c": 93}})
-    fake.workflow["profile"] = dict(PROFILES[1]["profile"], target_weight=37.5)
-
-    message = await refused(mcp, "set_workflow", {"fields": {"profileId": "Adaptive v3"}})
-    assert "not saved as a profile" in message
 
 
 async def test_a_bundled_default_is_never_changed(writable, db) -> None:
@@ -423,21 +408,18 @@ async def test_selection_copies_the_profile_in_and_reports_it(writable, db) -> N
     assert "profileTitle" in result["alongside"]
 
 
-async def test_an_unsaved_profile_is_not_overwritten_by_accident(writable, db) -> None:
-    """The live case: a D-Flow tuned on the tablet, stored nowhere else.
-
-    Measured 2026-09-26 - the workflow's profile matched none of 85 records.
-    Selecting another would have lost it with no way back from this server.
-    """
+async def test_a_profile_change_overwrites_a_tablet_tune_without_asking(
+    writable, db
+) -> None:
+    """M13 removed the unsaved-profile guard. The live case it was built for -
+    a D-Flow tuned on the tablet and stored nowhere (2026-09-26) - now simply
+    gives way: the tune lives on in the bean's recipe, not in a refusal that
+    made every profile change a two-step conversation."""
     fake = FakeDecaid()
-    mcp = server(fake, writable, db)
-    message = await refused(mcp, "set_workflow", {"fields": {"profileId": "Adaptive v3"}})
-    assert "not saved as a profile" in message
-    assert fake.puts() == []
-
-    await call(mcp, "set_workflow", {"fields": {"profileId": "Adaptive v3"},
-                                     "replace_unsaved_profile": True})
+    result = await call(server(fake, writable, db), "set_workflow",
+                        {"fields": {"profileId": "Adaptive v3"}})
     assert fake.workflow["profile"]["title"] == "Adaptive v3"
+    assert "not_taken" not in result, "named by title, read back as its id - taken"
 
 
 async def test_an_unknown_profile_is_refused(writable, db) -> None:

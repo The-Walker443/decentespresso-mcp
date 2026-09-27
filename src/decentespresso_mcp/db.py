@@ -18,8 +18,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .profile_forge import brew_hash
-
 log = logging.getLogger(__name__)
 
 
@@ -367,77 +365,64 @@ class Database:
 
     # -------------------------------------------------------------- Recipes
 
-    _RECIPE_FIELDS = (
-        "name", "bean_id", "bean_name", "bean_roaster", "bean_batch_id",
-        "profile_title", "profile_snapshot", "pin_profile", "dose_g", "yield_g",
-        "grind", "grinder_model",
-    )
+    _RECIPE_FIELDS = ("bean_batch_id", "grinder_setting", "grinder_model",
+                      "dose_g", "yield_g", "profile_json")
 
-    def recipes(self) -> list[dict[str, Any]]:
+    def bean_recipes(self) -> list[dict[str, Any]]:
+        """One per bean, with the bean's labels; newest dial-in first."""
         with self._lock:
             return [dict(r) for r in self._conn.execute(
-                "SELECT * FROM recipes ORDER BY updated_at DESC")]
+                "SELECT r.*, b.name AS bean_name, b.roaster AS bean_roaster, "
+                "       b.archived AS bean_archived "
+                "FROM bean_recipes r LEFT JOIN beans b ON b.id = r.bean_id "
+                "ORDER BY r.updated_at DESC")]
 
-    def recipe(self, name: str) -> dict[str, Any] | None:
-        """By name, case-insensitively - the column collates NOCASE."""
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT * FROM recipes WHERE name = ?", (name.strip(),)).fetchone()
-        return dict(row) if row else None
+    def bean_recipe(self, bean_id: str) -> dict[str, Any] | None:
+        return next((r for r in self.bean_recipes() if r["bean_id"] == bean_id), None)
 
-    def insert_recipe(self, recipe: dict[str, Any]) -> dict[str, Any]:
-        now = utc_now_iso()
-        values = {k: recipe.get(k) for k in self._RECIPE_FIELDS}
-        values["pin_profile"] = int(bool(values["pin_profile"]))
+    def save_bean_recipe(self, bean_id: str, fields: dict[str, Any]) -> bool:
+        """Insert or overwrite the bean's recipe. True when something changed.
+
+        ``updated_at`` only moves on a real change, so a write that set the
+        same values again does not reorder the list on the tablet.
+        """
+        values = {k: fields.get(k) for k in self._RECIPE_FIELDS}
         with self._lock:
+            row = self._conn.execute("SELECT * FROM bean_recipes WHERE bean_id = ?",
+                                     (bean_id,)).fetchone()
+            if row is not None and all(row[k] == v for k, v in values.items()):
+                return False
             self._conn.execute(
-                f"INSERT INTO recipes ({', '.join(values)}, captured_at, updated_at) "
-                f"VALUES ({', '.join(':' + k for k in values)}, :now, :now)",
-                {**values, "now": now},
+                f"INSERT INTO bean_recipes (bean_id, {', '.join(values)}, updated_at) "
+                f"VALUES (:bean_id, {', '.join(':' + k for k in values)}, :now) "
+                f"ON CONFLICT(bean_id) DO UPDATE SET "
+                + ", ".join(f"{k} = excluded.{k}" for k in values)
+                + ", updated_at = excluded.updated_at",
+                {**values, "bean_id": bean_id, "now": utc_now_iso()},
             )
             self._conn.commit()
-        found = self.recipe(str(values["name"]))
-        assert found is not None
-        return found
+        return True
 
-    def update_recipe(self, name: str, changes: dict[str, Any]) -> dict[str, Any] | None:
-        allowed = {k: v for k, v in changes.items() if k in self._RECIPE_FIELDS}
-        if "pin_profile" in allowed:
-            allowed["pin_profile"] = int(bool(allowed["pin_profile"]))
-        if allowed:
-            sets = ", ".join(f"{k} = :{k}" for k in allowed)
-            with self._lock:
-                self._conn.execute(
-                    f"UPDATE recipes SET {sets}, updated_at = :now WHERE name = :key",
-                    {**allowed, "now": utc_now_iso(), "key": name.strip()},
-                )
-                self._conn.commit()
-        return self.recipe(str(allowed.get("name") or name))
-
-    def remember_superseded(self, brew_hash: str, title: str | None,
-                            replaced_by: str | None) -> None:
+    def set_projected(self, bean_id: str, projected: str | None) -> None:
         with self._lock:
-            self._conn.execute(
-                "INSERT OR REPLACE INTO superseded_profiles "
-                "(brew_hash, title, replaced_by, replaced_at) VALUES (?, ?, ?, ?)",
-                (brew_hash, title, replaced_by, utc_now_iso()))
+            self._conn.execute("UPDATE bean_recipes SET projected = ? WHERE bean_id = ?",
+                               (projected, bean_id))
             self._conn.commit()
 
-    def known_brews(self) -> set[str]:
-        """Brew hashes this server holds a copy of or gave up on purpose."""
+    def delete_bean_recipe(self, bean_id: str) -> bool:
         with self._lock:
-            superseded = {r["brew_hash"] for r in self._conn.execute(
-                "SELECT brew_hash FROM superseded_profiles")}
-            snapshots = [r["profile_snapshot"] for r in self._conn.execute(
-                "SELECT profile_snapshot FROM recipes")]
-        return superseded | {brew_hash(json.loads(s)) for s in snapshots if s}
-
-    def delete_recipe(self, name: str) -> bool:
-        with self._lock:
-            cursor = self._conn.execute("DELETE FROM recipes WHERE name = ?",
-                                        (name.strip(),))
+            cursor = self._conn.execute("DELETE FROM bean_recipes WHERE bean_id = ?",
+                                        (bean_id,))
             self._conn.commit()
         return cursor.rowcount > 0
+
+    def newest_batch(self) -> str | None:
+        """The batch of the newest shot that named one - the bean last pulled."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT bean_batch_id FROM shots WHERE bean_batch_id IS NOT NULL "
+                "ORDER BY started_at DESC LIMIT 1").fetchone()
+        return row["bean_batch_id"] if row else None
 
     # -------------------------------------------------------------- Queries
 

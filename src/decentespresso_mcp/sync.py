@@ -25,7 +25,6 @@ error list.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
 import logging
 import time
@@ -64,7 +63,6 @@ from .profile_forge import (
     OVERRIDES,
     TITLE_SEPARATOR,
     apply_overrides,
-    brew_hash,
     changes_brewing,
     check_title,
     default_title,
@@ -80,13 +78,18 @@ from .recipes import (
     DYE2_RECIPES,
     LEGACY_NOTE,
     Catalogue,
-    context_patch,
-    default_name,
+    dial_in,
     dye2_name,
     favourite_name,
     favourite_workflow,
+    is_ours,
+    merged_list,
     profile_kind,
-    row_from_workflow,
+    projection_entry,
+    recipe_fields,
+    recipe_name,
+    recipe_workflow,
+    tablet_dial_in,
 )
 from .upload_watch import POLL_SECONDS, WATCH_SECONDS, newest, outcome
 from .writes import ValidationError
@@ -124,6 +127,9 @@ STATE_DECAID_VERSION = "decaid_version"
 STATE_ENJOYMENT_SCALE = "enjoyment_scale"
 STATE_ENJOYMENT_SCALE_FOR = "enjoyment_scale_version"
 STATE_ENJOYMENT_REREAD = "enjoyment_reread_at"
+#: M13: how often a sync found DYE2's list out of step and rewrote our entries.
+STATE_PROJECTION_HEALS = "projection_heals"
+STATE_PROJECTION_HEALED_AT = "projection_healed_at"
 
 #: Cap on detail requests per run. A detail weighs about 140 kB; for the first
 #: backfill of 168 shots that is a good 23 MB which would otherwise have to go
@@ -155,6 +161,11 @@ class SyncResult:
     #: of annotations after the switch to 0-10 changed.
     enjoyment_scale: str = SCALE_100
     annotations_reread: int | None = None
+    #: M13: recipes of beans that are gone, projection repairs, and dial-ins
+    #: taken over from the tablet.
+    recipes_removed: int = 0
+    projection_heals: int = 0
+    recipes_from_tablet: int = 0
     #: Blocking: transient problems where a later attempt can help.
     errors: list[str] = field(default_factory=list)
     #: Non-blocking: deterministic findings. A retry changes nothing about
@@ -254,6 +265,11 @@ async def run_sync(
 
     result.metrics_computed = await asyncio.to_thread(warm_metrics_cache, db)
     await asyncio.to_thread(db.link_shots_to_beans)
+    try:
+        beans = {str(b["id"]) for b in await client.beans()}
+        await _heal_recipes(client, db, beans, config, result)
+    except DecaidUnreachable:
+        result.waiting_for_tablet = True
     if config is not None:
         await _run_guards(db, config, result)
     result.duration_ms = int((time.monotonic() - started) * 1000)
@@ -467,6 +483,94 @@ def _reread_annotations(db: Database, listed: list[dict[str, Any]]) -> int:
     return db.update_annotations(rows)
 
 
+#: One projection at a time: a sync and a tool write must not interleave their
+#: read-modify-write of the same key.
+_PROJECTION_LOCK = asyncio.Lock()
+
+
+async def project_recipes(
+    client: DecaidClient, db: Database, enabled: bool = True,
+) -> dict[str, Any] | None:
+    """Write our recipes into DYE2's list; everyone else's items untouched.
+
+    GET immediately before the POST, our marked items replaced as a block,
+    DYE2's passed through where they were, then read back. First, what the
+    tablet changed on our entries since the last projection - Streamline's
+    auto-save writes dose, drink and grind there - is taken into the recipe:
+    that is a dial-in on the tablet, and overwriting it would lose it.
+
+    Archived beans are not projected. Returns what happened, or ``None`` with
+    the projection switched off.
+    """
+    if not enabled:
+        return None
+    async with _PROJECTION_LOCK:
+        store = await client.store_value(DYE2_NAMESPACE, DYE2_RECIPES)
+        store = store if isinstance(store, list) else []
+        rows = [r for r in await asyncio.to_thread(db.bean_recipes)
+                if not r.get("bean_archived")]
+        entries = {str(i.get("recipeId")): i for i in store if is_ours(i)}
+        adopted = []
+        for row in rows:
+            entry = entries.get(str(row["bean_id"]))
+            changes = tablet_dial_in(entry, row.get("projected")) if entry else {}
+            if changes:
+                fields = {k: row.get(k) for k in ("bean_batch_id", "grinder_setting",
+                                                  "grinder_model", "dose_g", "yield_g",
+                                                  "profile_json")}
+                await asyncio.to_thread(db.save_bean_recipe, row["bean_id"],
+                                        {**fields, **changes})
+                adopted.append(row["bean_id"])
+        if adopted:
+            rows = [r for r in await asyncio.to_thread(db.bean_recipes)
+                    if not r.get("bean_archived")]
+        ours = [projection_entry(r, r["updated_at"]) for r in rows]
+        wanted = merged_list(store, ours)
+        written = wanted != store
+        verified = True
+        if written:
+            await client.store_set(DYE2_NAMESPACE, DYE2_RECIPES, wanted)
+            verified = await client.store_value(DYE2_NAMESPACE, DYE2_RECIPES) == wanted
+        if verified:
+            for row in rows:
+                await asyncio.to_thread(db.set_projected, row["bean_id"],
+                                        json.dumps(dial_in(row), sort_keys=True))
+    result: dict[str, Any] = {"entries": len(ours), "written": written}
+    if written and not verified:
+        result["verified"] = False
+    if adopted:
+        result["adopted_from_tablet"] = len(adopted)
+    return result
+
+
+async def _heal_recipes(client: DecaidClient, db: Database, beans: set[str],
+                        config: Config | None, result: SyncResult) -> None:
+    """Every sync: recipes of deleted beans go, and the projection is repaired.
+
+    A written projection here means something was missing or out of date on
+    the tablet - an entry deleted there, a recipe changed while the tablet was
+    off - so it counts as a heal in status(). Failure never topples the sync.
+    """
+    try:
+        for row in await asyncio.to_thread(db.bean_recipes):
+            if row["bean_id"] not in beans:
+                await asyncio.to_thread(db.delete_bean_recipe, row["bean_id"])
+                result.recipes_removed += 1
+        enabled = config.dye2_projection if config is not None else True
+        outcome = await project_recipes(client, db, enabled)
+        if outcome and outcome["written"]:
+            result.projection_heals += 1
+            heals = int(await asyncio.to_thread(db.get_state, STATE_PROJECTION_HEALS) or 0)
+            await asyncio.to_thread(db.set_state, STATE_PROJECTION_HEALS, str(heals + 1))
+            await asyncio.to_thread(db.set_state, STATE_PROJECTION_HEALED_AT, utc_now_iso())
+        if outcome and outcome.get("adopted_from_tablet"):
+            result.recipes_from_tablet += outcome["adopted_from_tablet"]
+    except DecaidUnreachable:
+        raise
+    except DecaidError as exc:
+        result.warnings.append(f"recipes: {exc.code}: {exc}")
+
+
 def _stamp(value: Any) -> str | None:
     """Normalise ``updatedAt`` the same way it is stored in the database."""
     if not isinstance(value, str) or not value:
@@ -531,6 +635,8 @@ class SyncCoordinator:
         self._db = db
         self._config = config
         self._lock = asyncio.Lock()
+        #: DYE2_PROJECTION: our recipes as marked items in DYE2's list (M13).
+        self._projection = config.dye2_projection if config is not None else True
         #: Replaced in tests; the upload watch waits between log reads.
         self._sleep = asyncio.sleep
 
@@ -607,7 +713,7 @@ class SyncCoordinator:
         return before, after
 
     async def write_workflow(
-        self, fields: dict[str, Any], *, replace_unsaved: bool = False,
+        self, fields: dict[str, Any],
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Change the workflow context, with read-back.
 
@@ -628,38 +734,22 @@ class SyncCoordinator:
             # reference is refused here: Decaid would take any object at all.
             records = await self._client.profiles(include_hidden=True)
             profile = resolve_profile(records, str(reference))["profile"]
-        return await self._apply(patch, profile, records, replace_unsaved=replace_unsaved)
+        return await self._apply(patch, profile, records)
 
     async def _apply(
         self, patch: dict[str, Any], profile: dict[str, Any] | None,
-        records: list[dict[str, Any]], *, replace_unsaved: bool,
+        records: list[dict[str, Any]],
     ) -> tuple[dict[str, Any], dict[str, Any]]:
-        """The one path that writes the workflow, with every guard rail on it.
+        """The one path that writes the workflow.
 
         `set_workflow` and `apply_recipe` both end here, so the batch labels
-        (T28) and the unsaved-profile guard cannot be had by one and missed by
-        the other.
+        (T28) and the upload watch (T47) cannot be had by one and missed by the
+        other. A profile change overwrites the workflow without asking: a tune
+        made on the tablet lives on in the bean's recipe (M13), not in a guard.
         """
         patch = dict(patch)
         if patch.get("beanBatchId"):
             patch.update(await self._coffee_labels(str(patch["beanBatchId"])))
-        if profile is not None:
-            current = (await self._client.workflow()).get("profile")
-            if (current and not replace_unsaved and not same_brew(current, profile)
-                    and await self._would_be_lost(current, records)):
-                # Measured on the live instance: the workflow was running a
-                # D-Flow tuned on the tablet (pour 1.5 ml/s, limiter 9 bar) that
-                # matched none of 85 stored profiles. It existed only here.
-                # Selecting another profile would have discarded it with no way
-                # back from this server.
-                raise Protected(
-                    f"The workflow runs {current.get('title')!r} as tuned on the "
-                    "tablet, and that version is not saved as a profile anywhere. "
-                    "Selecting another one discards it for good. Keep it with "
-                    "save_workflow_profile first - or, if the user accepts losing "
-                    "it, say replace_unsaved_profile."
-                )
-
         body: dict[str, Any] = {}
         if profile is not None:
             body["profile"] = profile
@@ -745,23 +835,6 @@ class SyncCoordinator:
             return "disconnected"
         return "connected" if machine.get("state") == "connected" else "disconnected"
 
-    async def _would_be_lost(
-        self, current: dict[str, Any], records: list[dict[str, Any]]
-    ) -> bool:
-        """Would replacing this workflow profile lose it for good?
-
-        Not when it is a stored profile, not when a recipe holds it as its
-        snapshot, and not when this server replaced it itself with
-        update_profile. The last is the case the first version of this guard
-        got wrong: after an update the workflow still runs the previous version,
-        which Decaid no longer stores (T37), and the guard then blocked the very
-        set_workflow that update_profile offers as the next step.
-        """
-        if running_profile(current, records) is not None:
-            return False
-        known = await asyncio.to_thread(self._db.known_brews)
-        return brew_hash(current) not in known
-
     # -------------------------------------------------------------- Recipes
 
     async def save_workflow_profile(self, title: str | None) -> dict[str, Any]:
@@ -809,99 +882,83 @@ class SyncCoordinator:
         return {"record": after, "was_titled": embedded.get("title")}
 
     async def dye2_recipes(self) -> list[dict[str, Any]]:
-        """DYE2's recipes, read. There is no method here that writes them."""
+        """DYE2's recipes as the store holds them, ours included (marked)."""
         return await self._client.store_array(DYE2_NAMESPACE, DYE2_RECIPES)
 
-    async def capture_recipe(self, name: str | None, *, pin: bool) -> dict[str, Any]:
-        """What the machine is set to now, as a recipe row - not yet stored.
+    async def note_dial_in(self) -> dict[str, Any] | None:
+        """After a successful write: the active bean's recipe follows the workflow.
 
-        Refused when the profile exists only in the workflow. A recipe pointing
-        at such a profile would point at nothing the moment the workflow moves
-        on; `save_workflow_profile` keeps it first.
+        The active bean is the workflow's batch - or, when the workflow names
+        none, the newest shot's. Streamline clears the batch from the workflow
+        after every stored shot (T50), so between shots the workflow alone often
+        cannot say which coffee is being dialled in. Never raises: the write it
+        follows has already succeeded.
         """
-        workflow = await self._client.workflow()
-        records = await self._client.profiles(include_hidden=True)
-        record = running_profile(workflow.get("profile"), records)
-        context = workflow.get("context") or {}
-        if record is None:
-            raise Protected(
-                f"The workflow runs {(workflow.get('profile') or {}).get('title')!r}"
-                " as tuned on the tablet, and that version is stored nowhere - a "
-                "recipe would point at nothing once the workflow moves on. Keep it "
-                "with save_workflow_profile first"
-                + (f" (suggested title: {default_name(context)!r})"
-                   if default_name(context) else "") + "."
-            )
-        name = name or default_name(context)
-        if not name:
-            raise ValidationError(["name: give one - the workflow names no coffee"])
-        bean_id = None
-        if context.get("beanBatchId"):
-            with contextlib.suppress(ShotNotFound):
-                bean_id = (await self._client.bean_batch(
-                    str(context["beanBatchId"]))).get("beanId")
-        return row_from_workflow(" ".join(name.split()), context, record,
-                                 bean_id=bean_id, pin=pin)
+        try:
+            workflow = await self._client.workflow()
+            batch = ((workflow.get("context") or {}).get("beanBatchId")
+                     or await asyncio.to_thread(self._db.newest_batch))
+            if not batch:
+                return None
+            bean_id = (await self._client.bean_batch(str(batch))).get("beanId")
+            if not bean_id:
+                return None
+            # The recipe is named after the bean; a bean made a minute ago is
+            # not in the archive until the next sync.
+            bean = await self._client.bean(str(bean_id))
+            await asyncio.to_thread(self._db.upsert_beans,
+                                    [bean_row_from_decaid(bean, utc_now_iso())])
+            changed = await asyncio.to_thread(
+                self._db.save_bean_recipe, str(bean_id), recipe_fields(workflow, str(batch)))
+            projection = await project_recipes(self._client, self._db, self._projection)
+        except DecaidError as exc:
+            log.warning("recipe not updated", extra={"fields": {"error": exc.code}})
+            return None
+        row = await asyncio.to_thread(self._db.bean_recipe, str(bean_id))
+        out: dict[str, Any] = {"name": recipe_name(row or {}), "changed": changed}
+        if projection is not None:
+            out["tablet"] = projection
+        return out
+
+    async def save_current_recipe(self) -> dict[str, Any]:
+        """``save_recipe``: take the workflow as the active bean's recipe now."""
+        noted = await self.note_dial_in()
+        if noted is None:
+            raise ValidationError(["recipe: no active bean - neither the workflow nor "
+                                   "the newest shot names a batch"])
+        return noted
 
     async def apply_own_recipe(
-        self, row: dict[str, Any], *, replace_unsaved: bool,
+        self, row: dict[str, Any],
     ) -> tuple[tuple[dict[str, Any], dict[str, Any]], dict[str, Any]]:
-        """Our recipe onto the machine: current profile version, or the pin.
+        """Our recipe onto the machine: context and the embedded profile, whole."""
+        body = recipe_workflow(row)
+        context = {k: v for k, v in body["context"].items()
+                   if k not in ("coffeeName", "coffeeRoaster")}   # _apply derives them
+        profile = body.get("profile")
+        result = await self._apply(context, profile, [])
+        return result, {"title": (profile or {}).get("title")}
 
-        Unpinned, the profile is looked up by title and so follows every tuning
-        despite the id changing each time (T37). A title that no longer
-        resolves is refused rather than quietly replaced by the snapshot - the
-        user asked for the profile as it is now, and an old copy is a different
-        answer to that question.
-        """
-        records = await self._client.profiles(include_hidden=True)
-        snapshot = json.loads(row["profile_snapshot"])
-        if row.get("pin_profile"):
-            profile, used = snapshot, {"pinned": True, "title": snapshot.get("title")}
-        else:
-            try:
-                record = resolve_profile(records, str(row["profile_title"]))
-            except ValidationError:
-                raise ValidationError([
-                    f"profile: {row['profile_title']!r} is no longer on the tablet. "
-                    "Pin the recipe to its snapshot with update_recipe, or save it "
-                    "again from a profile that exists."]) from None
-            profile = record["profile"]
-            used = {"pinned": False, "id": record.get("id"),
-                    "title": profile.get("title"),
-                    "differs_from_snapshot": not same_brew(profile, snapshot)}
-        result = await self._apply(context_patch(row), profile, records,
-                                   replace_unsaved=replace_unsaved)
-        return result, used
+    async def delete_recipe(self, bean_id: str) -> dict[str, Any] | None:
+        deleted = await asyncio.to_thread(self._db.delete_bean_recipe, bean_id)
+        if not deleted:
+            return None
+        return {"tablet": await project_recipes(self._client, self._db, self._projection)}
 
     async def apply_dye2_recipe(
-        self, item: dict[str, Any], *, replace_unsaved: bool,
+        self, item: dict[str, Any],
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """A DYE2 recipe's `workflow`, PUT as it is - the contract's apply.
 
         Nothing is added to it and nothing taken away; the batch labels in its
-        context are DYE2's to write. The unsaved-profile guard still runs
-        first, because it only ever refuses and changes nothing it sends.
+        context are DYE2's to write.
         """
         workflow = item.get("workflow")
         if not isinstance(workflow, dict):
             raise ValidationError([f"recipe: {dye2_name(item)!r} was {LEGACY_NOTE}"])
-        records = await self._client.profiles(include_hidden=True)
         profile = workflow.get("profile")
         async with self._lock:
             before_wf = await self._client.workflow()
-            current = before_wf.get("profile")
-            # A stub without steps (T44) replaces no brewing content - the
-            # running profile survives it - so there is nothing to protect.
-            if (profile and profile.get("steps") and current and not replace_unsaved
-                    and not same_brew(current, profile)
-                    and await self._would_be_lost(current, records)):
-                raise Protected(
-                    f"The workflow runs {current.get('title')!r} as tuned on the "
-                    "tablet, stored nowhere. Applying this recipe discards it. Keep "
-                    "it with save_workflow_profile first - or say "
-                    "replace_unsaved_profile."
-                )
             watch = await self._before_upload(before_wf, profile)
             await self._client.update_workflow(workflow)
             after_wf = await self._client.workflow()
@@ -929,7 +986,7 @@ class SyncCoordinator:
         return await self._client.store_array(DYE2_NAMESPACE, DYE2_FAVOURITES)
 
     async def apply_dye2_favourite(
-        self, fav: dict[str, Any], *, replace_unsaved: bool,
+        self, fav: dict[str, Any],
     ) -> tuple[tuple[dict[str, Any], dict[str, Any]], dict[str, Any]]:
         """A DYE2 favourite onto the machine: its context, copyMask respected,
         and its profile only where there is one.
@@ -974,7 +1031,7 @@ class SyncCoordinator:
             used["masked_off"] = masked
         if context.get("beanBatchId"):
             await self._refuse_bean_as_batch(str(context["beanBatchId"]), fav)
-        result = await self._apply(context, chosen, records, replace_unsaved=replace_unsaved)
+        result = await self._apply(context, chosen, records)
         return result, used
 
     async def _refuse_bean_as_batch(self, batch_id: str, fav: dict[str, Any]) -> None:
@@ -1170,9 +1227,6 @@ class SyncCoordinator:
             was_running = same_brew(workflow.get("profile"), record["profile"])
             updated = await self._client.update_profile(str(record["id"]), profile)
             after = await self._client.profile(str(updated["id"]))
-            await asyncio.to_thread(
-                self._db.remember_superseded, brew_hash(record["profile"]),
-                (record.get("profile") or {}).get("title"), after.get("id"))
         return {"record": after, "before": record, "changes": changes,
                 "workflow_ran_previous_version": was_running}
 
@@ -1202,6 +1256,17 @@ class SyncCoordinator:
             raise ShotNotFound(f"The batch {batch_id!r} names no bean")
         bean = await self._find(self._client.beans(), str(bean_id))
         return {"coffeeName": bean.get("name"), "coffeeRoaster": bean.get("roaster")}
+
+    async def profile_stored(self, workflow: dict[str, Any]) -> bool | None:
+        """Whether the workflow's profile is a stored record - for information only."""
+        profile = workflow.get("profile")
+        if not profile:
+            return None
+        try:
+            records = await self._client.profiles(include_hidden=True)
+        except DecaidError:
+            return None
+        return running_profile(profile, records) is not None
 
     async def read_workflow(self) -> dict[str, Any]:
         return await self._client.workflow()
@@ -1277,6 +1342,9 @@ __all__ = [
     "QUICK_SYNC_MAX_AGE_S",
     "MACHINE_UPLOAD",
     "STATE_BACKFILL_DONE",
+    "STATE_PROJECTION_HEALED_AT",
+    "STATE_PROJECTION_HEALS",
+    "project_recipes",
     "STATE_DECAID_VERSION",
     "STATE_ENJOYMENT_REREAD",
     "STATE_ENJOYMENT_SCALE",

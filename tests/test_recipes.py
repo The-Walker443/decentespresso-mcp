@@ -18,13 +18,20 @@ import httpx
 import pytest
 from fastmcp import Client
 from fastmcp.exceptions import ToolError
+from helpers import decaid_detail, store_shot
 from test_onboarding import WORKFLOW, FakeDecaid, _no_sleep
 
 from decentespresso_mcp.config import Config
 from decentespresso_mcp.db import Database
 from decentespresso_mcp.decaid_client import DecaidClient
 from decentespresso_mcp.server import build_mcp
-from decentespresso_mcp.sync import SyncCoordinator
+from decentespresso_mcp.sync import (
+    STATE_PROJECTION_HEALS,
+    SyncCoordinator,
+    SyncResult,
+    _heal_recipes,
+    project_recipes,
+)
 
 FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "decaid"
 GAYO_BATCH = WORKFLOW["context"]["beanBatchId"]
@@ -50,17 +57,20 @@ class StoreFake(FakeDecaid):
         path = request.url.path
         if path.startswith("/api/v1/store/"):
             self.calls.append((request.method, path))
-            if request.method != "GET":
-                return httpx.Response(500, json={"error": "a test stand-in: never write"})
             key = "/".join(path.split("/")[4:6])
+            if request.method == "POST":
+                # Decaid's kv_store_handler: the body replaces the value, {} back.
+                self.store[key] = json.loads(request.content)
+                return httpx.Response(200, json={})
             # The literal `null` for a key never written, as the contract says -
             # json=None would send an empty body instead, which Decaid does not.
             return httpx.Response(200, content=json.dumps(self.store.get(key)),
                                   headers={"Content-Type": "application/json"})
         return super().handler(request)
 
-    def store_writes(self) -> list[tuple[str, str]]:
-        return [(m, p) for m, p in self.calls if p.startswith("/api/v1/store/") and m != "GET"]
+    def store_writes(self, key: str | None = None) -> list[tuple[str, str]]:
+        return [(m, p) for m, p in self.calls if p.startswith("/api/v1/store/") and m != "GET"
+                and (key is None or p.endswith("/" + key))]
 
 
 @pytest.fixture
@@ -80,7 +90,7 @@ def server(fake: FakeDecaid, config: Config, db: Database):
     client = DecaidClient("http://10.100.100.171:8080",
                           transport=httpx.MockTransport(fake.handler))
     client._sleep_backoff = _no_sleep  # type: ignore[method-assign]
-    return build_mcp(config, db, SyncCoordinator(client, db))
+    return build_mcp(config, db, SyncCoordinator(client, db, config))
 
 
 async def call(mcp, name: str, args: dict | None = None):
@@ -95,9 +105,21 @@ async def refused(mcp, name: str, args: dict | None = None) -> str:
 
 
 async def saved(fake: StoreFake, mcp) -> dict[str, Any]:
-    """The live situation resolved: the tuned profile kept, then the recipe."""
-    await call(mcp, "save_workflow_profile", {})
-    return (await call(mcp, "save_recipe", {}))["recipe"]
+    """One dial-in step through the chat - the recipe follows by itself."""
+    await call(mcp, "set_workflow", {"fields": {"grinderSetting": "3.6"}})
+    return (await mine(mcp))[0]
+
+
+async def mine(mcp) -> list[dict[str, Any]]:
+    return (await call(mcp, "list_recipes", {"source": "mine"}))["recipes"]
+
+
+def ours(fake: StoreFake) -> list[dict[str, Any]]:
+    return [i for i in fake.store.get("dye2.reaplugin/recipes") or []
+            if isinstance(i, dict) and i.get("origin") == "decentespresso-mcp"]
+
+
+GAYO_NAME = "Coffee Circle – Grano Gayo"
 
 
 # ---------------------------------------------------- Keeping the tune
@@ -130,142 +152,110 @@ def fake_profiles() -> list[dict[str, Any]]:
     return json.loads((FIXTURES / "profiles_sample.json").read_text(encoding="utf-8"))
 
 
-# ----------------------------------------------------------- Saving
+# ------------------------------------------- One recipe per bean, derived
 
 
-async def test_a_recipe_never_points_at_a_profile_that_lives_only_in_the_workflow(
+async def test_every_workflow_write_updates_the_beans_one_recipe(writable, db) -> None:
+    """M13: no save step in the chat. Two dial-in steps, one recipe, the
+    newest values - not two recipes and not the first ones."""
+    fake = StoreFake()
+    mcp = server(fake, writable, db)
+    first = await call(mcp, "set_workflow", {"fields": {"grinderSetting": "3.6"}})
+    assert first["recipe"]["name"] == GAYO_NAME
+    await call(mcp, "set_workflow", {"fields": {"grinderSetting": "3.5",
+                                                "targetYield": 38}})
+    (recipe,) = await mine(mcp)
+    assert recipe["name"] == GAYO_NAME
+    assert recipe["dashboardVariables"]["grind"] == "3.5"
+    assert recipe["dashboardVariables"]["drink"] == 38
+
+
+async def test_the_recipe_carries_a_tablet_tune_without_a_stored_copy(writable, db) -> None:
+    """The live workflow of 2026-09-26: a D-Flow tuned on the tablet that
+    matches no stored profile. The recipe embeds it whole - no named profile
+    copy is made, and nothing asks for one."""
+    fake = StoreFake()
+    mcp = server(fake, writable, db)
+    await call(mcp, "set_workflow", {"fields": {"grinderSetting": "3.6"}})
+    row = db.bean_recipe(GAYO_BEAN)
+    assert json.loads(row["profile_json"])["steps"] == WORKFLOW["profile"]["steps"]
+    assert [p for p in fake.posts() if "/profiles" in p] == [], "no profile was created for it"
+
+
+async def test_a_new_batch_of_the_same_bean_moves_the_recipe_along(writable, db) -> None:
+    fake = StoreFake()
+    fake.batches.append({"id": "66666666-6666-4666-8666-666666666666", "beanId": GAYO_BEAN,
+                         "frozen": False, "archived": False})
+    mcp = server(fake, writable, db)
+    await call(mcp, "set_workflow", {"fields": {"grinderSetting": "3.6"}})
+    await call(mcp, "set_workflow", {"fields": {
+        "beanBatchId": "66666666-6666-4666-8666-666666666666"}})
+    (recipe,) = await mine(mcp)
+    assert recipe["beanBatchId"] == "66666666-6666-4666-8666-666666666666"
+
+
+async def test_without_a_batch_in_the_workflow_the_newest_shot_names_the_bean(
     writable, db
 ) -> None:
+    """Streamline clears the batch from the workflow after every stored shot
+    (T50, measured 60-80 ms after "Storing shot"). The next dial-in step in
+    the chat still belongs to the coffee just pulled."""
     fake = StoreFake()
+    fake.workflow["context"]["beanBatchId"] = None
+    shot = decaid_detail("aaaa1111-0000-4000-8000-000000000001",
+                         timestamp="2026-09-27T08:33:35", updated_at="2026-09-27T08:34:12Z")
+    shot.setdefault("workflow", {}).setdefault("context", {})["beanBatchId"] = GAYO_BATCH
+    store_shot(db, shot)
+    result = await call(server(fake, writable, db), "set_workflow",
+                        {"fields": {"grinderSetting": "3.6"}})
+    assert result["recipe"]["name"] == GAYO_NAME
+
+
+async def test_apply_puts_back_the_context_and_the_whole_profile(writable, db) -> None:
+    fake = StoreFake()
+    mcp = server(fake, writable, db)
+    await call(mcp, "set_workflow", {"fields": {"grinderSetting": "3.6"}})
+    fake.workflow["profile"] = dict(fake_profiles()[0]["profile"])
+    fake.workflow["context"]["grinderSetting"] = "5.0"
+
+    result = await call(mcp, "apply_recipe", {"name": "grano gayo"})
+    assert result["source"] == "mine"
+    assert fake.workflow["context"]["grinderSetting"] == "3.6"
+    assert fake.workflow["profile"]["steps"] == WORKFLOW["profile"]["steps"]
+
+
+async def test_save_recipe_takes_a_dial_in_done_on_the_tablet(writable, db) -> None:
+    fake = StoreFake()
+    mcp = server(fake, writable, db)
+    await call(mcp, "set_workflow", {"fields": {"grinderSetting": "3.6"}})
+    fake.workflow["context"]["grinderSetting"] = "3.4"      # turned on the tablet
+    result = await call(mcp, "save_recipe", {})
+    assert result["recipe"]["changed"] is True
+    assert (await mine(mcp))[0]["dashboardVariables"]["grind"] == "3.4"
+
+
+async def test_with_no_bean_anywhere_save_recipe_says_so(writable, db) -> None:
+    fake = StoreFake()
+    fake.workflow["context"]["beanBatchId"] = None
     message = await refused(server(fake, writable, db), "save_recipe", {})
-    assert "save_workflow_profile" in message
-    assert "Coffee Circle – Grano Gayo" in message, "offers the title too"
-    assert db.recipes() == []
+    assert "no active bean" in message
 
 
-async def test_a_recipe_captures_what_the_machine_is_set_to(writable, db) -> None:
-    fake = StoreFake()
-    recipe = await saved(fake, server(fake, writable, db))
-    context = WORKFLOW["context"]
-
-    assert recipe["name"] == "Coffee Circle – Grano Gayo"
-    assert recipe["beanBatchId"] == GAYO_BATCH
-    assert recipe["profileTitle"] == "Coffee Circle – Grano Gayo"
-    assert recipe["dashboardVariables"]["grind"] == context["grinderSetting"]
-    assert recipe["dashboardVariables"]["dose"] == context["targetDoseWeight"]
-    assert recipe["dashboardVariables"]["drink"] == context["targetYield"]
-    assert db.recipes()[0]["bean_id"] == GAYO_BEAN
-
-
-async def test_a_taken_recipe_name_is_refused_with_a_suggestion(writable, db) -> None:
+async def test_delete_removes_mine_here_and_on_the_tablet(writable, db) -> None:
     fake = StoreFake()
     mcp = server(fake, writable, db)
-    await saved(fake, mcp)
-    message = await refused(mcp, "save_recipe", {"name": "coffee circle – grano  gayo"})
-    assert "(2)" in message
-
-
-# --------------------------------------------------------- Applying
-
-
-async def test_apply_puts_the_machine_back_field_for_field(writable, db) -> None:
-    fake = StoreFake()
-    mcp = server(fake, writable, db)
-    await saved(fake, mcp)
-    wanted = copy.deepcopy(fake.workflow)
-
-    fake.workflow["context"].update({"grinderSetting": "9.9", "targetDoseWeight": 20.0,
-                                     "targetYield": 50.0})
-    fake.workflow["profile"] = fake_profiles()[2]["profile"]      # Adaptive v3
-    result = await call(mcp, "apply_recipe", {"name": "Coffee Circle – Grano Gayo"})
-
-    for key in ("beanBatchId", "grinderSetting", "targetDoseWeight", "targetYield",
-                "coffeeName", "coffeeRoaster"):
-        assert fake.workflow["context"][key] == wanted["context"][key], key
-    assert fake.workflow["profile"]["steps"] == wanted["profile"]["steps"]
-    assert result["profile"]["pinned"] is False
-
-
-async def test_an_unpinned_recipe_follows_the_tuning_and_a_pinned_one_stays(
-    writable, db
-) -> None:
-    """The reason the profile is held by title: its id changes with every tune."""
-    fake = StoreFake()
-    mcp = server(fake, writable, db)
-    await saved(fake, mcp)
-    await call(mcp, "save_recipe", {"name": "Pinned", "pin_profile": True})
-    before = copy.deepcopy(fake.workflow["profile"])
-
-    tuned = await call(mcp, "update_profile", {
-        "id": "Coffee Circle – Grano Gayo", "overrides": {"temperature_c": 90}})
-    assert tuned["recipes"] == {"follow_the_change": ["Coffee Circle – Grano Gayo"],
-                                "pinned_to_the_old_version": ["Pinned"]}
-
-    followed = await call(mcp, "apply_recipe", {"name": "Coffee Circle – Grano Gayo"})
-    assert followed["profile"]["id"] == tuned["id"]
-    assert fake.workflow["profile"]["steps"][-1]["temperature"] == 90.0
-
-    await call(mcp, "apply_recipe", {"name": "Pinned"})
-    assert fake.workflow["profile"]["steps"] == before["steps"], "the snapshot, untouched"
-
-
-async def test_refreshing_a_pinned_snapshot_takes_the_current_version(writable, db) -> None:
-    fake = StoreFake()
-    mcp = server(fake, writable, db)
-    await saved(fake, mcp)
-    await call(mcp, "save_recipe", {"name": "Pinned", "pin_profile": True})
-    await call(mcp, "update_profile", {"id": "Coffee Circle – Grano Gayo",
-                                       "overrides": {"temperature_c": 90}})
-    await call(mcp, "update_recipe", {"name": "Pinned", "fields": {"refresh_snapshot": True}})
-    await call(mcp, "apply_recipe", {"name": "Pinned"})
-    assert fake.workflow["profile"]["steps"][-1]["temperature"] == 90.0
-
-
-async def test_a_vanished_profile_is_not_replaced_by_its_snapshot(writable, db) -> None:
-    """The user asked for the profile as it is now; an old copy answers another question."""
-    fake = StoreFake()
-    mcp = server(fake, writable, db)
-    recipe = await saved(fake, mcp)
-    fake.profiles = [r for r in fake.profiles
-                     if r["profile"]["title"] != recipe["profileTitle"]]
-    message = await refused(mcp, "apply_recipe", {"name": recipe["name"]})
-    assert "no longer on the tablet" in message
-    assert "Pin the recipe" in message
-
-
-async def test_applying_over_an_unsaved_profile_is_refused(writable, db) -> None:
-    fake = StoreFake()
-    mcp = server(fake, writable, db)
-    await saved(fake, mcp)
-    fake.workflow["profile"] = dict(fake.workflow["profile"], target_weight=41.5,
-                                    title="tuned again, not saved")
-    message = await refused(mcp, "apply_recipe", {"name": "Coffee Circle – Grano Gayo"})
-    assert "stored nowhere" in message or "not saved as a profile" in message
-
-
-# ------------------------------------------------------ Maintaining
-
-
-async def test_update_and_delete_are_for_mine_only(writable, db) -> None:
-    fake = StoreFake()
-    mcp = server(fake, writable, db)
-    recipe = await saved(fake, mcp)
-    renamed = await call(mcp, "update_recipe", {"name": recipe["name"],
-                                                "fields": {"name": "House", "grind": "3.1"}})
-    assert renamed["recipe"]["name"] == "House"
-    assert renamed["recipe"]["dashboardVariables"]["grind"] == "3.1"
-
-    assert "not changeable" in await refused(mcp, "update_recipe", {
-        "name": "House", "fields": {"beanBatchId": "x"}})
-    assert (await call(mcp, "delete_recipe", {"name": "house"}))["deleted"] == "house"
+    await call(mcp, "set_workflow", {"fields": {"grinderSetting": "3.6"}})
+    assert len(ours(fake)) == 1
+    assert (await call(mcp, "delete_recipe", {"name": GAYO_NAME}))["deleted"] == GAYO_NAME
+    assert await mine(mcp) == [] and ours(fake) == []
     assert "DYE2's are deleted in DYE2" in await refused(mcp, "delete_recipe",
-                                                          {"name": "House"})
+                                                          {"name": "Decaf"})
 
 
 async def test_with_the_tablet_off_mine_are_still_listed(writable, db) -> None:
     fake = StoreFake()
     mcp = server(fake, writable, db)
-    await saved(fake, mcp)
+    await call(mcp, "set_workflow", {"fields": {"grinderSetting": "3.6"}})
     fake.offline = True
     listing = await call(mcp, "list_recipes", {})
     assert [r["source"] for r in listing["recipes"]] == ["mine"]
@@ -276,8 +266,133 @@ async def test_the_recipe_tools_that_write_need_write_mode(config, db) -> None:
     async with Client(server(StoreFake(), config, db)) as client:
         names = {t.name for t in await client.list_tools()}
     assert "list_recipes" in names
-    assert not names & {"save_recipe", "apply_recipe", "update_recipe", "delete_recipe",
+    assert not names & {"save_recipe", "apply_recipe", "delete_recipe",
                         "save_workflow_profile"}
+
+
+async def test_update_recipe_and_the_guard_parameters_are_gone(writable, db) -> None:
+    """M13: nothing to name, pin or protect."""
+    async with Client(server(StoreFake(), writable, db)) as client:
+        tools = {t.name: t for t in await client.list_tools()}
+    assert "update_recipe" not in tools
+    for name in ("set_workflow", "apply_recipe", "save_recipe"):
+        assert "replace_unsaved_profile" not in json.dumps(tools[name].inputSchema)
+    assert tools["save_recipe"].inputSchema.get("properties") in (None, {})
+
+
+# ------------------------------------------------ Projection into DYE2
+
+
+async def test_the_recipe_appears_in_dye2s_list_marked_and_complete(writable, db) -> None:
+    """What Streamline's strip needs to render and apply it (dyeStrip.js):
+    a label, and a ready-to-PUT workflow with the full profile - no stub."""
+    fake = with_dye2()
+    await call(server(fake, writable, db), "set_workflow",
+               {"fields": {"grinderSetting": "3.6"}})
+    (entry,) = ours(fake)
+    assert entry["id"] == "mcp-" + GAYO_BEAN and entry["recipeId"] == GAYO_BEAN
+    assert entry["title"] == GAYO_NAME
+    assert entry["showOnStreamlineDashboard"] is True
+    context = entry["workflow"]["context"]
+    assert context["beanBatchId"] == GAYO_BATCH
+    assert context["coffeeName"] == "Grano Gayo"
+    assert context["grinderSetting"] == "3.6"
+    assert entry["workflow"]["profile"]["steps"] == WORKFLOW["profile"]["steps"]
+    assert "profileTitle" not in entry and "profileId" not in entry, (
+        "DYE2's own dashboard would PUT them as a stub and rename the running "
+        "profile (T52)")
+
+
+async def test_dye2s_own_recipe_is_passed_through_untouched_and_first(writable, db) -> None:
+    """Streamline's strip shows the first five recipes only; the user's own
+    stays where it was."""
+    fake = with_dye2()
+    fake.store["dye2.reaplugin/recipes"].append("a stray non-object - not ours either")
+    before = copy.deepcopy(fake.store["dye2.reaplugin/recipes"])
+    await call(server(fake, writable, db), "set_workflow",
+               {"fields": {"grinderSetting": "3.6"}})
+    after = fake.store["dye2.reaplugin/recipes"]
+    assert after[:len(before)] == before
+    assert after[len(before)]["origin"] == "decentespresso-mcp"
+
+
+async def test_the_list_is_read_right_before_writing(writable, db) -> None:
+    """A DYE2 edit between two of our writes must survive the second."""
+    fake = with_dye2()
+    mcp = server(fake, writable, db)
+    await call(mcp, "set_workflow", {"fields": {"grinderSetting": "3.6"}})
+    fake.store["dye2.reaplugin/recipes"][0]["name"] = "Decaf (renamed in DYE2)"
+    await call(mcp, "set_workflow", {"fields": {"grinderSetting": "3.5"}})
+    assert fake.store["dye2.reaplugin/recipes"][0]["name"] == "Decaf (renamed in DYE2)"
+    assert len(ours(fake)) == 1, "the same entry, not a second one"
+    assert ours(fake)[0]["workflow"]["context"]["grinderSetting"] == "3.5"
+
+
+async def test_nothing_is_written_when_nothing_changed(writable, db) -> None:
+    fake = with_dye2()
+    mcp = server(fake, writable, db)
+    await call(mcp, "set_workflow", {"fields": {"grinderSetting": "3.6"}})
+    writes = len(fake.store_writes("recipes"))
+    await call(mcp, "set_workflow", {"fields": {"grinderSetting": "3.6"}})
+    assert len(fake.store_writes("recipes")) == writes
+
+
+async def test_a_dial_in_on_the_tablet_is_taken_into_the_recipe(writable, db) -> None:
+    """Streamline's auto-save writes a dashboard edit of dose, drink or grind
+    into the applied recipe's dashboardVariables (dyeStrip.js saveItemFields) -
+    and its apply reads workflow.context, so on its own that edit would never
+    reach the machine. Taken over here, it does, with no step in the chat."""
+    fake = with_dye2()
+    mcp = server(fake, writable, db)
+    await call(mcp, "set_workflow", {"fields": {"grinderSetting": "3.6"}})
+    entry = ours(fake)[0]
+    entry["dashboardVariables"] = {**entry["dashboardVariables"], "grind": 3.4}
+
+    client = DecaidClient("http://10.100.100.171:8080",
+                          transport=httpx.MockTransport(fake.handler))
+    outcome = await project_recipes(client, db)
+    assert outcome["adopted_from_tablet"] == 1
+    assert db.bean_recipe(GAYO_BEAN)["grinder_setting"] == "3.4"
+    assert ours(fake)[0]["workflow"]["context"]["grinderSetting"] == "3.4"
+
+
+async def test_a_cleared_list_heals_and_is_counted(writable, db) -> None:
+    fake = with_dye2()
+    mcp = server(fake, writable, db)
+    await call(mcp, "set_workflow", {"fields": {"grinderSetting": "3.6"}})
+    fake.store["dye2.reaplugin/recipes"] = []                 # emptied on the tablet
+
+    client = DecaidClient("http://10.100.100.171:8080",
+                          transport=httpx.MockTransport(fake.handler))
+    result = SyncResult()
+    await _heal_recipes(client, db, {GAYO_BEAN}, None, result)
+    assert result.projection_heals == 1
+    assert len(ours(fake)) == 1
+    assert db.get_state(STATE_PROJECTION_HEALS) == "1"
+
+
+async def test_a_deleted_bean_takes_its_recipe_and_entry_along(writable, db) -> None:
+    fake = with_dye2()
+    mcp = server(fake, writable, db)
+    await call(mcp, "set_workflow", {"fields": {"grinderSetting": "3.6"}})
+
+    client = DecaidClient("http://10.100.100.171:8080",
+                          transport=httpx.MockTransport(fake.handler))
+    result = SyncResult()
+    await _heal_recipes(client, db, set(), None, result)       # the bean is gone
+    assert result.recipes_removed == 1
+    assert db.bean_recipes() == [] and ours(fake) == []
+    assert fake.store["dye2.reaplugin/recipes"] == DYE2, "DYE2's own stays"
+
+
+async def test_with_the_projection_off_nothing_is_written(valid_env, db) -> None:
+    config = Config.from_env({**valid_env, "WRITE_ENABLED": "true",
+                              "DYE2_PROJECTION": "false"})
+    fake = with_dye2()
+    await call(server(fake, config, db), "set_workflow",
+               {"fields": {"grinderSetting": "3.6"}})
+    assert fake.store_writes() == []
+    assert db.bean_recipe(GAYO_BEAN) is not None, "the recipe itself is kept"
 
 
 # --------------------------------------------------------------- DYE2's
@@ -336,29 +451,28 @@ async def test_a_dye2_recipe_that_mislabels_the_coffee_says_so(writable, db) -> 
     assert "set_workflow" in result["inconsistent"]
 
 
-async def test_nothing_here_ever_writes_dye2s_store(writable, db) -> None:
-    """The single-writer rule of the KV contract, checked across a whole session."""
+async def test_dye2s_own_recipe_survives_a_whole_session(writable, db) -> None:
+    """Ours are written into DYE2's key now (M13) - theirs must come out of a
+    session exactly as they went in, and never become one of ours."""
     fake = with_dye2()
     mcp = server(fake, writable, db)
     await call(mcp, "list_recipes", {})
     await call(mcp, "apply_recipe", {"name": "Decaf"})
-    mine = await saved(fake, mcp)
-    await call(mcp, "apply_recipe", {"name": mine["name"], "source": "mine"})
-    assert fake.store_writes() == []
-    assert "Decaf" not in {r["name"] for r in db.recipes()}
+    recipe = await saved(fake, mcp)
+    await call(mcp, "apply_recipe", {"name": recipe["name"], "source": "mine"})
+    theirs = [i for i in fake.store["dye2.reaplugin/recipes"] if not i.get("origin")]
+    assert theirs == DYE2
+    assert [r["name"] for r in await mine(mcp)] == [GAYO_NAME]
 
 
 async def test_a_name_in_both_sources_needs_the_source(writable, db) -> None:
+    """A bean called "Decaf" and DYE2's recipe "Decaf": not guessed between."""
     fake = with_dye2()
+    next(b for b in fake.beans if b["id"] == GAYO_BEAN)["name"] = "Decaf"
     mcp = server(fake, writable, db)
     await saved(fake, mcp)
-    await call(mcp, "update_recipe", {"name": "Coffee Circle – Grano Gayo",
-                                      "fields": {"name": "Decaf"}})
     message = await refused(mcp, "apply_recipe", {"name": "decaf"})
     assert "source='mine' or source='dye2'" in message
-    both = [r["source"] for r in (await call(mcp, "list_recipes", {}))["recipes"]
-            if r["name"] == "Decaf"]
-    assert sorted(both) == ["dye2", "mine"]
 
 
 def test_a_legacy_dye2_recipe_is_listed_but_not_applied() -> None:
@@ -542,7 +656,7 @@ async def test_favourites_are_never_written_either(writable, db) -> None:
     mcp = server(fake, writable, db)
     await call(mcp, "list_recipes", {})
     await call(mcp, "apply_recipe", {"name": "Seniman House Blend"})
-    assert fake.store_writes() == []
+    assert fake.store_writes("autoFavourites") == [], "DYE2's favourites stay DYE2's"
 
 
 PROFILES_BY_TITLE = {r["profile"]["title"]: r["profile"] for r in fake_profiles()
@@ -621,20 +735,44 @@ async def test_with_the_tablet_off_only_what_the_entry_shows_is_judged(writable,
     assert "issues" not in mine
 
 
-def test_an_own_recipe_whose_profile_is_gone_says_so() -> None:
-    """Unpinned recipes apply the profile by title; with that title deleted
-    apply would fail halfway, so the listing says it first.
-    """
-    from decentespresso_mcp.recipes import Catalogue, issues_of
-    row = {"name": "house", "profile_title": "Gone", "pin_profile": 0}
-    empty = Catalogue(batches={}, beans={}, profile_ids=frozenset(),
-                      profile_titles=frozenset({"d-flow"}))
-    assert issues_of("mine", row, empty) == ["profile_missing"]
-    assert issues_of("mine", {**row, "profile_title": "D-FLOW"}, empty) == []
-
-
 def test_a_reference_to_a_missing_profile_is_flagged() -> None:
     from decentespresso_mcp.recipes import Catalogue, issues_of
     fav = next(f for f in FAVS if f.get("id") == "a3f6c671-7313-46c1-9cef-db8ef7210385")
     none = Catalogue(batches={}, beans={}, profile_ids=frozenset(), profile_titles=frozenset())
     assert "profile_reference_unresolved" in issues_of("dye2_favs", fav, none)
+
+
+def test_the_old_named_recipes_become_one_per_bean(tmp_path: pathlib.Path) -> None:
+    """Migration 006: per bean the recipe changed last carries over, its
+    snapshot as the profile; one without a bean cannot be keyed and goes."""
+    import sqlite3
+
+    from decentespresso_mcp.db import default_migrations_dir
+    before = tmp_path / "migrations"
+    before.mkdir()
+    for sql in default_migrations_dir().glob("*.sql"):
+        if sql.name < "006":
+            (before / sql.name).write_text(sql.read_text(encoding="utf-8"), encoding="utf-8")
+    path = tmp_path / "old.db"
+    old = Database(path, before)
+    old.migrate()
+    old.close()
+    conn = sqlite3.connect(path)
+    rows = [
+        ("Gayo old", GAYO_BEAN, "3.8", '{"title":"D","steps":[1]}', "2026-09-20T08:00:00Z"),
+        ("Gayo new", GAYO_BEAN, "3.6", '{"title":"D","steps":[2]}', "2026-09-26T08:00:00Z"),
+        ("No bean", None, "2.0", '{"title":"X","steps":[3]}', "2026-09-27T08:00:00Z"),
+    ]
+    for name, bean, grind, snap, at in rows:
+        conn.execute("INSERT INTO recipes (name, bean_id, profile_title, profile_snapshot, "
+                     "grind, captured_at, updated_at) VALUES (?, ?, 'D-Flow', ?, ?, ?, ?)",
+                     (name, bean, snap, grind, at, at))
+    conn.commit()
+    conn.close()
+
+    new = Database(path)
+    assert "006_bean_recipes.sql" in new.migrate()
+    (recipe,) = new.bean_recipes()
+    assert (recipe["bean_id"], recipe["grinder_setting"]) == (GAYO_BEAN, "3.6")
+    assert json.loads(recipe["profile_json"])["steps"] == [2]
+    new.close()

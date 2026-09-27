@@ -5,14 +5,25 @@
 ## The situation
 
 `KV_CONTRACT.md` makes DYE2 the single writer of `dye2.reaplugin/recipes` and
-every other consumer read-only. We keep to that: decentespresso-mcp, an MCP
-server that lets a chat assistant set up and dial in coffees, reads DYE2's
-recipes and applies their `workflow` exactly as the contract describes, and
-never writes the key.
+every other consumer read-only. decentespresso-mcp, an MCP server that lets a
+chat assistant set up and dial in coffees, kept to that at first - and its
+recipes stayed on its side, where the tablet never saw them. A coffee dialled
+in over a conversation could not be tapped on the dashboard the next morning.
 
-That leaves recipes made in a chat stored on our side, where the tablet never
-sees them. A person who saves "Seniman - House Blend" in a conversation cannot
-tap it on the dashboard the next morning.
+## What we do now, and why it is not the answer
+
+Since our 0.13 we write into `recipes` after all, as a marked projection: one
+item per bean, each carrying `origin: "decentespresso-mcp"` and a `recipeId`,
+with a complete `workflow`. Items without the marker are never changed and keep
+their place; the key is read immediately before every write and read back
+after it. That is Streamline's auto-save pattern (`saveItemFields`), for the
+same reason: there is no other way onto the dashboard.
+
+It works, and it is still a second writer on a last-write-wins key. An edit in
+DYE2 in the same instant as one of our writes can be lost, and DYE2's own
+dashboard, which applies a recipe from `dashboardVariables` and a profile stub
+rather than from `workflow`, cannot switch the profile with our items. A key of
+our own would end both.
 
 ## The contract is already the right model
 
@@ -51,5 +62,5 @@ switching profiles is still saved onto the old recipe.
 
 ## What we would do on our side
 
-Write only our own key, read DYE2's as today, and follow whatever schema and
-naming you settle on.
+Move the projection to our own key the day one exists, stop writing
+`recipes`, and follow whatever schema and naming you settle on.

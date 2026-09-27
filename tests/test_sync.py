@@ -51,6 +51,17 @@ class FakeDecaid:
         self._check()
         return load("info.json")
 
+    #: The plugin store (M13): the recipe projection reads and writes it.
+    store: dict | None = None
+
+    async def store_value(self, namespace, key):
+        self._check()
+        return (self.store or {}).get(f"{namespace}/{key}")
+
+    async def store_set(self, namespace, key, value):
+        self._check()
+        self.store = {**(self.store or {}), f"{namespace}/{key}": value}
+
     #: The answer of the scale probe (T46). 0.8.6+2801, the fixture's version,
     #: answers the probe with 404: ratings on 0-100.
     rates_on_ten = False

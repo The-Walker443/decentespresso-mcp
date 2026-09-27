@@ -119,11 +119,18 @@ both - each step shown and confirmed before the next, and stopped at the first
 one that fails. Favorites live as per-coffee profiles: tune the copy as the bag
 ages, and the stock profiles stay exactly as Decent shipped them.
 
-**Recipes you can come back to.** "Save this as my House Blend recipe" keeps
-batch, grind, dose, yield and the profile; "back to House Blend" tomorrow puts
-the machine there again, on the profile's newest tuning - or pinned to today's,
-if you ask. The recipes you made in DYE2 on the tablet are listed and applied
-too, read exactly as DYE2 stores them and never written: DYE2 owns those.
+**One recipe per bean, on the tablet.** Every dial-in step keeps that bean's
+recipe up to date by itself - batch, grind, dose, yield and the profile exactly
+as it ran, tablet tunes included. Nothing to name or save. Each recipe also
+appears in DYE2's recipe list, so Streamline's DYE strip calls it up with one
+tap; a dial-in you do on the dashboard afterwards is taken back into it. The
+recipes you made in DYE2 yourself are listed and applied too, and never
+touched.
+
+The tablet copy is a derivation: this server owns the entries it marks as its
+own and rewrites them on every sync - edit them in DYE2 and the next sync puts
+them back (dose, drink and grind excepted, which count as a dial-in).
+`DYE2_PROJECTION=false` keeps the recipes here only.
 
 ---
 
@@ -269,7 +276,7 @@ inside tracebacks from libraries that know nothing about it.
 | `sync_now` · `status` | housekeeping |
 | `update_shot` · `update_bean` · `update_batch` · `set_workflow` | writing, behind the switch |
 | `create_bean` · `create_batch` · `clone_profile` · `update_profile` | a new coffee and its profile, behind the switch |
-| `list_recipes` · `apply_recipe` · `save_recipe` · `update_recipe` · `delete_recipe` · `save_workflow_profile` | recipes - listing always, the rest behind the switch |
+| `list_recipes` · `apply_recipe` · `save_recipe` · `delete_recipe` · `save_workflow_profile` | recipes - listing always, the rest behind the switch |
 
 Fifteen tools cost about 10 kB of definitions, twenty-eight with write mode on
 cost 19.5 kB — about 700 B each, because the shared vocabulary lives in the server

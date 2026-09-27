@@ -109,8 +109,7 @@ async def apply(tablet: Tablet, profile: dict[str, Any], db: Database):
         naps.append(seconds)
 
     coordinator._sleep = nap
-    before, after = await coordinator._apply({}, profile, [{"id": "p1", "profile": profile}],
-                                             replace_unsaved=True)
+    before, after = await coordinator._apply({}, profile, [{"id": "p1", "profile": profile}])
     return after.get(MACHINE_UPLOAD), naps
 
 

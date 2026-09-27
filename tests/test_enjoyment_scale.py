@@ -130,7 +130,7 @@ def test_the_migration_converts_the_archive_by_the_same_rule(tmp_path: pathlib.P
     old.close()
 
     new = Database(path)
-    assert new.migrate() == ["005_enjoyment_scale.sql"]
+    assert new.migrate()[0] == "005_enjoyment_scale.sql"
     for shot in shots:
         row = new.get_shot_row(shot["id"])
         expected, ambiguous = enjoyment_of(shot)
