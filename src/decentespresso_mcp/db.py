@@ -298,7 +298,7 @@ class Database:
         params = [since] if since else []
         with self._lock:
             return [dict(row) for row in self._conn.execute(
-                f"SELECT id, started_at, bean_id, bean_batch_id, grinder_setting, "
+                f"SELECT id, started_at, bean_id, bean_batch_id, grinder_setting, profile_name, "
                 f"       dose_g, target_dose_g, yield_g, target_yield_g, enjoyment, "
                 f"       enjoyment_ambiguous "
                 f"FROM shots {clause} ORDER BY started_at ASC", params,

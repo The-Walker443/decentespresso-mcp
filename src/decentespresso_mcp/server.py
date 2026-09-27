@@ -226,7 +226,7 @@ CURVE - two representations, and the first one is almost always enough:
   oscillation inside one segment, say. A missing channel means there was not a
   single reading for it.
 
-GUARDS - `audit_archive` checks four rules. What they mean:
+GUARDS - `audit_archive` checks five rules. What they mean:
 
 - `grind_not_adjusted` - the batch was changed and the grind setting stayed put.
   Every bean grinds differently; the first shot after such a change is usually
@@ -238,6 +238,8 @@ GUARDS - `audit_archive` checks four rules. What they mean:
   number. `not_checked` says how many shots the rule sat out for want of a
   roast date; it never guesses one.
 - `missing_rating` - no rating was added once the grace period had passed.
+- `missing_batch` - a coffee shot names no batch. `lost: true` means the shot
+  before still had one: the coffee dropped out of the workflow in between.
 - `dose_outlier` - weights do not match the workflow target. `basis` says what
   was measured against: the workflow target, or the batch median as a fallback.
 
@@ -765,7 +767,7 @@ def build_mcp(
         """Checks the archive for inconsistencies (rules: see the instructions).
 
         `since` as an ISO date or shorthand (`7d`, `2w`, `1m`); `rule` narrows
-        to one of the four rules.
+        to one of the five rules.
         """
         cutoff = _parse_time(since, "since")
         shots = await asyncio.to_thread(db.shots_for_guards, cutoff)

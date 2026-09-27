@@ -20,6 +20,7 @@ from decentespresso_mcp.guards import (
     bean_age_days,
     dose_outliers,
     grind_not_adjusted,
+    missing_batch,
     missing_rating,
     run_rules,
     stale_beans,
@@ -351,6 +352,8 @@ def test_no_finding_ever_carries_free_text(rule: str) -> None:
         {**shot("b", at="2026-09-11T08:00:00Z", batch="b2", yielded=20.0,
                 enjoyment=None),
          "notes": secret, "bean_name": secret},
+        {**shot("c", at="2026-09-12T08:00:00Z", batch=None),
+         "notes": secret, "bean_name": secret, "profile_name": secret},
     ]
     findings = run_rules(shots, {"b1": batch("b1", roast="2026-01-01"),
                                  "b2": batch("b2", roast="2026-01-01")},
@@ -358,3 +361,33 @@ def test_no_finding_ever_carries_free_text(rule: str) -> None:
     assert findings, "otherwise the test checks nothing"
     for finding in findings:
         assert secret not in str(finding.as_dict())
+
+
+# ------------------------------------------- Rule 5: missing batch
+
+
+def test_a_coffee_shot_that_lost_its_batch_is_flagged() -> None:
+    """Measured on 2026-09-27: 4 of 133 real native shots carry no batch."""
+    shots = [{**shot("a", at="2026-09-11T08:00:00Z"), "profile_name": "D-Flow"},
+             {**shot("b", at="2026-09-12T08:00:00Z", batch=None), "profile_name": "Bloom"}]
+    (finding,) = missing_batch(shots, at=NOW)
+    assert finding.shot_id == "b"
+    assert finding.detail == {"lost": True, "profile_changed": True}
+
+
+def test_imports_and_flushes_have_no_coffee_to_name() -> None:
+    """de1app imports never carried a batch; a flush is not coffee. Without
+    these two exclusions the rule would report every one of the 88 imports."""
+    shots = [{**shot("de1app-1785525360", at="2026-09-11T08:00:00Z", batch=None),
+              "profile_name": "Default"},
+             {**shot("f", at="2026-09-12T08:00:00Z", batch=None),
+              "profile_name": "Cleaning/Forward Flush x5"},
+             {**shot("g", at="2026-09-12T09:00:00Z", batch=None, yielded=1.2),
+              "profile_name": "D-Flow"}]
+    assert missing_batch(shots, at=NOW) == []
+
+
+def test_an_old_shot_without_a_batch_is_no_longer_reported() -> None:
+    """Its coffee cannot be set afterwards - a shot's workflow is not writable."""
+    shots = [{**shot("a", at="2026-08-01T08:00:00Z", batch=None), "profile_name": "D-Flow"}]
+    assert missing_batch(shots, at=NOW) == []

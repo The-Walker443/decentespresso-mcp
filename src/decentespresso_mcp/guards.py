@@ -1,10 +1,10 @@
 """Guards over the archive (SPEC §10).
 
-Four rules that check after every shot whether something does not add up. The
+Five rules that check after every shot whether something does not add up. The
 aim is not completeness but the small set of mistakes one actually makes while
 making coffee and only notices weeks later: a new bean pulled at the old grind
 setting, a batch long past its prime, a dose weighed wrong, a rating never
-added.
+added, a shot that lost its coffee.
 
 PRINCIPLES
 
@@ -29,6 +29,9 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+from .decaid_mapping import is_import_era
+from .stats import is_real_shot
+
 log = logging.getLogger(__name__)
 
 #: Rule identifiers. Switching rules off works through these.
@@ -36,8 +39,10 @@ RULE_GRIND = "grind_not_adjusted"
 RULE_BEAN_AGE = "bean_age"
 RULE_MISSING_RATING = "missing_rating"
 RULE_DOSE_OUTLIER = "dose_outlier"
+RULE_MISSING_BATCH = "missing_batch"
 
-ALL_RULES = (RULE_GRIND, RULE_BEAN_AGE, RULE_MISSING_RATING, RULE_DOSE_OUTLIER)
+ALL_RULES = (RULE_GRIND, RULE_BEAN_AGE, RULE_MISSING_RATING, RULE_DOSE_OUTLIER,
+             RULE_MISSING_BATCH)
 
 #: When a bean counts as past its prime. Decaf and light roasts keep longer,
 #: but it has to be a single number; it is deliberately generous so the rule
@@ -53,6 +58,12 @@ RATING_GRACE_HOURS = 36
 #: bound the rule reported 83 percent of the archive and would be worthless.
 #: Whoever has not rated a shot from the week before last will not do so now.
 RATING_WINDOW_HOURS = 7 * 24
+
+#: How far back a shot without a batch is still reported. Its coffee cannot be
+#: set afterwards - the shot's workflow is not writable - so an old finding
+#: asks for nothing one could do. Measured 2026-09-27: of 133 real native shots,
+#: 4 carry no batch (3 %), all from 24/25 September.
+BATCH_WINDOW_HOURS = 7 * 24
 
 #: Deviation from target beyond which it is no longer scatter. Applies to the
 #: yield; the dose is checked separately (see below).
@@ -394,8 +405,54 @@ def run_rules(
                                    window_hours=window_hours)
     if RULE_DOSE_OUTLIER in active:
         findings += dose_outliers(shots, tolerance_g=tolerance_g)
+    if RULE_MISSING_BATCH in active:
+        findings += missing_batch(shots, at=at)
 
     findings.sort(key=lambda f: (f.started_at or "", f.rule), reverse=True)
+    return _cap(findings, limit)
+
+
+# ---------------------------------------------------------------- Rule 5
+
+
+def missing_batch(
+    shots: Sequence[Mapping[str, Any]],
+    *,
+    at: datetime,
+    window_hours: int = BATCH_WINDOW_HOURS,
+    limit: int | None = None,
+) -> list[Finding]:
+    """A coffee shot that names no batch, so no bean and no roast date.
+
+    Only natively recorded coffee: de1app imports never carried a batch, and a
+    flush has no coffee to name. ``lost`` says the shot before still had one -
+    the context went missing between two shots, which is what a client writing
+    back a stale copy of the workflow looks like (T48). ``profile_changed``
+    says whether the profile changed between the two; the names themselves
+    stay out of the finding.
+
+    ``shots`` comes in ascending, as for rule 1.
+    """
+    oldest = at - timedelta(hours=window_hours)
+    findings: list[Finding] = []
+    previous: Mapping[str, Any] | None = None
+    for shot in shots:
+        if is_import_era(str(shot.get("id") or "")) or not is_real_shot(shot):
+            continue
+        started = as_datetime(shot.get("started_at"))
+        if not shot.get("bean_batch_id") and started is not None and started >= oldest:
+            lost = bool(previous and previous.get("bean_batch_id"))
+            findings.append(Finding(
+                rule=RULE_MISSING_BATCH,
+                shot_id=str(shot["id"]),
+                started_at=shot.get("started_at"),
+                message=("No batch - the shot before had one." if lost
+                         else "No batch - the shot is linked to no bean."),
+                detail={"lost": lost,
+                        "profile_changed": bool(previous) and previous.get("profile_name")
+                        != shot.get("profile_name")},
+            ))
+        previous = shot
     return _cap(findings, limit)
 
 
