@@ -2062,7 +2062,7 @@ def build_app(
 
     coordinator = None
     if sync_on:
-        coordinator = SyncCoordinator(DecaidClient(config.decaid_url), database)
+        coordinator = SyncCoordinator(DecaidClient(config.decaid_url), database, config)
 
     mcp = build_mcp(config, database, coordinator)
     app = mcp.http_app(path=config.mcp_path, transport="http")

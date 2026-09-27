@@ -118,3 +118,26 @@ async def test_no_secret_leaks_into_mcp_metadata(config: Config, db: Database) -
     assert TEST_SECRET not in blob
     assert config.decaid_url in json.dumps(result.data), (
         "the LAN address is no secret and helps when looking things up")
+
+
+def test_the_served_coordinator_gets_the_config(config, tmp_path, monkeypatch) -> None:
+    """Without it run_sync gets config=None and skips the guards: from the
+    rename (c8190d4) to 0.13.0 no sync ran a guard or sent a notification in
+    production - audit_archive, which passes the config itself, hid it. The
+    same gap would have ignored DYE2_PROJECTION=false."""
+    import decentespresso_mcp.server as server_module
+    from decentespresso_mcp.db import Database
+
+    seen = {}
+
+    class Recording(server_module.SyncCoordinator):
+        def __init__(self, client, db, config=None):
+            seen["config"] = config
+            super().__init__(client, db, config)
+
+    monkeypatch.setattr(server_module, "SyncCoordinator", Recording)
+    db = Database(tmp_path / "served.db")
+    db.migrate()
+    build_app(config, db=db, enable_sync=True)
+    assert seen["config"] is config
+    db.close()
