@@ -88,9 +88,31 @@ from .recipes import (
     profile_kind,
     row_from_workflow,
 )
+from .upload_watch import POLL_SECONDS, WATCH_SECONDS, newest, outcome
 from .writes import ValidationError
 
 log = logging.getLogger(__name__)
+
+#: Key under which a workflow write hands the profile upload's outcome to the
+#: tool (T47). Popped there; never part of a diff.
+MACHINE_UPLOAD = "_machine_upload"
+
+UPLOAD_NOTES = {
+    "failed_retrying": (
+        "Decaid could not upload the profile to the DE1 and retries on its own "
+        "after 3, 10 and 30 s. Do not start the shot until the tablet preview "
+        "shows the new curve."
+    ),
+    "pending_connection": (
+        "The DE1 is not connected. Decaid uploads the profile once it connects; "
+        "until then the machine keeps the profile it had."
+    ),
+    "unconfirmed": (
+        "The upload runs over Bluetooth for several seconds and nothing "
+        "confirmed it yet. Do not start the shot until the tablet preview shows "
+        "the new curve."
+    ),
+}
 
 STATE_LAST_SYNC = "last_sync_at"
 STATE_LAST_RESULT = "last_sync_result"
@@ -509,6 +531,8 @@ class SyncCoordinator:
         self._db = db
         self._config = config
         self._lock = asyncio.Lock()
+        #: Replaced in tests; the upload watch waits between log reads.
+        self._sleep = asyncio.sleep
 
     async def run(self, *, full: bool | None = None) -> SyncResult:
         async with self._lock:
@@ -644,17 +668,82 @@ class SyncCoordinator:
 
         async with self._lock:
             before_wf = await self._client.workflow()
+            watch = await self._before_upload(before_wf, profile)
             await self._client.update_workflow(body)
             after_wf = await self._client.workflow()
+        upload = await self._after_upload(watch)
 
         before = dict(before_wf.get("context") or {})
         after = dict(after_wf.get("context") or {})
+        if upload is not None:
+            after[MACHINE_UPLOAD] = upload
         if profile is not None:
             for side, workflow in ((before, before_wf), (after, after_wf)):
                 running = running_profile(workflow.get("profile"), records)
                 side["profileId"] = running.get("id") if running else None
                 side["profileTitle"] = (workflow.get("profile") or {}).get("title")
         return before, after
+
+    # ------------------------------------------------ Profile upload (T47)
+
+    async def _before_upload(
+        self, before_wf: dict[str, Any], profile: dict[str, Any] | None,
+    ) -> tuple[str, Any] | None:
+        """What to watch from, if this write makes Decaid upload a profile.
+
+        Decaid uploads whenever the workflow's profile object changes, a new
+        title included - so only an identical profile is left alone. Before
+        the PUT: whether the DE1 is connected (Decaid skips the upload
+        silently otherwise), and the tablet's clock as the log shows it.
+        """
+        current = before_wf.get("profile")
+        if profile is None or (current and same_brew(current, profile)
+                               and current.get("title") == profile.get("title")):
+            return None
+        link = await self._machine_link()
+        if link == "disconnected":
+            return link, None
+        try:
+            mark = newest(await self._client.log_tail())
+        except DecaidError:
+            mark = None
+        return link, mark
+
+    async def _after_upload(self, watch: tuple[str, Any] | None) -> dict[str, Any] | None:
+        """Watch Decaid's log for the upload to end, a few seconds at most."""
+        if watch is None:
+            return None
+        link, mark = watch
+        if link == "disconnected":
+            return self._upload_result("pending_connection", link)
+        if mark is not None:
+            for _ in range(int(WATCH_SECONDS / POLL_SECONDS)):
+                await self._sleep(POLL_SECONDS)
+                try:
+                    found = outcome(await self._client.log_tail(), mark)
+                except DecaidError:
+                    break
+                if found is not None:
+                    return self._upload_result(found.pop("profile_upload"), link, found)
+        return self._upload_result("unconfirmed", link)
+
+    @staticmethod
+    def _upload_result(state: str, link: str, extra: dict | None = None) -> dict[str, Any]:
+        result = {"profile_upload": state, "de1": link, **(extra or {})}
+        if state in UPLOAD_NOTES:
+            result["note"] = UPLOAD_NOTES[state]
+        return result
+
+    async def _machine_link(self) -> str:
+        """``connected``, ``disconnected`` or ``unknown`` - the DE1 over Bluetooth."""
+        try:
+            devices = await self._client.devices()
+        except DecaidError:
+            return "unknown"
+        machine = next((d for d in devices if d.get("type") == "machine"), None)
+        if machine is None:
+            return "disconnected"
+        return "connected" if machine.get("state") == "connected" else "disconnected"
 
     async def _would_be_lost(
         self, current: dict[str, Any], records: list[dict[str, Any]]
@@ -813,8 +902,12 @@ class SyncCoordinator:
                     "it with save_workflow_profile first - or say "
                     "replace_unsaved_profile."
                 )
+            watch = await self._before_upload(before_wf, profile)
             await self._client.update_workflow(workflow)
             after_wf = await self._client.workflow()
+        upload = await self._after_upload(watch)
+        if upload is not None:
+            after_wf = {**after_wf, MACHINE_UPLOAD: upload}
         return before_wf, after_wf, await self._label_mismatch(after_wf)
 
     async def catalogue(self) -> Catalogue:
@@ -1182,6 +1275,7 @@ __all__ = [
     "IDLE_BACKOFF_MULTIPLIER",
     "MAX_DETAILS_PER_RUN",
     "QUICK_SYNC_MAX_AGE_S",
+    "MACHINE_UPLOAD",
     "STATE_BACKFILL_DONE",
     "STATE_DECAID_VERSION",
     "STATE_ENJOYMENT_REREAD",

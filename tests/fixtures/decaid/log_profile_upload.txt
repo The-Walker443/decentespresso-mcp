@@ -1,0 +1,20 @@
+[main] 2026-09-27 08:29:37.388064 INFO Webservice - 2026-09-27T08:29:37.386154  0:00:00.001850 GET     127.0.0.1 [200] /api/v1/sensors
+[main] 2026-09-27 08:29:40.088609 INFO Webservice - 2026-09-27T08:29:40.086674  0:00:00.001893 GET     10.0.0.2 [200] /api/v1/workflow
+[main] 2026-09-27 08:29:40.210726 INFO Webservice - 2026-09-27T08:29:40.093753  0:00:00.116936 GET     10.0.0.2 [200] /api/v1/profiles?includeHidden=true
+[main] 2026-09-27 08:29:40.255918 INFO ProfileController - Created profile: profile:c05bd434ecb0a6598a7f (Cleaning/Forward Flush x5 – Tablet-Tune 2026-09-26)
+[main] 2026-09-27 08:29:40.257080 INFO Webservice - 2026-09-27T08:29:40.241885  0:00:00.015166 POST    10.0.0.2 [201] /api/v1/profiles
+[main] 2026-09-27 08:29:40.264565 INFO Webservice - 2026-09-27T08:29:40.261477  0:00:00.003049 GET     10.0.0.2 [200] /api/v1/profiles/profile:c05bd434ecb0a6598a7f
+[main] 2026-09-27 08:29:40.272431 INFO Webservice - 2026-09-27T08:29:40.268985  0:00:00.003413 PUT     10.0.0.2 [200] /api/v1/workflow
+[main] 2026-09-27 08:29:40.384934 INFO Webservice - 2026-09-27T08:29:40.384351  0:00:00.000554 GET     127.0.0.1 [200] /api/v1/sensors
+[main] 2026-09-27 08:29:41.290054 INFO DE1 - mmr write: tankTemp
+[main] 2026-09-27 08:29:42.951488 INFO Webservice - 2026-09-27T08:29:42.831165  0:00:00.120289 GET     10.0.0.2 [200] /api/v1/profiles?includeHidden=true
+[main] 2026-09-27 08:29:42.979140 INFO Webservice - 2026-09-27T08:29:42.973324  0:00:00.005793 GET     10.0.0.2 [200] /api/v1/bean-batches
+[main] 2026-09-27 08:29:42.990867 INFO Webservice - 2026-09-27T08:29:42.983423  0:00:00.007419 GET     10.0.0.2 [200] /api/v1/beans
+[main] 2026-09-27 08:29:42.996072 INFO Webservice - 2026-09-27T08:29:42.995179  0:00:00.000865 GET     10.0.0.2 [200] /api/v1/workflow
+[main] 2026-09-27 08:29:43.001091 INFO Webservice - 2026-09-27T08:29:43.000241  0:00:00.000828 GET     10.0.0.2 [200] /api/v1/workflow
+[main] 2026-09-27 08:29:43.007172 INFO Webservice - 2026-09-27T08:29:43.005095  0:00:00.002055 PUT     10.0.0.2 [200] /api/v1/workflow
+[main] 2026-09-27 08:29:43.014468 INFO Webservice - 2026-09-27T08:29:43.013698  0:00:00.000745 GET     10.0.0.2 [200] /api/v1/workflow
+[main] 2026-09-27 08:29:43.385963 INFO Webservice - 2026-09-27T08:29:43.385049  0:00:00.000869 GET     127.0.0.1 [200] /api/v1/sensors
+[main] 2026-09-27 08:29:43.674699 INFO DE1 - mmr write: tankTemp
+[main] 2026-09-27 08:29:46.387110 INFO Webservice - 2026-09-27T08:29:46.385822  0:00:00.001239 GET     127.0.0.1 [200] /api/v1/sensors
+[main] 2026-09-27 08:29:49.387338 INFO Webservice - 2026-09-27T08:29:49.386353  0:00:00.000936 GET     127.0.0.1 [200] /api/v1/sensors

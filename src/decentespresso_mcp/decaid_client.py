@@ -364,6 +364,21 @@ class DecaidClient:
     async def update_workflow(self, patch: dict[str, Any]) -> dict[str, Any]:
         return (await self._request("PUT", "/api/v1/workflow", json_body=patch)).json()
 
+    async def devices(self) -> list[dict[str, Any]]:
+        """``GET /api/v1/devices`` - machine and scale with their connection state."""
+        body = (await self._request("GET", "/api/v1/devices")).json()
+        return list(body) if isinstance(body, list) else []
+
+    async def log_tail(self, kb: int = 32) -> str:
+        """``GET /api/v1/logs``, newest line first (T47).
+
+        The only place a finished profile upload shows: the workflow PUT
+        answers before the upload has even started.
+        """
+        response = await self._request("GET", "/api/v1/logs",
+                                       params={"kb": kb, "order": "desc"})
+        return response.text
+
 
 # ------------------------------------------------------------------- Mapping
 

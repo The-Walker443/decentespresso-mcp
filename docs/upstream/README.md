@@ -50,6 +50,12 @@ that filter.
 | 10 | Licence hygiene, not a bug |
 | 11 | Streamline's auto-save writes DYE2's keys knowingly - the code comments say so. A policy disagreement between two projects, not a defect to report from outside |
 
+**13 (decaid) - a gap, not a bug; the operator decides.** A workflow PUT
+gives no way to know the profile reached the machine (T47). Nothing documented
+is violated, so under the filter above it is a feature request - but it is the
+one with a real consequence: a shot started too early runs the old profile and
+is stored under the new one. Written because M12 asked for it.
+
 The drafts stay here for reference; the ones to file are 02, 03, 09 and 12.
 
 | # | Project | Finding | Draft |
@@ -66,6 +72,7 @@ The drafts stay here for reference; the ones to file are 02, 03, 09 and 12.
 | 10 | decaid | - | [LICENSE.txt references the full GPL text but does not include it](10-license-without-gpl-text.md) |
 | 11 | streamline | KV contract | [Auto-save writes DYE2's keys, which the contract reserves for DYE2](11-streamline-autosave-writes-dye2-keys.md) |
 | 12 | streamline | T38 | [The auto-save's profile-drift guard never fires](12-streamline-drift-guard-never-fires.md) |
+| 13 | decaid | T47 | [A workflow PUT gives a client no way to know the profile reached the machine](13-workflow-put-no-upload-completion.md) |
 
 Streamline's repository is `allofmeng/streamline_project`, which GitHub
 redirects to `decentespresso/streamline-js`; drafts 11 and 12 refer to the

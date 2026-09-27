@@ -67,6 +67,7 @@ from .stats import (
     summarise,
 )
 from .sync import (
+    MACHINE_UPLOAD,
     QUICK_SYNC_MAX_AGE_S,
     STATE_BACKFILL_DONE,
     STATE_DECAID_VERSION,
@@ -248,7 +249,12 @@ explicit instruction, never on your own initiative and never "just to be safe".
 Set exactly the fields that were named. Confirm afterwards from the values that
 come back, not from what was sent: a field under `not_taken` came back
 different - Decaid refused it; say so instead of reporting success. One under
-`unchanged` already had that value. `update_shot` takes
+`unchanged` already had that value.
+A profile change carries `machine.profile_upload`: the profile reaches the DE1
+over Bluetooth after the tool answers. `confirmed` (with `seconds`) means it
+arrived; `failed_retrying`, `pending_connection` and `unconfirmed` mean it may
+not have - pass the `note` on, and tell the user to wait for the new curve on
+the tablet before starting the shot. `update_shot` takes
 `enjoyment` on the tablet's scale, which `status` shows as `enjoyment_scale`:
 on `0-100` stars x20 (1 to 10 refused), on `0-10` stars x2.
 
@@ -1127,17 +1133,20 @@ def _register_recipe_writes(
             (before, after), used = await _call(
                 coordinator.apply_dye2_favourite, item,
                 replace_unsaved=replace_unsaved_profile, what="workflow")
-            return {"source": "dye2_favs", "name": favourite_name(item),
-                    "profile": used, "changes": _diff(before, after)}
+            return _with_upload({"source": "dye2_favs", "name": favourite_name(item),
+                                 "profile": used}, before, after)
 
         if kind == "dye2":
             before_wf, after_wf, mismatch = await _call(
                 coordinator.apply_dye2_recipe, item,
                 replace_unsaved=replace_unsaved_profile, what="workflow")
+            upload = after_wf.pop(MACHINE_UPLOAD, None)
             out = {"source": "dye2", "name": dye2_name(item),
                    "changes": _diff(before_wf.get("context") or {},
                                     after_wf.get("context") or {}),
                    "profile": (after_wf.get("profile") or {}).get("title")}
+            if upload is not None:
+                out["machine"] = upload
             if mismatch:
                 out["inconsistent"] = mismatch
             if note := profile_reference_only(item.get("workflow")):
@@ -1146,8 +1155,8 @@ def _register_recipe_writes(
         (before, after), used = await _call(coordinator.apply_own_recipe, item,
                                             replace_unsaved=replace_unsaved_profile,
                                             what="workflow")
-        return {"source": "mine", "name": item["name"], "profile": used,
-                "changes": _diff(before, after)}
+        return _with_upload({"source": "mine", "name": item["name"], "profile": used},
+                            before, after)
 
     @mcp.tool(annotations={"readOnlyHint": False, "idempotentHint": True,
                            "destructiveHint": False, "openWorldHint": False})
@@ -1217,6 +1226,16 @@ def _recipe_changes(fields: dict[str, Any]) -> dict[str, Any]:
             if not text or len(text) > 60:
                 raise ToolError(f"invalid_argument: {key}: 1 to 60 characters")
             out[key] = text
+    return out
+
+
+def _with_upload(out: dict[str, Any], before: dict[str, Any],
+                 after: dict[str, Any]) -> dict[str, Any]:
+    """The changes, and how the profile upload went (T47) when there was one."""
+    upload = after.pop(MACHINE_UPLOAD, None)
+    out["changes"] = _diff(before, after)
+    if upload is not None:
+        out["machine"] = upload
     return out
 
 
@@ -1351,6 +1370,7 @@ async def _write(
     try:
         args = (payload,) if target_id is None else (target_id, payload)
         before, after = await writer(*args)
+        upload = after.pop(MACHINE_UPLOAD, None)
     except DecaidUnreachable as exc:
         raise ToolError(f"waiting_for_tablet: {exc}") from exc
     except DecaidError as exc:
@@ -1384,6 +1404,8 @@ async def _write(
     )
 
     result: dict[str, Any] = {"changes": changes}
+    if upload is not None:
+        result["machine"] = upload
     if target_id is not None:
         result["id"] = target_id
     if alongside:

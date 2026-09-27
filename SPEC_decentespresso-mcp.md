@@ -1,6 +1,6 @@
 # decentespresso-mcp — specification
 
-**Applies to version 0.12.0.** This document describes the system as it is, not
+**Applies to version 0.12.1.** This document describes the system as it is, not
 how it came to be. Where a decision still explains behaviour, the reasoning is
 kept; where it only explains history, it is gone.
 
@@ -145,6 +145,8 @@ instance wins and the finding goes in the table above.
 | T43 | *(withdrawn)* | Recorded on 2026-09-26 as "every DYE2 favourite carries a D-Flow stored nowhere". Wrong: the comparison hashed stubs without steps against each other. T44 is what the data shows |
 | T44 | **A DYE2 `workflow.profile` may be a name without a profile** | Seven of eight live favourites store `{"id": null, "title": "D-Flow"}`, one an id without steps - and Decaid drops a profile `id` sent to the workflow and does not resolve it (measured with a real id); the recipe stores no profile. PUT as stored, such a stub only renames the running profile (T13) - applying "Seniman House Blend" left the previously running tune brewing. Reported on apply; the unsaved-profile guard does not fire for it, because nothing is replaced |
 | T46 | **Ratings move to 0–10** (decaid#887, on main after 0.8.7-beta.1, in no release yet; read from the source 2026-09-26) | `annotations.enjoyment` becomes Decaid's own 0–10 field; `PUT /shots` refuses values outside it with 400, and that check runs **before** the shot is looked up. The schema-6 migration divides by ten every value over 10, and at 10 or below only an untouched de1app import (`id LIKE 'de1app-%'`, `created_at != timestamp`, `updated_at <= created_at`); it does **not** set `updated_at`. Everything else from 1 to 10 stays as it is - Decaid calls these ambiguous and does not guess. DYE2 moved to 0–10 with dye2#8 (0.1.15, stars ×2) and **already runs on the 0.8.6 tablet**, so new DYE2 ratings there are 0–10 inside a 0–100 field. Live, read-only: 88 imports, all `createdAt == timestamp`, so none untouched; two native shots at 4.0 and 5.0 (DYE2's raw star index before dye2#7). The probe - `PUT` of `enjoyment: 11` to a non-existent id - answers 404 "Shot not found" on 0.8.6+2801 and changes nothing |
+| T47 | **Profile upload to the DE1 has no completion signal in the API** (source v0.8.6 + live, 2026-09-27) | `PUT /workflow` answers once the workflow is stored. The upload runs afterwards in WorkflowDeviceSync - asynchronous, over Bluetooth, queued - and is **skipped silently** while the DE1 is not connected, then pushed on the next connect. A failed attempt raises `profileUploadFailed` (retries after 3, 10, 30 s), visible only in `connectionStatus.error` of the `/ws/v1/devices` socket - one slot, currently held by an older `scaleDisconnected` - and as a WARNING in the log. Success is reported nowhere in the API. It is visible in `/api/v1/logs`: the upload's last write logs `DE1 - mmr write: tankTemp` at INFO (the tablet logs at INFO; FINE lines such as "encoding step" are absent). Measured, DE1 connected and asleep: 0.79, 0.86, 0.87 and 0.92 s from the PUT to that line; in a day of log every profile PUT had one within about a second. A sleeping DE1 takes the upload |
+| T49 | **When a finished shot is not stored** (source v0.8.6, log 2026-09-26/27) | Three cases, only one of them logged: aborted during preheat, before preinfusion or pour ("Shot aborted" at INFO); `blockOnNoScale` without a scale; and a profile of `beverage_type` `cleaning` or `calibrate` **in the workflow when the shot ends** - dropped without a log line. The stored record takes the workflow of that moment too, not of the start. Across the log window (2026-09-26 16:00 to 2026-09-27 09:00) one run went unstored: 22:22, "Cleaning/Forward Flush x5", eight frames advanced - by design |
 | T45 | **A bean id where a batch belongs** | Six of eight live DYE2 favourites store a bean's id as `beanBatchId` (404 as a batch, 200 as a bean). Decaid would take it (T29). Applying such a favourite is refused, naming the bean's batches |
 
 T26 is why the block list in `writes.py` is not a second line of defence but the
@@ -950,6 +952,31 @@ server, so that needs `replace_unsaved_profile`.
 **Visible on the tablet** is what the API says (`visibility: visible`). Whether
 the tablet's UI shows it in the list it shows is not something the API can
 answer; the acceptance run confirmed the flag, not the pixels.
+
+### 11.7 A profile change is confirmed at the machine
+
+A workflow write that changes the profile is not finished when Decaid
+answers: the profile still has to reach the DE1 over Bluetooth (T47). A shot
+started in between runs the old profile, and its record still names the new
+one, because Decaid stores the workflow of the moment the shot ends (T49).
+
+So `set_workflow` and `apply_recipe` watch for it whenever the profile they
+send differs from the running one - a new title included, since Decaid
+re-uploads on any change:
+
+- **Before the PUT** the DE1's connection is read from `/api/v1/devices`, and
+  the tablet's clock from the newest log line. With the DE1 not connected
+  nothing is waited for: `pending_connection`, Decaid uploads on connect.
+- **After it** the log is read every 0.5 s, 6 s at most. The first
+  `mmr write: tankTemp` after this server's `PUT /api/v1/workflow` line is
+  `confirmed`, with the seconds between; a `setProfile failed` WARNING is
+  `failed_retrying`. Neither in time: `unconfirmed`.
+
+The answer carries it as `machine`, with a note for anything but `confirmed`
+that says not to start the shot until the tablet shows the new curve. A second
+client uploading in the same second cannot be told apart in the log; the
+first upload after our PUT is taken. A log at WARNING level, or none, leaves
+every change `unconfirmed` - the safe side.
 
 ### 11.6 Recipes and favourites
 
