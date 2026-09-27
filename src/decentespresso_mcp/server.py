@@ -108,6 +108,51 @@ READ_ONLY = {"readOnlyHint": True, "openWorldHint": False}
 #: and reporting them as a change would be noise, not information.
 SERVER_MANAGED_FIELDS = frozenset({"createdAt", "updatedAt"})
 
+
+def _same(sent: Any, got: Any) -> bool:
+    """Whether a read-back holds what was sent, in Decaid's own spelling.
+
+    Numbers compare as numbers (18 and 18.0), and a date comes back with a
+    time attached (T22), so "2026-09-01" matches "2026-09-01T00:00:00.000Z".
+    """
+    if sent == got:
+        return True
+    if isinstance(sent, int | float) and isinstance(got, int | float) \
+            and not isinstance(sent, bool) and not isinstance(got, bool):
+        return float(sent) == float(got)
+    if isinstance(sent, str) and isinstance(got, str) and len(sent) == 10:
+        return got.startswith(sent + "T")
+    return False
+
+
+def _outcome(
+    payload: dict[str, Any], before: dict[str, Any], after: dict[str, Any],
+) -> tuple[dict[str, Any], list[str], list[str]]:
+    """``(changes, unchanged, not_taken)`` for one write, from the read-back.
+
+    ``unchanged`` held the value already - nothing to report but that.
+    ``not_taken`` came back different from what was sent: Decaid refused or
+    discarded it. The two used to share one list, and a value that simply
+    stood already was reported as not taken.
+    """
+    changes = {name: {"before": before.get(name), "after": after.get(name)}
+               for name in payload}
+    unchanged = [n for n, v in payload.items()
+                 if _same(v, after.get(n)) and _same(v, before.get(n))]
+    not_taken = [n for n, v in payload.items() if not _same(v, after.get(n))]
+    return changes, unchanged, not_taken
+
+
+def _report(result: dict[str, Any], unchanged: list[str], not_taken: list[str]) -> None:
+    if unchanged:
+        result["unchanged"] = unchanged
+    if not_taken:
+        result["not_taken"] = not_taken
+        result["note"] = (
+            "Decaid did not take these fields - the read-back differs from "
+            "what was sent: " + ", ".join(not_taken) + "."
+        )
+
 INSTRUCTIONS = """\
 Local archive of espresso shots pulled on a Decent DE1. The source is Decaid on
 the tablet at the machine, reached over the local network; this server holds the
@@ -201,8 +246,9 @@ pass those along instead of merely repeating the message.
 WRITING - call the `update_*`, `create_*`, `clone_*` and `set_*` tools only on an
 explicit instruction, never on your own initiative and never "just to be safe".
 Set exactly the fields that were named. Confirm afterwards from the values that
-come back, not from what was sent: if a field appears under `unchanged`, Decaid
-did not take it - say so instead of reporting success. `update_shot` takes
+come back, not from what was sent: a field under `not_taken` came back
+different - Decaid refused it; say so instead of reporting success. One under
+`unchanged` already had that value. `update_shot` takes
 `enjoyment` on the tablet's scale, which `status` shows as `enjoyment_scale`:
 on `0-100` stars x20 (1 to 10 refused), on `0-10` stars x2.
 
@@ -1310,11 +1356,7 @@ async def _write(
     except DecaidError as exc:
         raise ToolError(f"{exc.code}: {exc}") from exc
 
-    changes = {
-        name: {"before": before.get(name), "after": after.get(name)}
-        for name in payload
-    }
-    ignored = [n for n, pair in changes.items() if pair["before"] == pair["after"]]
+    changes, unchanged, not_taken = _outcome(payload, before, after)
 
     # Report what moved, not what was sent. A field can change without being
     # asked for - `set_workflow` carries the coffee labels along with a batch
@@ -1335,7 +1377,8 @@ async def _write(
         extra={"fields": {
             "target": target_id or what,
             "wrote": ",".join(sorted(payload)),
-            "unchanged": ",".join(sorted(ignored)) or "-",
+            "unchanged": ",".join(sorted(unchanged)) or "-",
+            "not_taken": ",".join(sorted(not_taken)) or "-",
             "dur_ms": round((time.perf_counter() - started) * 1000, 1),
         }},
     )
@@ -1349,13 +1392,7 @@ async def _write(
             "These changed without being asked for, to keep the record "
             "consistent: " + ", ".join(alongside) + "."
         )
-    if ignored:
-        result["unchanged"] = ignored
-        result["note"] = (
-            "Decaid did not take these fields: " + ", ".join(ignored)
-            + ". Either the new value was identical to the old one, or the API "
-            "discarded it."
-        )
+    _report(result, unchanged, not_taken)
     return result
 
 
@@ -1407,12 +1444,7 @@ def _register_update_shot(mcp: FastMCP, db: Database, coordinator: SyncCoordinat
         except DecaidError as exc:
             raise ToolError(f"{exc.code}: {exc}") from exc
 
-        changes = {
-            name: {"before": before.get(name), "after": after.get(name)}
-            for name in payload
-        }
-        ignored = [name for name, pair in changes.items()
-                   if pair["before"] == pair["after"]]
+        changes, unchanged, not_taken = _outcome(payload, before, after)
 
         # Field names yes, values no - notes can hold private things.
         log.info(
@@ -1420,7 +1452,8 @@ def _register_update_shot(mcp: FastMCP, db: Database, coordinator: SyncCoordinat
             extra={"fields": {
                 "shot": id,
                 "wrote": ",".join(sorted(payload)),
-                "unchanged": ",".join(sorted(ignored)) or "-",
+                "unchanged": ",".join(sorted(unchanged)) or "-",
+                "not_taken": ",".join(sorted(not_taken)) or "-",
                 "dur_ms": round((time.perf_counter() - started) * 1000, 1),
             }},
         )
@@ -1430,14 +1463,7 @@ def _register_update_shot(mcp: FastMCP, db: Database, coordinator: SyncCoordinat
             archived = await asyncio.to_thread(db.get_shot_row, id)
             result["enjoyment"] = {"tablet_scale": scale,
                                    "archived": archived["enjoyment"] if archived else None}
-        if ignored:
-            result["unchanged"] = ignored
-            result["note"] = (
-                "Decaid did not take these fields: "
-                + ", ".join(ignored)
-                + ". Either the new value was identical to the old one, or the "
-                "API discarded it."
-            )
+        _report(result, unchanged, not_taken)
         return result
 
 

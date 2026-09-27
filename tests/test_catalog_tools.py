@@ -446,10 +446,13 @@ async def test_a_grind_change_leaves_the_labels_alone(
 async def test_an_unchanged_value_is_reported_as_such(
     writable: Config, db: Database, coordinator: SyncCoordinator
 ) -> None:
+    """A value that already stood is not a refusal. It used to be reported as
+    "Decaid did not take" - found live (M12, finding E), where it read as a
+    failed write that had in fact nothing to do."""
     result = await call(build_mcp(writable, db, coordinator), "set_workflow",
                         {"fields": {"grinderSetting": "3.30"}})
     assert result["unchanged"] == ["grinderSetting"]
-    assert "did not take" in result["note"]
+    assert "not_taken" not in result and "note" not in result
 
 
 async def test_the_log_names_fields_but_never_values(

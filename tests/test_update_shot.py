@@ -245,11 +245,10 @@ async def test_a_zero_rating_is_written_as_a_rating(
     assert result["changes"]["enjoyment"]["after"] == 0
 
 
-async def test_silently_dropped_field_is_reported(writable: Config, db: Database) -> None:
-    """The most dangerous case: a 200 comes back but nothing changed.
-
-    Here the read-back alone reveals that the value already stood that way.
-    """
+async def test_a_value_that_already_stood_is_unchanged_not_refused(
+    writable: Config, db: Database
+) -> None:
+    """M12, finding E: the same value sent again was reported as "not taken"."""
     fake = FakeDecaid(reference_detail())
     mcp = build_mcp(writable, db, make_coordinator(fake, db))
 
@@ -257,7 +256,26 @@ async def test_silently_dropped_field_is_reported(writable: Config, db: Database
                         {"id": REFERENCE, "fields": {"enjoyment": 40}})
 
     assert result["unchanged"] == ["enjoyment"]
+    assert "not_taken" not in result and "note" not in result
+
+
+async def test_silently_dropped_field_is_reported(writable: Config, db: Database) -> None:
+    """The most dangerous case: a 200 comes back but a field did not stick.
+
+    Only the read-back shows it - the value differs from what was sent.
+    """
+    class Forgetful(FakeDecaid):
+        PERMITTED = FakeDecaid.PERMITTED - {"actualYield"}
+
+    fake = Forgetful(reference_detail())
+    mcp = build_mcp(writable, db, make_coordinator(fake, db))
+
+    result = await call(mcp, "update_shot", {
+        "id": REFERENCE, "fields": {"enjoyment": 50, "actualYield": 41.5}})
+
+    assert result["not_taken"] == ["actualYield"]
     assert "did not take" in result["note"]
+    assert "unchanged" not in result
 
 
 async def test_api_rejection_becomes_a_tool_error(writable: Config, db: Database) -> None:
