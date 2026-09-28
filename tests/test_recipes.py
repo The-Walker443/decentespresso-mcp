@@ -303,6 +303,20 @@ async def test_the_recipe_appears_in_dye2s_list_marked_and_complete(writable, db
         "profile (T52)")
 
 
+async def test_the_projected_profile_keeps_decaids_key_order(writable, db) -> None:
+    """Streamline (fe73b4a) fingerprints the applied profile with
+    JSON.stringify and drops its auto-save once the workflow's profile reads
+    differently. Decaid answers in its own key order (measured 2026-09-28:
+    name, pump, transition, exit, ...), so a sorted copy would look like a
+    profile switch on the first dial-in on the tablet - and the dial-in would
+    never reach the recipe."""
+    fake = with_dye2()
+    await call(server(fake, writable, db), "set_workflow",
+               {"fields": {"grinderSetting": "3.6"}})
+    projected = ours(fake)[0]["workflow"]["profile"]["steps"]
+    assert json.dumps(projected) == json.dumps(WORKFLOW["profile"]["steps"])
+
+
 async def test_dye2s_own_recipe_is_passed_through_untouched_and_first(writable, db) -> None:
     """Streamline's strip shows the first five recipes only; the user's own
     stays where it was."""

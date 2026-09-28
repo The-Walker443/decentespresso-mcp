@@ -17,7 +17,7 @@ that filter.
 | 02 | decaid | Documented as "deletes a bean and all its batches"; answers 500 with a raw SQLite foreign-key error, deletes nothing |
 | 03 | decaid | `name` and `roaster` are documented as required; empty strings are accepted and a nameless bean is created. A missing one fails with a Dart type-cast message |
 | 09 | decaid | `timestamp` is not an editable field in `ShotUpdateRequest`, yet a PUT changes it; `createdAt`/`updatedAt` are refused as intended |
-| 12 | streamline | The profile-drift guard compares `workflow.profile.id`, which Decaid never returns, so it can never fire - a guard that protects nothing |
+| 12 | streamline | The profile-drift guard compares `workflow.profile.id`, which Decaid never returns, so it can never fire - a guard that protects nothing  **Filed as streamline-js#90, fixed in fe73b4a (2026-09-28)** |
 
 **Verify on the tablet first, then file if confirmed (two):**
 

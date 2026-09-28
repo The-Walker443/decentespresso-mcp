@@ -95,8 +95,13 @@ def recipe_fields(workflow: dict[str, Any], batch_id: str | None) -> dict[str, A
         "grinder_model": _text(context.get("grinderModel")),
         "dose_g": _number(context.get("targetDoseWeight")),
         "yield_g": _number(context.get("targetYield")),
+        # Decaid's own key order, not sorted: Streamline fingerprints the
+        # applied profile with JSON.stringify and turns its auto-save off when
+        # the workflow's profile later reads differently (streamline-js
+        # fe73b4a). Sorted keys would read as a profile switch on the first
+        # dial-in on the tablet.
         "profile_json": json.dumps(workflow.get("profile") or {}, ensure_ascii=False,
-                                   separators=(",", ":"), sort_keys=True),
+                                   separators=(",", ":")),
     }
 
 
