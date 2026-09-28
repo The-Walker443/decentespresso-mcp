@@ -45,20 +45,7 @@ from .guards import (
 )
 from .metrics import METRICS_VERSION, curve_shape, downsample_curve, metrics_for_shot
 from .profile_forge import made_here
-from .recipes import (
-    SOURCES,
-    choose,
-    dye2_name,
-    dye2_view,
-    favourite_name,
-    favourite_view,
-    is_ours,
-    issues_of,
-    mark_duplicates,
-    own_view,
-    profile_reference_only,
-    recipe_name,
-)
+from .recipes import is_service, recipe_name, recipe_shot
 from .stats import _iso as _stats_iso
 from .stats import (
     batch_usage,
@@ -75,8 +62,6 @@ from .sync import (
     STATE_LAST_REACHABLE,
     STATE_LAST_RESULT,
     STATE_LAST_SYNC,
-    STATE_PROJECTION_HEALED_AT,
-    STATE_PROJECTION_HEALS,
     SyncCoordinator,
     open_database,
     periodic_sync,
@@ -216,7 +201,7 @@ TERMS that appear in the metrics:
   0.0 in Decaid, which is not a rating. Ingestion stores those as `null`, so a
   0 that does reach you is a deliberate rating by the user.
 
-- `enjoyment` is 0-10 throughout the archive (DYE2 stars x2), whatever scale
+- `enjoyment` is 0-10 throughout the archive (stars x2), whatever scale
   the tablet runs. `enjoyment_ambiguous: true` marks a rating from 1 to 10 read
   off a tablet still on 0-100: it could be either scale and is left as it was.
   Say so rather than reading it as low; stats leave it out of means.
@@ -283,24 +268,12 @@ order, each one confirmed by the user before the next:
    ("<roaster> - <bean>"), with the overrides they asked for
 4. `set_workflow` with the new `beanBatchId` and `profileId`
 Stop at the first error and say which step failed; never skip a step silently
-or carry on around it. Favourites are these per-coffee profiles plus the
-workflow - Decaid's own favourites store is not written from here.
+or carry on around it.
 
-RECIPES - one per bean, "<roaster> – <bean>": where it was last dialled in
-(batch, grind, dose, yield, the profile as run). Every write that changes the
-workflow updates it by itself - never ask to save one; `save_recipe` is only
-for a dial-in done on the tablet. Each is also on the tablet, in DYE2's recipe
-list and Streamline's strip, for one tap. Sources: `mine`, `dye2` and
-`dye2_favs` (DYE2's own, applied as stored). A name in several needs `source`;
-ask, never guess. A favourite's `profile` is `full`, `reference` or `name`; a
-`name` one is applied without touching the profile - say so. `issues` before
-applying: name_only_profile (profile not changed), profile_reference_unresolved
-(profile not on the tablet), no_workflow (not applicable), batch_is_bean_id /
-batch_unknown (refused - offer a real batch), labels_without_batch /
-labels_mismatch_batch (would mislabel the coffee), duplicate (identical to
-`duplicate_of`), name_not_unique (apply it by id). Mention them; never apply a
-broken entry without saying what will happen. A profile change overwrites the
-workflow without asking - a tablet tune lives on in the bean's recipe.
+RECIPES - a recipe is a bean's most recent real shot, the same thing Beanie
+restores with a tap: the bean's newest usable batch, the shot's grind, planned
+dose and yield, and its profile. Nothing is saved or named. A change set in the
+chat but not brewed yet lives in the workflow until the next shot.
 
 DIAGNOSIS - what the machine measured about the coffee bed itself:
 
@@ -854,7 +827,7 @@ def build_mcp(
 
     if coordinator is not None:
         _register_workflow_reader(mcp, coordinator)
-    _register_recipe_reader(mcp, db, coordinator)
+    _register_recipe_reader(mcp, db)
 
     if config.write_enabled and coordinator is not None:
         _register_update_shot(mcp, db, coordinator)
@@ -962,7 +935,7 @@ def _register_catalog_writes(
         """
         result = await _write(coordinator.write_workflow, WORKFLOW, None, fields,
                               what="workflow")
-        return await _with_recipe(coordinator, result)
+        return result
 
     @mcp.tool(annotations=CREATES)
     async def create_bean(fields: dict[str, Any]) -> dict[str, Any]:
@@ -1001,7 +974,7 @@ def _register_catalog_writes(
         """
         result = await _call(coordinator.clone_profile, source, overrides,
                              title=title, bean_id=bean_id, what="profile")
-        return await _with_recipe(coordinator, _profile_result(result, key="source"))
+        return _profile_result(result, key="source")
 
     @mcp.tool(annotations={"readOnlyHint": False, "idempotentHint": True,
                            "destructiveHint": False, "openWorldHint": True})
@@ -1016,153 +989,92 @@ def _register_catalog_writes(
         """
         result = await _call(coordinator.update_profile, id, overrides,
                              allow_foreign=allow_foreign, what="profile")
-        return await _with_recipe(coordinator, _profile_result(result, key="before"))
+        return _profile_result(result, key="before")
 
 
-def _register_recipe_reader(
-    mcp: FastMCP, db: Database, coordinator: SyncCoordinator | None
-) -> None:
-    """``list_recipes`` - ours from SQLite, DYE2's from its store, read-only."""
+def _register_recipe_reader(mcp: FastMCP, db: Database) -> None:
+    """``list_recipes`` - derived from the archive, nothing stored."""
 
     @mcp.tool(annotations=READ_ONLY)
-    async def list_recipes(source: str = "all") -> dict[str, Any]:
-        """Saved recipes: `mine`, `dye2` (DYE2's recipes), `dye2_favs` (its
-        favourites), or `all`, in one shape - see RECIPES in the instructions.
-        """
-        if source not in SOURCES:
-            raise ToolError("invalid_argument: source is one of " + ", ".join(SOURCES))
-        out: dict[str, Any] = {"recipes": []}
-        entries: list[tuple[dict[str, Any], str, dict[str, Any]]] = []
-        if source in ("all", "mine"):
-            rows = await asyncio.to_thread(db.bean_recipes)
-            entries += [(own_view(r), "mine", r) for r in rows]
-        wants = [s for s in ("dye2", "dye2_favs") if source in ("all", s)]
-        catalogue = None
-        if coordinator is None:
-            if wants:
-                out["dye2"] = "not connected to Decaid"
-        else:
-            try:
-                if "dye2" in wants:
-                    entries += [(dye2_view(i), "dye2", i)
-                                for i in await coordinator.dye2_recipes() if not is_ours(i)]
-                if "dye2_favs" in wants:
-                    entries += [(favourite_view(f), "dye2_favs", f)
-                                for f in await coordinator.dye2_favourites()]
-                catalogue = await coordinator.catalogue()
-            except DecaidUnreachable:
-                out["dye2"] = ("waiting_for_tablet - DYE2's entries live there, and "
-                               "batches and profiles could not be checked")
-        for view, kind, raw in entries:
-            if found := issues_of(kind, raw, catalogue):
-                view["issues"] = found
-        mark_duplicates([e for e in entries if e[1] != "mine"])
-        out["recipes"] = [view for view, _, _ in entries]
-        return out
+    async def list_recipes() -> dict[str, Any]:
+        """Each bean's recipe: the state of its most recent real shot."""
+        beans = {r["id"]: r for r in await asyncio.to_thread(db.beans)}
+        shots = await asyncio.to_thread(db.bean_shots)
+        batches = await asyncio.to_thread(db.batches_by_id)
+        seen: set[str] = set()
+        out = []
+        for shot in shots:                                  # newest first per bean
+            batch_id = ((shot.get("workflow") or {}).get("context") or {}).get("beanBatchId")
+            bean_id = (batches.get(batch_id) or {}).get("bean_id")
+            if bean_id in seen or bean_id not in beans or is_service(shot.get("workflow")):
+                continue
+            seen.add(bean_id)
+            out.append(_recipe_view(beans[bean_id], shot, batches.get(batch_id)))
+        return {"recipes": out}
+
+
+def _recipe_view(bean: dict[str, Any], shot: dict[str, Any],
+                 batch: dict[str, Any] | None) -> dict[str, Any]:
+    workflow = shot.get("workflow") or {}
+    context = workflow.get("context") or {}
+    started = as_datetime(shot.get("timestamp"))
+    age, certain = (bean_age_days(batch, datetime.now(UTC), started=started)
+                    if batch else (None, False))
+    return _drop_empty({
+        "name": recipe_name(bean),
+        "bean_id": bean.get("id"),
+        "shot_at": shot.get("timestamp"),
+        "batch_id": context.get("beanBatchId"),
+        "grinder_setting": context.get("grinderSetting"),
+        "dose_g": context.get("targetDoseWeight"),
+        "yield_g": context.get("targetYield"),
+        "profile": (workflow.get("profile") or {}).get("title"),
+        "bean_age_days": age,
+        "bean_age_certain": certain if age is not None else None,
+    })
 
 
 def _register_recipe_writes(
     mcp: FastMCP, db: Database, coordinator: SyncCoordinator
 ) -> None:
-    """Applying and maintaining recipes (SPEC §11.6).
-
-    Ours are derived - one per bean, rewritten by every workflow write - so
-    there is nothing to name or edit, only to apply, re-take and delete.
-    """
+    """Applying a bean's recipe, and keeping a tuned profile (SPEC §11.6)."""
 
     @mcp.tool(annotations=CREATES)
     async def save_workflow_profile(title: str | None = None) -> dict[str, Any]:
         """Stores the profile the workflow is running as a named profile.
 
-        Optional - a recipe keeps its profile anyway. Default title
-        "<roaster> - <bean>". Refused, naming it, if that content is already
-        stored.
+        Optional. Default title "<roaster> - <bean>". Refused, naming it, if
+        that content is already stored.
         """
         result = await _call(coordinator.save_workflow_profile, title, what="profile")
         record = result["record"]
-        return await _with_recipe(coordinator, {
+        return {
             "id": record.get("id"),
             "title": (record.get("profile") or {}).get("title"),
             "was_titled_in_workflow": result["was_titled"],
             "visible_on_tablet": record.get("visibility") == "visible",
-        })
+        }
 
     @mcp.tool(annotations={"readOnlyHint": False, "idempotentHint": True,
                            "destructiveHint": False, "openWorldHint": True})
-    async def save_recipe() -> dict[str, Any]:
-        """Takes the workflow as it stands as the active bean's recipe.
-
-        Only for a dial-in done on the tablet - the chat's own changes are
-        taken automatically.
-        """
-        return {"recipe": await _call(coordinator.save_current_recipe, what="recipe")}
-
-    @mcp.tool(annotations={"readOnlyHint": False, "idempotentHint": True,
-                           "destructiveHint": False, "openWorldHint": True})
-    async def apply_recipe(name: str, source: str | None = None) -> dict[str, Any]:
-        """Sets the machine to a recipe or favourite - mine or DYE2's.
-
-        Mine by "<roaster> – <bean>" or the bean's name; DYE2's also by id. A
-        name several sources use needs `source`.
-        """
-        own = await asyncio.to_thread(db.bean_recipes)
-        try:
-            dye2 = await coordinator.dye2_recipes() if source in (None, "dye2") else []
-            favs = (await coordinator.dye2_favourites()
-                    if source in (None, "dye2_favs") else [])
-        except DecaidUnreachable as exc:
-            raise ToolError(f"waiting_for_tablet: {exc}") from exc
-        try:
-            kind, item = choose(own, dye2, name, source, favs)
-        except ValidationError as exc:
-            raise ToolError("invalid_argument: " + "; ".join(exc.problems)) from exc
-
-        if kind == "dye2_favs":
-            (before, after), used = await _call(
-                coordinator.apply_dye2_favourite, item, what="workflow")
-            out = _with_upload({"source": "dye2_favs", "name": favourite_name(item),
-                                "profile": used}, before, after)
-        elif kind == "dye2":
-            before_wf, after_wf, mismatch = await _call(
-                coordinator.apply_dye2_recipe, item, what="workflow")
-            upload = after_wf.pop(MACHINE_UPLOAD, None)
-            out = {"source": "dye2", "name": dye2_name(item),
-                   "changes": _diff(before_wf.get("context") or {},
-                                    after_wf.get("context") or {}),
-                   "profile": (after_wf.get("profile") or {}).get("title")}
-            if upload is not None:
-                out["machine"] = upload
-            if mismatch:
-                out["inconsistent"] = mismatch
-            if note := profile_reference_only(item.get("workflow")):
-                out["profile_note"] = note
-        else:
-            (before, after), used = await _call(coordinator.apply_own_recipe, item,
-                                                what="workflow")
-            out = _with_upload({"source": "mine", "name": recipe_name(item),
-                                "profile": used}, before, after)
-        return await _with_recipe(coordinator, out)
-
-    @mcp.tool(annotations={"readOnlyHint": False, "idempotentHint": True,
-                           "destructiveHint": True, "openWorldHint": True})
-    async def delete_recipe(name: str) -> dict[str, Any]:
-        """Deletes one of my recipes, here and on the tablet. DYE2's stay."""
-        own = await asyncio.to_thread(db.bean_recipes)
-        try:
-            _, item = choose(own, [], name, "mine")
-        except ValidationError as exc:
-            raise ToolError("invalid_argument: " + "; ".join(exc.problems)
-                            + " - DYE2's are deleted in DYE2") from exc
-        result = await _call(coordinator.delete_recipe, item["bean_id"], what="recipe")
-        return {"deleted": recipe_name(item), **(result or {})}
-
-
-async def _with_recipe(coordinator: SyncCoordinator, out: dict[str, Any]) -> dict[str, Any]:
-    """The active bean's recipe follows every successful write (M13)."""
-    noted = await coordinator.note_dial_in()
-    if noted is not None:
-        out["recipe"] = noted
-    return out
+    async def apply_recipe(bean: str) -> dict[str, Any]:
+        """Sets the machine to a bean's recipe - by name, roaster or bean id."""
+        beans = await asyncio.to_thread(db.beans)
+        wanted = " ".join(bean.split()).casefold()
+        hits = [b for b in beans if b["id"] == bean.strip()
+                or wanted in " ".join(recipe_name(b).split()).casefold()]
+        if len(hits) != 1:
+            names = ", ".join(recipe_name(b) for b in hits[:6]) or "none"
+            raise ToolError(f"invalid_argument: {len(hits)} beans match {bean!r} "
+                            f"({names}) - name one")
+        (found,) = hits
+        shot = recipe_shot(await asyncio.to_thread(db.bean_shots, found["id"]))
+        if shot is None:
+            raise ToolError(f"no_recipe: {recipe_name(found)} has no real shot yet - "
+                            "set the machine with set_workflow instead")
+        (before, after), used = await _call(coordinator.apply_bean_recipe, found, shot,
+                                            what="workflow")
+        return _with_upload({"name": recipe_name(found), "from": used}, before, after)
 
 
 def _with_upload(out: dict[str, Any], before: dict[str, Any],
@@ -1992,12 +1904,6 @@ def _status_payload(config: Config, db: Database) -> dict[str, Any]:
             "enjoyment_scale": db.get_state(STATE_ENJOYMENT_SCALE),
             "last_reachable": last_reachable,
             "waiting_for_tablet": bool(last_result.get("waiting_for_tablet")),
-        },
-        "recipes": {
-            "count": len(db.bean_recipes()),
-            "on_tablet": "dye2 recipes" if config.dye2_projection else "off",
-            "projection_heals": int(db.get_state(STATE_PROJECTION_HEALS) or 0),
-            "last_heal": db.get_state(STATE_PROJECTION_HEALED_AT),
         },
         "guards": {
             "active_rules": list(config.guard_rules),

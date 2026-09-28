@@ -1,5 +1,7 @@
 # A documented path for a second writer of recipes
 
+*Moot for us since our 0.14: the skin moved to Beanie, and this server no longer writes `recipes` - see below. Kept for anyone who needs the same.*
+
 **Project:** decentespresso/dye2 · **About:** `docs/KV_CONTRACT.md`
 
 ## The situation

@@ -119,18 +119,17 @@ both - each step shown and confirmed before the next, and stopped at the first
 one that fails. Favorites live as per-coffee profiles: tune the copy as the bag
 ages, and the stock profiles stay exactly as Decent shipped them.
 
-**One recipe per bean, on the tablet.** Every dial-in step keeps that bean's
-recipe up to date by itself - batch, grind, dose, yield and the profile exactly
-as it ran, tablet tunes included. Nothing to name or save. Each recipe also
-appears in DYE2's recipe list, so Streamline's DYE strip calls it up with one
-tap; a dial-in you do on the dashboard afterwards is taken back into it. The
-recipes you made in DYE2 yourself are listed and applied too, and never
-touched.
+**A recipe is a bean's most recent real shot** - the same thing Beanie restores
+with a tap. "Back to the Grano Gayo" puts the machine where that bean's last
+real shot was: its newest batch, the grind, the planned dose and yield, and the
+profile. Nothing to save or name. A change made in the chat but not brewed yet
+lives in the workflow until the next shot.
 
-The tablet copy is a derivation: this server owns the entries it marks as its
-own and rewrites them on every sync - edit them in DYE2 and the next sync puts
-them back (dose, drink and grind excepted, which count as a dial-in).
-`DYE2_PROJECTION=false` keeps the recipes here only.
+Running Streamline with DYE2 instead? 0.13 wrote one recipe per bean into
+DYE2's recipe list for Streamline's strip. That path is gone since 0.14 - this
+server never writes the plugin store and keeps DYE2's contract in full - but it
+lives on in the history: the tag `v0.13-last-streamline` is the last state
+with it.
 
 ---
 
@@ -276,7 +275,7 @@ inside tracebacks from libraries that know nothing about it.
 | `sync_now` · `status` | housekeeping |
 | `update_shot` · `update_bean` · `update_batch` · `set_workflow` | writing, behind the switch |
 | `create_bean` · `create_batch` · `clone_profile` · `update_profile` | a new coffee and its profile, behind the switch |
-| `list_recipes` · `apply_recipe` · `save_recipe` · `delete_recipe` · `save_workflow_profile` | recipes - listing always, the rest behind the switch |
+| `list_recipes` · `apply_recipe` · `save_workflow_profile` | recipes - listing always, the rest behind the switch |
 
 Fifteen tools cost about 10 kB of definitions, twenty-eight with write mode on
 cost 19.5 kB — about 700 B each, because the shared vocabulary lives in the server

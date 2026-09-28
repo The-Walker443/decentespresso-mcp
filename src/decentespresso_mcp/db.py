@@ -365,64 +365,31 @@ class Database:
 
     # -------------------------------------------------------------- Recipes
 
-    _RECIPE_FIELDS = ("bean_batch_id", "grinder_setting", "grinder_model",
-                      "dose_g", "yield_g", "profile_json")
-
-    def bean_recipes(self) -> list[dict[str, Any]]:
-        """One per bean, with the bean's labels; newest dial-in first."""
+    def beans(self) -> list[dict[str, Any]]:
         with self._lock:
             return [dict(r) for r in self._conn.execute(
-                "SELECT r.*, b.name AS bean_name, b.roaster AS bean_roaster, "
-                "       b.archived AS bean_archived "
-                "FROM bean_recipes r LEFT JOIN beans b ON b.id = r.bean_id "
-                "ORDER BY r.updated_at DESC")]
+                "SELECT id, name, roaster FROM beans")]
 
-    def bean_recipe(self, bean_id: str) -> dict[str, Any] | None:
-        return next((r for r in self.bean_recipes() if r["bean_id"] == bean_id), None)
+    def bean_shots(self, bean_id: str | None = None, limit: int = 24) -> list[dict[str, Any]]:
+        """Stored shot responses, newest first - what a recipe is read from.
 
-    def save_bean_recipe(self, bean_id: str, fields: dict[str, Any]) -> bool:
-        """Insert or overwrite the bean's recipe. True when something changed.
-
-        ``updated_at`` only moves on a real change, so a write that set the
-        same values again does not reorder the list on the tablet.
+        24 per bean, as many as Beanie's picker loads (shotFilterForBean).
+        Without a bean, every bean's newest shots, for the listing.
         """
-        values = {k: fields.get(k) for k in self._RECIPE_FIELDS}
+        clause, params = ("WHERE bean_id = ?", [bean_id]) if bean_id else (
+            "WHERE bean_id IS NOT NULL", [])
         with self._lock:
-            row = self._conn.execute("SELECT * FROM bean_recipes WHERE bean_id = ?",
-                                     (bean_id,)).fetchone()
-            if row is not None and all(row[k] == v for k, v in values.items()):
-                return False
-            self._conn.execute(
-                f"INSERT INTO bean_recipes (bean_id, {', '.join(values)}, updated_at) "
-                f"VALUES (:bean_id, {', '.join(':' + k for k in values)}, :now) "
-                f"ON CONFLICT(bean_id) DO UPDATE SET "
-                + ", ".join(f"{k} = excluded.{k}" for k in values)
-                + ", updated_at = excluded.updated_at",
-                {**values, "bean_id": bean_id, "now": utc_now_iso()},
-            )
-            self._conn.commit()
-        return True
-
-    def set_projected(self, bean_id: str, projected: str | None) -> None:
-        with self._lock:
-            self._conn.execute("UPDATE bean_recipes SET projected = ? WHERE bean_id = ?",
-                               (projected, bean_id))
-            self._conn.commit()
-
-    def delete_bean_recipe(self, bean_id: str) -> bool:
-        with self._lock:
-            cursor = self._conn.execute("DELETE FROM bean_recipes WHERE bean_id = ?",
-                                        (bean_id,))
-            self._conn.commit()
-        return cursor.rowcount > 0
-
-    def newest_batch(self) -> str | None:
-        """The batch of the newest shot that named one - the bean last pulled."""
-        with self._lock:
-            row = self._conn.execute(
-                "SELECT bean_batch_id FROM shots WHERE bean_batch_id IS NOT NULL "
-                "ORDER BY started_at DESC LIMIT 1").fetchone()
-        return row["bean_batch_id"] if row else None
+            rows = self._conn.execute(
+                f"SELECT bean_id, raw_json FROM shots {clause} "
+                f"ORDER BY started_at DESC", params).fetchall()
+        out: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            kept = out.setdefault(row["bean_id"], [])
+            if len(kept) < limit:
+                kept.append(json.loads(row["raw_json"]))
+        if bean_id:
+            return out.get(bean_id, [])
+        return [shot for shots in out.values() for shot in shots]
 
     # -------------------------------------------------------------- Queries
 

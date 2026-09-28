@@ -57,9 +57,6 @@ class Config:
     #: SPEC §11. When off, the write tools do not exist at all - they do not
     #: refuse, they are absent from the tool list.
     write_enabled: bool
-    #: M13: our recipes as marked items in DYE2's list, so the tablet can call
-    #: them up. On unless switched off.
-    dye2_projection: bool
     #: SPEC §4: Decaid on the local network is the source. Private addresses
     #: only.
     decaid_url: str
@@ -178,7 +175,6 @@ class Config:
         host = (src.get("HOST") or "0.0.0.0").strip() or "0.0.0.0"  # noqa: S104
         port = _int_in_range(src, "PORT", 8000, 1, 65535, problems)
         write_enabled = _bool(src, "WRITE_ENABLED", default=False, problems=problems)
-        dye2_projection = _bool(src, "DYE2_PROJECTION", default=True, problems=problems)
 
         decaid_url = (src.get("DECAID_URL") or "").strip()
         if not decaid_url:
@@ -217,7 +213,6 @@ class Config:
             host=host,
             port=port,
             write_enabled=write_enabled,
-            dye2_projection=dye2_projection,
             decaid_url=decaid_url,
             ntfy_url=ntfy_url,
             ntfy_topic=ntfy_topic,

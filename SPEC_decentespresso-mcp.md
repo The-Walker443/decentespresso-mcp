@@ -1,6 +1,6 @@
 # decentespresso-mcp — specification
 
-**Applies to version 0.13.0.** This document describes the system as it is, not
+**Applies to version 0.14.0.** This document describes the system as it is, not
 how it came to be. Where a decision still explains behaviour, the reasoning is
 kept; where it only explains history, it is gone.
 
@@ -141,20 +141,20 @@ instance wins and the finding goes in the table above.
 | T39 | **A duplicate creation reports success** | A `POST /profiles` whose content already exists answers **201** with the *existing* record and silently drops the new title, `parentId` and `metadata`. Nothing is created. A client trusting the status code reports a new profile that is not there |
 | T40 | **Deleting a bean does not cascade** | `DELETE /beans/<id>` on a bean with batches fails with 500 (SQLite foreign key, code 787) although the API description says it deletes the batches too. Nothing is deleted. Batches first, then the bean. Not used by this server, which deletes nothing - found while cleaning up probes |
 | T41 | **Creation: required and returned** | `POST /beans` needs `name` and `roaster` (both refused alone with 400, a type-cast error rather than a message) - but **accepts both as empty strings** with 201, a bean with no name (measured, deleted) and returns 201 with the new id. `POST /beans/<id>/batches` needs nothing and sets `weightRemaining` from `weight`. `POST /profiles` returns 201 with the record, visible, not default. Titles are not length-limited by the API - 300 characters were taken |
-| T42 | **A DYE2 recipe can mislabel the coffee** | The live recipe "Decaf" stores `context.coffeeName` and neither `coffeeRoaster` nor `beanBatchId`. Applied as stored on a Grano Gayo batch, the machine showed "Coffee Circle / Sugar Cane Decaf". `apply_recipe` applies it unchanged, as the contract asks, and reports the mismatch |
+| T42 | **A DYE2 recipe can mislabel the coffee** *(history - the path it shaped was removed in 0.14)* | The live recipe "Decaf" stores `context.coffeeName` and neither `coffeeRoaster` nor `beanBatchId`. Applied as stored on a Grano Gayo batch, the machine showed "Coffee Circle / Sugar Cane Decaf". `apply_recipe` applies it unchanged, as the contract asks, and reports the mismatch |
 | T43 | *(withdrawn)* | Recorded on 2026-09-26 as "every DYE2 favourite carries a D-Flow stored nowhere". Wrong: the comparison hashed stubs without steps against each other. T44 is what the data shows |
-| T44 | **A DYE2 `workflow.profile` may be a name without a profile** | Seven of eight live favourites store `{"id": null, "title": "D-Flow"}`, one an id without steps - and Decaid drops a profile `id` sent to the workflow and does not resolve it (measured with a real id); the recipe stores no profile. PUT as stored, such a stub only renames the running profile (T13) - applying "Seniman House Blend" left the previously running tune brewing. Reported on apply; the unsaved-profile guard does not fire for it, because nothing is replaced |
+| T44 | **A DYE2 `workflow.profile` may be a name without a profile** *(history - the path it shaped was removed in 0.14)* | Seven of eight live favourites store `{"id": null, "title": "D-Flow"}`, one an id without steps - and Decaid drops a profile `id` sent to the workflow and does not resolve it (measured with a real id); the recipe stores no profile. PUT as stored, such a stub only renames the running profile (T13) - applying "Seniman House Blend" left the previously running tune brewing. Reported on apply; the unsaved-profile guard does not fire for it, because nothing is replaced |
 | T46 | **Ratings move to 0–10** (decaid#887, on main after 0.8.7-beta.1, in no release yet; read from the source 2026-09-26) | `annotations.enjoyment` becomes Decaid's own 0–10 field; `PUT /shots` refuses values outside it with 400, and that check runs **before** the shot is looked up. The schema-6 migration divides by ten every value over 10, and at 10 or below only an untouched de1app import (`id LIKE 'de1app-%'`, `created_at != timestamp`, `updated_at <= created_at`); it does **not** set `updated_at`. Everything else from 1 to 10 stays as it is - Decaid calls these ambiguous and does not guess. DYE2 moved to 0–10 with dye2#8 (0.1.15, stars ×2) and **already runs on the 0.8.6 tablet**, so new DYE2 ratings there are 0–10 inside a 0–100 field. Live, read-only: 88 imports, all `createdAt == timestamp`, so none untouched; two native shots at 4.0 and 5.0 (DYE2's raw star index before dye2#7). The probe - `PUT` of `enjoyment: 11` to a non-existent id - answers 404 "Shot not found" on 0.8.6+2801 and changes nothing |
 | T47 | **Profile upload to the DE1 has no completion signal in the API** (source v0.8.6 + live, 2026-09-27) | `PUT /workflow` answers once the workflow is stored. The upload runs afterwards in WorkflowDeviceSync - asynchronous, over Bluetooth, queued - and is **skipped silently** while the DE1 is not connected, then pushed on the next connect. A failed attempt raises `profileUploadFailed` (retries after 3, 10, 30 s), visible only in `connectionStatus.error` of the `/ws/v1/devices` socket - one slot, currently held by an older `scaleDisconnected` - and as a WARNING in the log. Success is reported nowhere in the API. It is visible in `/api/v1/logs`: the upload's last write logs `DE1 - mmr write: tankTemp` at INFO (the tablet logs at INFO; FINE lines such as "encoding step" are absent). Measured, DE1 connected and asleep: 0.79, 0.86, 0.87 and 0.92 s from the PUT to that line; in a day of log every profile PUT had one within about a second. A sleeping DE1 takes the upload |
-| T48 | **Two tablet clients write the workflow from their own state** (source DYE2 0.1.15 and streamline-js 6f2b914 on Decaid 0.8.6; log 2026-09-27) | DYE2's dashboard loads the workflow once when the page opens and never refreshes it; every edit there, and "Done", PUTs that whole copy back - context and profile - over whatever changed meanwhile. Streamline, on a profile switch, writes `targetDoseWeight`, `targetYield` and `grinderSetting` from the profile record's `metadata`, and `grinderSetting: null` when none is saved there; the batch it leaves alone. Both write from 127.0.0.1. The shot of 2026-09-27 08:33 (D-Flow, grind "3.50", Grano Gayo) followed such a local PUT by 2.1 s; "3.50" is Streamline's spelling (`toFixed(2)`), not DYE2's. Where the value came from is **not yet reproduced** - D-Flow's metadata holds "2.60" today |
+| T48 | **Two tablet clients write the workflow from their own state** *(history - the path it shaped was removed in 0.14)* (source DYE2 0.1.15 and streamline-js 6f2b914 on Decaid 0.8.6; log 2026-09-27) | DYE2's dashboard loads the workflow once when the page opens and never refreshes it; every edit there, and "Done", PUTs that whole copy back - context and profile - over whatever changed meanwhile. Streamline, on a profile switch, writes `targetDoseWeight`, `targetYield` and `grinderSetting` from the profile record's `metadata`, and `grinderSetting: null` when none is saved there; the batch it leaves alone. Both write from 127.0.0.1. The shot of 2026-09-27 08:33 (D-Flow, grind "3.50", Grano Gayo) followed such a local PUT by 2.1 s; "3.50" is Streamline's spelling (`toFixed(2)`), not DYE2's. Where the value came from is **not yet reproduced** - D-Flow's metadata holds "2.60" today |
 | T49 | **When a finished shot is not stored** (source v0.8.6, log 2026-09-26/27) | Three cases, only one of them logged: aborted during preheat, before preinfusion or pour ("Shot aborted" at INFO); `blockOnNoScale` without a scale; and a profile of `beverage_type` `cleaning` or `calibrate` **in the workflow when the shot ends** - dropped without a log line. The stored record takes the workflow of that moment too, not of the start. Across the log window (2026-09-26 16:00 to 2026-09-27 09:00) one run went unstored: 22:22, "Cleaning/Forward Flush x5", eight frames advanced - by design |
-| T50 | **Streamline clears the coffee from the workflow after every stored shot** (streamline-js source; log on Decaid 0.8.6, 2026-09-27) | `clearDyeWorkflowContext` sets `beanBatchId`, `coffeeName`, `coffeeRoaster`, grinder, barista, drinker and basket to null once a shot is persisted, so they do not label the next one - DYE2 is meant to restate them per shot. Measured: "Storing shot" 08:34:11.99 → `PUT /workflow` from 127.0.0.1 at 08:34:12.05; 12:47:27.68 → 12:47:27.76. Grind, dose, yield and profile stay. The context-lost finding of M12 (B) follows from this, not from a fault |
-| T51 | **Streamline's DYE strip: five recipes, applied from `workflow`, auto-saved into `dashboardVariables`** (streamline-js 6f2b914, on Decaid 0.8.6) | The strip shows the first five visible recipes in array order (`showOnStreamlineDashboard !== false`). Tapping one GETs the live workflow, merges `workflow.context` over it, takes `workflow.profile` whole, and PUTs. Its auto-save folds a later dashboard edit of dose, drink or grind into that recipe's `dashboardVariables` only - which its own apply never reads while a `workflow` is present, so on a DYE2 recipe the edit does not come back. Since streamline-js fe73b4a the auto-save stops when the workflow's profile no longer matches a fingerprint of the applied one (`JSON.stringify` of title, targets, tank temperature and the steps without temperature) - key order counts, so a projected profile must keep Decaid's own order, which is not alphabetical |
-| T52 | **DYE2's own dashboard ignores a recipe's `workflow`** (DYE2 0.1.15 source, on Decaid 0.8.6) | `applyRecipe` takes dose, drink and grind from `dashboardVariables` and sends the profile as `{id: profileId, title: profileTitle}` - a stub that renames the running profile and keeps its steps (T44). A recipe can change the profile with one tap only through Streamline's strip |
-| T53 | **DYE2's recipe editor keeps foreign items** (DYE2 0.1.15 source, on Decaid 0.8.6) | It shows five fixed slots, ids "1"-"5", but saves through `updateRecipe`: GET the array, upsert by id, POST. Items with other ids survive an edit in DYE2. The store's POST replaces the whole value and answers `{}` (decaid `kv_store_handler.dart`) |
-| T54 | **Only ids "1"-"5" exist for DYE2's editor and Streamline's long press** (reported by the operator 2026-09-28; streamline-js cc14749 and DYE2 0.1.15 source, on Decaid 0.8.6) | A projected recipe with the id `mcp-<bean>` showed in Streamline's strip but not in DYE2's "Describe your espresso" overview, which normalises the list to five slots with ids "1"-"5". Streamline's long press opens slot `parseInt(id) \|\| 1` - for `mcp-...` that is slot 1, the user's own Decaf. Our items therefore take DYE2's free slots |
-| T55 | **DYE2 cannot delete a recipe** (DYE2 0.1.15 and main, on Decaid 0.8.6) | "Clear all" in the recipe editor replaces the slot with `{}` in the page's state, which drops the id, and SAVE writes only `if (recipe && recipe.id)` - so a cleared slot is never saved and the stored recipe stays. A slot DYE2 holds is freed only by writing the list without it |
-| T45 | **A bean id where a batch belongs** | Six of eight live DYE2 favourites store a bean's id as `beanBatchId` (404 as a batch, 200 as a bean). Decaid would take it (T29). Applying such a favourite is refused, naming the bean's batches |
+| T50 | **Streamline clears the coffee from the workflow after every stored shot** *(history - the path it shaped was removed in 0.14)* (streamline-js source; log on Decaid 0.8.6, 2026-09-27) | `clearDyeWorkflowContext` sets `beanBatchId`, `coffeeName`, `coffeeRoaster`, grinder, barista, drinker and basket to null once a shot is persisted, so they do not label the next one - DYE2 is meant to restate them per shot. Measured: "Storing shot" 08:34:11.99 → `PUT /workflow` from 127.0.0.1 at 08:34:12.05; 12:47:27.68 → 12:47:27.76. Grind, dose, yield and profile stay. The context-lost finding of M12 (B) follows from this, not from a fault |
+| T51 | **Streamline's DYE strip: five recipes, applied from `workflow`, auto-saved into `dashboardVariables`** *(history - the path it shaped was removed in 0.14)* (streamline-js 6f2b914, on Decaid 0.8.6) | The strip shows the first five visible recipes in array order (`showOnStreamlineDashboard !== false`). Tapping one GETs the live workflow, merges `workflow.context` over it, takes `workflow.profile` whole, and PUTs. Its auto-save folds a later dashboard edit of dose, drink or grind into that recipe's `dashboardVariables` only - which its own apply never reads while a `workflow` is present, so on a DYE2 recipe the edit does not come back. Since streamline-js fe73b4a the auto-save stops when the workflow's profile no longer matches a fingerprint of the applied one (`JSON.stringify` of title, targets, tank temperature and the steps without temperature) - key order counts, so a projected profile must keep Decaid's own order, which is not alphabetical |
+| T52 | **DYE2's own dashboard ignores a recipe's `workflow`** *(history - the path it shaped was removed in 0.14)* (DYE2 0.1.15 source, on Decaid 0.8.6) | `applyRecipe` takes dose, drink and grind from `dashboardVariables` and sends the profile as `{id: profileId, title: profileTitle}` - a stub that renames the running profile and keeps its steps (T44). A recipe can change the profile with one tap only through Streamline's strip |
+| T53 | **DYE2's recipe editor keeps foreign items** *(history - the path it shaped was removed in 0.14)* (DYE2 0.1.15 source, on Decaid 0.8.6) | It shows five fixed slots, ids "1"-"5", but saves through `updateRecipe`: GET the array, upsert by id, POST. Items with other ids survive an edit in DYE2. The store's POST replaces the whole value and answers `{}` (decaid `kv_store_handler.dart`) |
+| T54 | **Only ids "1"-"5" exist for DYE2's editor and Streamline's long press** *(history - the path it shaped was removed in 0.14)* (reported by the operator 2026-09-28; streamline-js cc14749 and DYE2 0.1.15 source, on Decaid 0.8.6) | A projected recipe with the id `mcp-<bean>` showed in Streamline's strip but not in DYE2's "Describe your espresso" overview, which normalises the list to five slots with ids "1"-"5". Streamline's long press opens slot `parseInt(id) \|\| 1` - for `mcp-...` that is slot 1, the user's own Decaf. Our items therefore take DYE2's free slots |
+| T55 | **DYE2 cannot delete a recipe** *(history - the path it shaped was removed in 0.14)* (DYE2 0.1.15 and main, on Decaid 0.8.6) | "Clear all" in the recipe editor replaces the slot with `{}` in the page's state, which drops the id, and SAVE writes only `if (recipe && recipe.id)` - so a cleared slot is never saved and the stored recipe stays. A slot DYE2 holds is freed only by writing the list without it |
+| T45 | **A bean id where a batch belongs** *(history - the path it shaped was removed in 0.14)* | Six of eight live DYE2 favourites store a bean's id as `beanBatchId` (404 as a batch, 200 as a bean). Decaid would take it (T29). Applying such a favourite is refused, naming the bean's batches |
 
 T26 is why the block list in `writes.py` is not a second line of defence but the
 only one for the telemetry fields.
@@ -810,7 +810,7 @@ again; one that does not exist does not.
 | `update_batch`, `create_batch` | T22 |
 | `set_workflow` | `grinderSetting`, `grinderModel`, `targetDoseWeight`, `targetYield`, `beanBatchId`, `profileId` |
 | `clone_profile`, `update_profile` | the three overrides of §11.5, nothing else |
-| `save_workflow_profile`, `save_recipe`, `apply_recipe`, `delete_recipe` | §11.6 - one recipe per bean, projected to the tablet |
+| `save_workflow_profile`, `apply_recipe` | §11.6 - a bean's recipe is its most recent real shot |
 
 The docstrings do not repeat the field lists: they drifted - `update_batch` went
 on telling every request that Decaid keeps no thaw date for ten days after T23
@@ -953,9 +953,10 @@ references are refused; Decaid would take any object at all. A profile change
 overwrites the workflow without asking. Until M13 a profile that existed only
 in the workflow - a tablet tune - was protected and needed
 `replace_unsaved_profile`; that made every profile change a two-step
-conversation, and the tune now lives on in the bean's recipe instead (§11.6).
-`get_workflow` says whether the running profile is stored (`profile_stored`),
-for information only.
+conversation. A tune is still in every shot pulled with it; to come back as a
+recipe it needs a title of its own (`save_workflow_profile`), because a recipe
+takes the stored profile of the shot's title (§11.6). `get_workflow` says
+whether the running profile is stored (`profile_stored`), for information only.
 
 **Visible on the tablet** is what the API says (`visibility: visible`). Whether
 the tablet's UI shows it in the list it shows is not something the API can
@@ -986,135 +987,42 @@ client uploading in the same second cannot be told apart in the log; the
 first upload after our PUT is taken. A log at WARNING level, or none, leaves
 every change `unconfirmed` - the safe side.
 
-### 11.6 Recipes and favourites
+### 11.6 Recipes
 
-**One recipe per bean, derived.** A recipe is where a bean was last dialled in:
-batch, grind, dose, target yield and the profile as the workflow ran it,
-embedded whole (migration 006, table `bean_recipes`). It is named
-"<roaster> – <bean>" and keyed by the bean, so a new batch of the same bean
-moves it along. There is no name to choose, nothing to pin, no history and no
-version - and no stored profile copy: a profile tuned on the tablet lives in
-the recipe itself.
+**A recipe is a bean's most recent real shot** - the same thing Beanie restores
+with a tap. Nothing is stored or named; `list_recipes` derives it from the
+archive, `apply_recipe(bean)` puts it on the machine. The rule is Beanie's own
+(github.com/giladger/Beanie at a54a625, `beanWorkflowController.ts` and
+`beanWorkflow.ts`), so the chat and the tablet set the machine the same way:
 
-**Every write updates it.** After each successful `set_workflow`,
-`apply_recipe`, `clone_profile`, `update_profile` and `save_workflow_profile`
-the workflow is read and taken as the active bean's recipe. The active bean is
-the workflow's batch - or the newest shot's, because Streamline clears the
-batch from the workflow after every stored shot (T50). `save_recipe` takes no
-parameters and does the same on demand, for a dial-in done on the tablet.
-Updating is never allowed to fail the write it follows.
+- **The shot**: the bean's newest shot that is not a service shot - steam,
+  water, flush, cleaning, calibration, by the profile's `beverage_type` or the
+  context's `finalBeverageType`.
+- **The batch**: the bean's newest usable batch by roast date, *not the
+  shot's* - usable meaning not under 5 g remaining; if none is, the newest.
+- **Dose and yield as planned** - the shot's `targetDoseWeight`/`targetYield`,
+  the measured value only where the plan has none; `targetYield` 0 when the
+  profile turns the weight stop off.
+- **The profile**: the stored profile of the shot's title where one exists,
+  otherwise the one the shot embeds, at the shot's brew temperature either
+  way. So a tablet tune saved under a stock title comes back as the stock
+  profile at that temperature - Beanie's behaviour, matched rather than
+  improved on.
+- **Context** as Beanie writes it: `beanId`, labels, batch, grinder id, model
+  and setting, `finalBeverageType: espresso`.
 
-**Applying** PUTs context and the embedded profile through the one workflow
-path, with the batch labels (T28) and the upload watch (§11.7).
+Applying goes through the one workflow path (`_apply`): batch labels (T28) and
+the upload watch (§11.7). A bean without a real shot is answered with
+`no_recipe` and a pointer to `set_workflow`. A change made in the chat but not
+brewed yet lives in the workflow until the next shot.
 
-**Projected into DYE2's list, so the tablet has it with one tap.** Each recipe
-is written into `dye2.reaplugin/recipes` as an item marked `origin:
-"decentespresso-mcp"` with `recipeId` (the bean), and a complete ready-to-PUT
-`workflow` - context with batch, labels, grind, dose and
-yield, and the full profile, never a stub. That is what Streamline's strip
-applies (T51). `profileId`/`profileTitle` are left out on purpose: DYE2's own
-dashboard would PUT them as a stub and rename the running profile (T52).
-
-This writes a key DYE2's contract reserves for DYE2. The rules that keep it
-safe: items without the marker are never touched and keep their place - ours
-are appended, because the strip shows only the first five; the key is read
-immediately before every write and read back after it; nothing is written when
-nothing changed. DYE2's editor keeps foreign items (T53). The store has no
-ETag, so an edit in DYE2 in the same instant can still be lost - a window one
-request wide, the same Streamline's auto-save already lives with. A documented
-second key is proposed upstream (`docs/upstream/07`). `DYE2_PROJECTION=false`
-switches it off; the recipes themselves stay.
-
-**DYE2's five slots.** DYE2's editor knows the ids "1"-"5" only, and
-Streamline's long press opens a slot by that number (T54). Our items take the
-slots DYE2's own items leave free, most recently dialled-in beans first; a bean
-keeps its slot, and when they are full the bean pulled longest ago gives way -
-it stays a recipe here, just not on the tablet. The strip shows five recipes
-anyway, so the slots are no narrower than the screen. Saved over in DYE2's
-editor under another name, a slot becomes the user's: DYE2 merges its save
-into our item and keeps the marker, so the marker is removed and nothing else
-changed. A dial-in there keeps the name and stays ours. Switching
-"Show on Streamline Dashboard" off in DYE2 stands.
-
-**The projection is a derivation.** Every sync repairs it: missing or outdated
-entries are written again and counted in `status()` (`projection_heals`), and
-the recipe of a bean that no longer exists goes, with its entry. Changes made
-on the tablet to our entries are overwritten - with one exception, the dial-in:
-Streamline's auto-save writes a dashboard edit of dose, drink or grind into the
-applied recipe's `dashboardVariables` (T51). A difference there from what was
-last projected is taken into the recipe before re-projecting, so a dial-in on
-the tablet needs no step in the chat - and, unlike on DYE2's own recipes,
-reaches the machine the next time the entry is tapped.
-
-**DYE2's own recipes** are listed in the contract's shape, with its fallbacks
-(`title` → `name` → "Recipe <id>"), and applied the way the contract says:
-their `workflow`, PUT as it is. One from an older DYE2 without that field is
-listed and not applied. Our projected items are not listed among them.
-
-**A name in both sources is not guessed between.** Listing shows both; applying
-needs `source`.
-
-**Favourites** are these recipes plus the per-coffee profiles of §11.5, and
-DYE2's own `autoFavourites`, listed and applied as source `dye2_favs` - read
-only, like its recipes. What applying one sends:
-
-- **The context, with the copyMask respected.** A group is on unless it is
-  explicitly false (the contract's "absent => on"); the mapping from group to
-  fields is DYE2's own, from `buildFavouriteWorkflow`. DYE2 already applies the
-  mask when it builds `workflow`, so doing it again is a no-op there and keeps
-  an item honest whose mask changed afterwards. A favourite without `workflow`
-  is derived from snapshot and mask - the contract's legacy path.
-- **The profile only where there is one** (T44). A full profile (auto entries)
-  is sent as it is. A stub with an id is
-  resolved and the full profile sent, since Decaid would neither resolve nor
-  keep the id. A stub without an id is not sent: "favourite carries a
-  name-only profile; keeping the current profile untouched". This is where
-  DYE2's own apply stumbles - its builder writes the stub and its dashboard
-  PUTs it.
-- **Through the guarded path.** The batch brings its labels (T28); a bean id in
-  the batch's place (T45) is refused with the bean's batches named.
-
-Names follow the contract's fallbacks (title, subtitle, a derived "roaster ·
-coffee"); five live favourites derive the same label, so DYE2's items can also
-be named by id.
-
-**Issues are listed before anything is applied.** Each entry of `list_recipes`
-carries `issues` when something is wrong with it, and no key when nothing is -
-so a broken favourite is recognisable in the listing, not only in the refusal
-or the read-back of `apply_recipe`. The rules are pure (`recipes.issues_of`)
-and judge what the entry would apply against one catalogue of batches, beans
-and profiles, fetched once per listing:
-
-| issue | meaning | source of the finding |
-|---|---|---|
-| `name_only_profile` | profile is `{id: null, title}`; applying keeps the current one | T44 |
-| `profile_reference_unresolved` | a profile id no stored record has | T44 |
-| `profile_missing` | an unpinned own recipe whose title no longer resolves | §11.6 above |
-| `no_workflow` | a DYE2 recipe from before `workflow`; listed, not applied | contract |
-| `batch_is_bean_id` | the batch field holds a bean id; apply refuses it | T45 |
-| `batch_unknown` | the batch id is neither a batch nor a bean | T29 |
-| `labels_without_batch` | coffee name or roaster set, no batch | T42 |
-| `labels_mismatch_batch` | labels differ from the named batch's bean | T28 |
-| `duplicate` | same source, same name, same values; `duplicate_of` lists the others | measured |
-| `name_not_unique` | same source and name, different values; apply by id | measured |
-
-"Same values" means the context and profile that applying would send - the
-payload, not the stored item, whose ids and creation times always differ. That
-line matters on the live store: of the five Yirga Santos favourites four are
-identical, the fifth carries a profile reference instead of a name and no rpm.
-Calling all five duplicates would invite deleting the one that differs. Own
-recipes are not compared: their names are unique by constraint. With the
-tablet off only what an entry shows by itself is judged (`name_only_profile`,
-`no_workflow`); whether a batch exists cannot be told unseen.
-
-Measured read-only against the live instance on 2026-09-26: the recipe "Decaf"
-`labels_without_batch`; seven favourites `name_only_profile`; RT Decaf and all
-five Yirga Santos `batch_is_bean_id`; four `duplicate`, one `name_not_unique`;
-no `labels_mismatch_batch`, no unresolved reference.
-
-**What the tablet cannot see.** Recipes saved here do not appear on the tablet:
-the only way to put them there would be to write DYE2's key. A documented path
-for a second writer is proposed upstream (`docs/upstream/07`).
+**History.** 0.11-0.13 kept recipes of their own - named and pinned, later one
+per bean derived from every write - and from 0.13 projected them into DYE2's
+recipe list for Streamline's strip. Beanie uses neither DYE2's list nor
+Streamline's strip, so 0.14 removed all of it: the projection, DYE2's recipes
+and favourites as sources, and the stored recipes (migration 007). The server
+never writes the plugin store; DYE2's KV contract is kept again in full. The
+tag `v0.13-last-streamline` marks the last state with that path.
 
 ## 12. Security
 

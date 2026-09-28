@@ -86,6 +86,9 @@ class FakeDecaid:
         if path.startswith("/api/v1/beans/") and path.endswith("/batches"):
             bean_id = path.split("/")[4]
             next(b for b in self.beans if b["id"] == bean_id)
+            if method == "GET":
+                return httpx.Response(200, json=[b for b in self.batches
+                                                 if b["beanId"] == bean_id])
             batch = {"id": self._new_id(), "beanId": bean_id, **body,
                      "frozen": False, "archived": False}
             if "weight" in body:

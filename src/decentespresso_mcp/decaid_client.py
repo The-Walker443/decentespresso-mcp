@@ -312,30 +312,6 @@ class DecaidClient:
 
     # --- Plugin store (read-only) --------------------------------------------
 
-    async def store_array(self, namespace: str, key: str) -> list[dict[str, Any]]:
-        """``GET /api/v1/store/<namespace>/<key>`` as a list of objects.
-
-        DYE2's KV contract: a key never written answers 200 with ``null``, and
-        any non-array is to be read as empty.
-        """
-        value = await self.store_value(namespace, key)
-        if not isinstance(value, list):
-            return []
-        return [item for item in value if isinstance(item, dict)]
-
-    async def store_value(self, namespace: str, key: str) -> Any:
-        """The stored value exactly as it is - what a rewrite must pass through."""
-        return (await self._request("GET", f"/api/v1/store/{namespace}/{key}")).json()
-
-    async def store_set(self, namespace: str, key: str, value: Any) -> None:
-        """``POST /api/v1/store/<namespace>/<key>``: replaces the whole value.
-
-        Decaid answers ``{}``, not the stored value, so the caller reads back.
-        Only the recipe projection calls this (M13), and only with a list it
-        read a moment earlier and changed in its own marked items.
-        """
-        await self._request("POST", f"/api/v1/store/{namespace}/{key}", json_body=value)
-
     # --- Profiles ------------------------------------------------------------
 
     async def profiles(self, *, include_hidden: bool = False) -> list[dict[str, Any]]:
