@@ -77,7 +77,10 @@ LEGACY_NOTE = ("written by an older DYE2 without a ready-made workflow - apply i
 #: The marker on every item we write into DYE2's list. Items without it are
 #: never touched.
 ORIGIN = "decentespresso-mcp"
-_ENTRY_PREFIX = "mcp-"
+#: DYE2's recipe slots. Its editor ("Describe your espresso") shows exactly
+#: these five ids, and Streamline's long press opens slot parseInt(id) - an id
+#: outside them is invisible there and opens slot 1 instead (T54).
+SLOTS = ("1", "2", "3", "4", "5")
 
 
 def recipe_name(row: dict[str, Any]) -> str:
@@ -155,8 +158,46 @@ def is_ours(item: Any) -> bool:
     return isinstance(item, dict) and item.get("origin") == ORIGIN
 
 
-def entry_id(bean_id: str) -> str:
-    return _ENTRY_PREFIX + str(bean_id)
+def release_taken_over(
+    store: list[Any], names: dict[str, str],
+) -> tuple[list[Any], list[str]]:
+    """Give a slot to DYE2 when the user saved their own recipe onto it.
+
+    DYE2's editor saves by merging into the item (``{...old, ...new}``), so our
+    marker survives an edit there. A name that is no longer ours means the
+    user made that slot theirs; the marker is removed and nothing else is
+    changed. A dial-in edit keeps the name and stays ours.
+    """
+    released: list[str] = []
+    out: list[Any] = []
+    for item in store:
+        bean = str(item.get("recipeId")) if is_ours(item) else None
+        if bean is not None and bean in names and item.get("name") != names[bean]:
+            item = {k: v for k, v in item.items() if k not in ("origin", "recipeId")}
+            released.append(bean)
+        out.append(item)
+    return out, released
+
+
+def assign_slots(store: list[Any], rows: list[dict[str, Any]]) -> dict[str, str]:
+    """bean id -> DYE2 slot for the recipes that get one.
+
+    Slots DYE2's own items hold are theirs. Of the rest, a bean keeps the slot
+    it has; the most recently dialled-in beans come first, so when there are
+    more beans than slots the one pulled longest ago gives its slot up.
+    ``rows`` come newest first.
+    """
+    taken = {str(i.get("id")) for i in store if isinstance(i, dict) and not is_ours(i)}
+    free = [slot for slot in SLOTS if slot not in taken]
+    held = {str(i.get("recipeId")): str(i.get("id")) for i in store
+            if is_ours(i) and str(i.get("id")) in free}
+    chosen = [str(r["bean_id"]) for r in rows][:len(free)]
+    slots = {bean: held[bean] for bean in chosen if bean in held}
+    spare = [slot for slot in free if slot not in slots.values()]
+    for bean in chosen:
+        if bean not in slots:
+            slots[bean] = spare.pop(0)
+    return slots
 
 
 def dial_in(row: dict[str, Any]) -> dict[str, Any]:
@@ -170,7 +211,9 @@ def dial_in(row: dict[str, Any]) -> dict[str, Any]:
                      "grinderModel": row.get("grinder_model")})
 
 
-def projection_entry(row: dict[str, Any], captured_at: str) -> dict[str, Any]:
+def projection_entry(
+    row: dict[str, Any], captured_at: str, slot: str, shown: Any = True,
+) -> dict[str, Any]:
     """Our recipe as an item of ``dye2.reaplugin/recipes`` (KV_CONTRACT.md).
 
     The ready-to-PUT ``workflow`` is what Streamline's strip applies, profile
@@ -181,7 +224,7 @@ def projection_entry(row: dict[str, Any], captured_at: str) -> dict[str, Any]:
     """
     name = recipe_name(row)
     return {
-        "id": entry_id(row["bean_id"]),
+        "id": slot,
         "origin": ORIGIN,
         "recipeId": row["bean_id"],
         "name": name,
@@ -190,7 +233,8 @@ def projection_entry(row: dict[str, Any], captured_at: str) -> dict[str, Any]:
         "beverage": "espresso",
         "beanId": row["bean_id"],
         "beanName": row.get("bean_name"),
-        "showOnStreamlineDashboard": True,
+        # DYE2's editor has a toggle for it; a choice made there stands.
+        "showOnStreamlineDashboard": shown is not False,
         "dashboardVariables": dial_in(row),
         "capturedAt": captured_at,
         "workflow": recipe_workflow(row),
@@ -198,13 +242,14 @@ def projection_entry(row: dict[str, Any], captured_at: str) -> dict[str, Any]:
 
 
 def merged_list(store: list[Any], ours: list[dict[str, Any]]) -> list[Any]:
-    """DYE2's items where they were, then ours - replaced as a block.
+    """DYE2's items where they were, then ours by slot - replaced as a block.
 
     Ours go after theirs because Streamline's strip shows the first five
     recipes only (dyeStrip.js renderStrip); an item the user made in DYE2
     keeps its place.
     """
-    return [item for item in store if not is_ours(item)] + list(ours)
+    return ([item for item in store if not is_ours(item)]
+            + sorted(ours, key=lambda item: str(item.get("id"))))
 
 
 def tablet_dial_in(entry: dict[str, Any], projected: str | None) -> dict[str, Any]:
@@ -448,7 +493,8 @@ def _grind_text(value: Any) -> str:
 
 __all__ = ["ISSUES", "ORIGIN", "Catalogue", "issues_of", "mark_duplicates", "payload_of",
            "DYE2_NAMESPACE", "DYE2_RECIPES", "SOURCES", "TITLE_SEPARATOR",
-           "choose", "dial_in", "dye2_name", "dye2_view", "entry_id", "is_ours",
+           "SLOTS", "assign_slots", "choose", "dial_in", "dye2_name", "dye2_view",
+           "is_ours", "release_taken_over",
            "merged_list", "own_view", "projection_entry", "recipe_fields",
            "recipe_name", "recipe_workflow", "tablet_dial_in"]
 

@@ -78,6 +78,7 @@ from .recipes import (
     DYE2_RECIPES,
     LEGACY_NOTE,
     Catalogue,
+    assign_slots,
     dial_in,
     dye2_name,
     favourite_name,
@@ -89,6 +90,7 @@ from .recipes import (
     recipe_fields,
     recipe_name,
     recipe_workflow,
+    release_taken_over,
     tablet_dial_in,
 )
 from .upload_watch import POLL_SECONDS, WATCH_SECONDS, newest, outcome
@@ -505,10 +507,12 @@ async def project_recipes(
     if not enabled:
         return None
     async with _PROJECTION_LOCK:
-        store = await client.store_value(DYE2_NAMESPACE, DYE2_RECIPES)
-        store = store if isinstance(store, list) else []
+        original = await client.store_value(DYE2_NAMESPACE, DYE2_RECIPES)
+        original = original if isinstance(original, list) else []
         rows = [r for r in await asyncio.to_thread(db.bean_recipes)
                 if not r.get("bean_archived")]
+        store, released = release_taken_over(
+            original, {str(r["bean_id"]): recipe_name(r) for r in rows})
         entries = {str(i.get("recipeId")): i for i in store if is_ours(i)}
         adopted = []
         for row in rows:
@@ -524,18 +528,28 @@ async def project_recipes(
         if adopted:
             rows = [r for r in await asyncio.to_thread(db.bean_recipes)
                     if not r.get("bean_archived")]
-        ours = [projection_entry(r, r["updated_at"]) for r in rows]
+        slots = assign_slots(store, rows)
+        ours = [projection_entry(r, r["updated_at"], slots[str(r["bean_id"])],
+                                 (entries.get(str(r["bean_id"])) or {})
+                                 .get("showOnStreamlineDashboard"))
+                for r in rows if str(r["bean_id"]) in slots]
         wanted = merged_list(store, ours)
-        written = wanted != store
+        written = wanted != original
         verified = True
         if written:
             await client.store_set(DYE2_NAMESPACE, DYE2_RECIPES, wanted)
             verified = await client.store_value(DYE2_NAMESPACE, DYE2_RECIPES) == wanted
         if verified:
             for row in rows:
-                await asyncio.to_thread(db.set_projected, row["bean_id"],
-                                        json.dumps(dial_in(row), sort_keys=True))
+                on_tablet = str(row["bean_id"]) in slots
+                await asyncio.to_thread(
+                    db.set_projected, row["bean_id"],
+                    json.dumps(dial_in(row), sort_keys=True) if on_tablet else None)
     result: dict[str, Any] = {"entries": len(ours), "written": written}
+    if len(rows) > len(ours):
+        result["without_slot"] = len(rows) - len(ours)
+    if released:
+        result["released_to_dye2"] = len(released)
     if written and not verified:
         result["verified"] = False
     if adopted:

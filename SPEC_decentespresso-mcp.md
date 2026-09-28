@@ -152,6 +152,7 @@ instance wins and the finding goes in the table above.
 | T51 | **Streamline's DYE strip: five recipes, applied from `workflow`, auto-saved into `dashboardVariables`** (streamline-js 6f2b914, on Decaid 0.8.6) | The strip shows the first five visible recipes in array order (`showOnStreamlineDashboard !== false`). Tapping one GETs the live workflow, merges `workflow.context` over it, takes `workflow.profile` whole, and PUTs. Its auto-save folds a later dashboard edit of dose, drink or grind into that recipe's `dashboardVariables` only - which its own apply never reads while a `workflow` is present, so on a DYE2 recipe the edit does not come back. Since streamline-js fe73b4a the auto-save stops when the workflow's profile no longer matches a fingerprint of the applied one (`JSON.stringify` of title, targets, tank temperature and the steps without temperature) - key order counts, so a projected profile must keep Decaid's own order, which is not alphabetical |
 | T52 | **DYE2's own dashboard ignores a recipe's `workflow`** (DYE2 0.1.15 source, on Decaid 0.8.6) | `applyRecipe` takes dose, drink and grind from `dashboardVariables` and sends the profile as `{id: profileId, title: profileTitle}` - a stub that renames the running profile and keeps its steps (T44). A recipe can change the profile with one tap only through Streamline's strip |
 | T53 | **DYE2's recipe editor keeps foreign items** (DYE2 0.1.15 source, on Decaid 0.8.6) | It shows five fixed slots, ids "1"-"5", but saves through `updateRecipe`: GET the array, upsert by id, POST. Items with other ids survive an edit in DYE2. The store's POST replaces the whole value and answers `{}` (decaid `kv_store_handler.dart`) |
+| T54 | **Only ids "1"-"5" exist for DYE2's editor and Streamline's long press** (reported by the operator 2026-09-28; streamline-js cc14749 and DYE2 0.1.15 source, on Decaid 0.8.6) | A projected recipe with the id `mcp-<bean>` showed in Streamline's strip but not in DYE2's "Describe your espresso" overview, which normalises the list to five slots with ids "1"-"5". Streamline's long press opens slot `parseInt(id) \|\| 1` - for `mcp-...` that is slot 1, the user's own Decaf. Our items therefore take DYE2's free slots |
 | T45 | **A bean id where a batch belongs** | Six of eight live DYE2 favourites store a bean's id as `beanBatchId` (404 as a batch, 200 as a bean). Decaid would take it (T29). Applying such a favourite is refused, naming the bean's batches |
 
 T26 is why the block list in `writes.py` is not a second line of defence but the
@@ -1007,8 +1008,8 @@ path, with the batch labels (T28) and the upload watch (§11.7).
 
 **Projected into DYE2's list, so the tablet has it with one tap.** Each recipe
 is written into `dye2.reaplugin/recipes` as an item marked `origin:
-"decentespresso-mcp"` with `recipeId` (the bean), id `mcp-<bean>`, and a
-complete ready-to-PUT `workflow` - context with batch, labels, grind, dose and
+"decentespresso-mcp"` with `recipeId` (the bean), and a complete ready-to-PUT
+`workflow` - context with batch, labels, grind, dose and
 yield, and the full profile, never a stub. That is what Streamline's strip
 applies (T51). `profileId`/`profileTitle` are left out on purpose: DYE2's own
 dashboard would PUT them as a stub and rename the running profile (T52).
@@ -1022,6 +1023,17 @@ ETag, so an edit in DYE2 in the same instant can still be lost - a window one
 request wide, the same Streamline's auto-save already lives with. A documented
 second key is proposed upstream (`docs/upstream/07`). `DYE2_PROJECTION=false`
 switches it off; the recipes themselves stay.
+
+**DYE2's five slots.** DYE2's editor knows the ids "1"-"5" only, and
+Streamline's long press opens a slot by that number (T54). Our items take the
+slots DYE2's own items leave free, most recently dialled-in beans first; a bean
+keeps its slot, and when they are full the bean pulled longest ago gives way -
+it stays a recipe here, just not on the tablet. The strip shows five recipes
+anyway, so the slots are no narrower than the screen. Saved over in DYE2's
+editor under another name, a slot becomes the user's: DYE2 merges its save
+into our item and keeps the marker, so the marker is removed and nothing else
+changed. A dial-in there keeps the name and stays ours. Switching
+"Show on Streamline Dashboard" off in DYE2 stands.
 
 **The projection is a derivation.** Every sync repairs it: missing or outdated
 entries are written again and counted in `status()` (`projection_heals`), and

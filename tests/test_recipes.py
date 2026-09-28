@@ -290,7 +290,8 @@ async def test_the_recipe_appears_in_dye2s_list_marked_and_complete(writable, db
     await call(server(fake, writable, db), "set_workflow",
                {"fields": {"grinderSetting": "3.6"}})
     (entry,) = ours(fake)
-    assert entry["id"] == "mcp-" + GAYO_BEAN and entry["recipeId"] == GAYO_BEAN
+    assert entry["id"] == "2", "slot 1 is DYE2's Decaf; ours takes the next free one"
+    assert entry["recipeId"] == GAYO_BEAN
     assert entry["title"] == GAYO_NAME
     assert entry["showOnStreamlineDashboard"] is True
     context = entry["workflow"]["context"]
@@ -790,3 +791,77 @@ def test_the_old_named_recipes_become_one_per_bean(tmp_path: pathlib.Path) -> No
     assert (recipe["bean_id"], recipe["grinder_setting"]) == (GAYO_BEAN, "3.6")
     assert json.loads(recipe["profile_json"])["steps"] == [2]
     new.close()
+
+
+
+# ------------------------------------------------------- DYE2's five slots
+
+
+def slot_row(bean: str, at: str) -> dict[str, Any]:
+    return {"bean_id": bean, "updated_at": at}
+
+
+def test_dye2s_own_slots_stay_theirs_and_ours_fill_the_rest() -> None:
+    """T54: DYE2's editor shows ids "1"-"5" only, and Streamline's long press
+    opens slot parseInt(id) - an "mcp-..." id was invisible there and opened
+    slot 1, the user's Decaf (reported 2026-09-28)."""
+    from decentespresso_mcp.recipes import assign_slots
+    store = [{"id": "1", "name": "Decaf"}, {"id": "3", "name": "Mine too"}]
+    rows = [slot_row("a", "2026-09-28"), slot_row("b", "2026-09-27")]
+    assert assign_slots(store, rows) == {"a": "2", "b": "4"}
+
+
+def test_a_bean_keeps_its_slot_and_the_oldest_gives_way() -> None:
+    """Stable, so a tap and Streamline's auto-save still point at the same
+    bean; full, the one pulled longest ago drops out."""
+    from decentespresso_mcp.recipes import ORIGIN, assign_slots
+    store = [{"id": "1", "name": "Decaf"}] + [
+        {"id": slot, "origin": ORIGIN, "recipeId": bean}
+        for slot, bean in (("2", "old"), ("3", "b"), ("4", "c"), ("5", "d"))]
+    rows = [slot_row("new", "5"), slot_row("d", "4"), slot_row("c", "3"),
+            slot_row("b", "2"), slot_row("old", "1")]
+    assert assign_slots(store, rows) == {"new": "2", "d": "5", "c": "4", "b": "3"}
+
+
+def test_legacy_ids_move_onto_slots() -> None:
+    from decentespresso_mcp.recipes import ORIGIN, assign_slots
+    store = [{"id": "1", "name": "Decaf"},
+             {"id": "mcp-x", "origin": ORIGIN, "recipeId": "x"}]
+    assert assign_slots(store, [slot_row("x", "1")]) == {"x": "2"}
+
+
+def test_a_slot_saved_over_in_dye2_becomes_the_users() -> None:
+    """DYE2 merges its save into our item, so the marker survives it. A new
+    name means the user made the slot theirs: the marker goes, nothing else."""
+    from decentespresso_mcp.recipes import ORIGIN, release_taken_over
+    store = [{"id": "2", "origin": ORIGIN, "recipeId": "b", "name": "My espresso",
+              "dashboardVariables": {"dose": 17}},
+             {"id": "3", "origin": ORIGIN, "recipeId": "c", "name": "Roaster – C"}]
+    out, released = release_taken_over(store, {"b": "Roaster – B", "c": "Roaster – C"})
+    assert released == ["b"]
+    assert out[0] == {"id": "2", "name": "My espresso", "dashboardVariables": {"dose": 17}}
+    assert out[1] == store[1]
+
+
+async def test_a_taken_over_slot_is_left_to_dye2_and_the_bean_moves(writable, db) -> None:
+    fake = with_dye2()
+    mcp = server(fake, writable, db)
+    await call(mcp, "set_workflow", {"fields": {"grinderSetting": "3.6"}})
+    entry = ours(fake)[0]
+    entry["name"] = "Espresso for guests"                  # saved in DYE2's editor
+    client = DecaidClient("http://10.100.100.171:8080",
+                          transport=httpx.MockTransport(fake.handler))
+    outcome = await project_recipes(client, db)
+    assert outcome["released_to_dye2"] == 1
+    items = {i["id"]: i for i in fake.store["dye2.reaplugin/recipes"]}
+    assert items["2"]["name"] == "Espresso for guests" and "origin" not in items["2"]
+    assert items["3"]["recipeId"] == GAYO_BEAN, "the recipe moved to the next free slot"
+
+
+async def test_hiding_it_from_the_strip_in_dye2_stands(writable, db) -> None:
+    fake = with_dye2()
+    mcp = server(fake, writable, db)
+    await call(mcp, "set_workflow", {"fields": {"grinderSetting": "3.6"}})
+    ours(fake)[0]["showOnStreamlineDashboard"] = False
+    await call(mcp, "set_workflow", {"fields": {"grinderSetting": "3.5"}})
+    assert ours(fake)[0]["showOnStreamlineDashboard"] is False
