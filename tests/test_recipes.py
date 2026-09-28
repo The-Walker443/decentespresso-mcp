@@ -865,3 +865,16 @@ async def test_hiding_it_from_the_strip_in_dye2_stands(writable, db) -> None:
     ours(fake)[0]["showOnStreamlineDashboard"] = False
     await call(mcp, "set_workflow", {"fields": {"grinderSetting": "3.5"}})
     assert ours(fake)[0]["showOnStreamlineDashboard"] is False
+
+
+def test_a_slot_dye2_frees_is_used_again() -> None:
+    """Which slots are DYE2's is read from the list on every projection -
+    slot 1 is not reserved because the Decaf happened to sit there. A bean
+    already on the tablet keeps its slot; the next one takes the freed one."""
+    from decentespresso_mcp.recipes import ORIGIN, assign_slots
+    ours_on_2 = {"id": "2", "origin": ORIGIN, "recipeId": "gayo"}
+    with_decaf = [{"id": "1", "name": "Decaf"}, ours_on_2]
+    rows = [slot_row("gayo", "2"), slot_row("yirga", "1")]
+    assert assign_slots(with_decaf, rows) == {"gayo": "2", "yirga": "3"}
+    assert assign_slots([ours_on_2], rows) == {"gayo": "2", "yirga": "1"}
+    assert assign_slots([], [slot_row("gayo", "1")]) == {"gayo": "1"}
