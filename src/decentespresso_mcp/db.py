@@ -73,7 +73,7 @@ _BATCH_COLUMNS = (
     "freeze_date", "unfreeze_date", "frozen", "archived",
     "weight_g", "weight_remaining_g",
     "roast_level", "harvest_date", "quality_score", "price", "currency", "notes",
-    "created_at", "updated_at", "raw_json", "synced_at",
+    "storage_events", "created_at", "updated_at", "raw_json", "synced_at",
 )
 
 

@@ -36,6 +36,7 @@ from .decaid_client import (
     DecaidUnreachable,
 )
 from .decaid_mapping import SCALE_100
+from .freezing import frozen_periods
 from .guards import (
     ALL_RULES,
     as_datetime,
@@ -1427,6 +1428,15 @@ def _full_shot(row: Any) -> dict[str, Any]:
     }
 
 
+def _freeze_view(data: dict[str, Any]) -> dict[str, Any]:
+    """Where the freezer history comes from (T57), and every period in it."""
+    periods, source, _ = frozen_periods(data)
+    return {"freeze_source": source,
+            "frozen_periods": [{"from": start.isoformat(),
+                                "to": end.isoformat() if end else None}
+                               for start, end in periods] or None}
+
+
 def _batch_summary(row: Any, *, full: bool = False) -> dict[str, Any]:
     """A batch as a list entry, or in full for ``get_batch``."""
     data = dict(row)
@@ -1453,6 +1463,7 @@ def _batch_summary(row: Any, *, full: bool = False) -> dict[str, Any]:
             "best_before_date": data.get("best_before_date"),
             "frozen_since": data.get("freeze_date"),
             "thawed_on": data.get("unfreeze_date"),
+            **_freeze_view(data),
             "stock": _stock(data),
             "archived": bool(data.get("archived")),
         }

@@ -30,6 +30,7 @@ from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 from .decaid_mapping import is_import_era
+from .freezing import frozen_days, frozen_periods
 from .stats import is_real_shot
 
 log = logging.getLogger(__name__)
@@ -177,23 +178,10 @@ def bean_age_days(
     if age < 0:
         return None, False
 
-    frozen_since = _as_date(batch.get("freeze_date"))
-    thawed = _as_date(batch.get("unfreeze_date"))
-    is_frozen = bool(batch.get("frozen"))
-
-    if frozen_since is None:
-        return age, True
-
-    if is_frozen:
-        # It stops ageing the moment it goes into the freezer.
-        return max(0, (min(frozen_since, reference) - roasted).days), True
-
-    if thawed is not None:
-        return max(0, age - max(0, (thawed - frozen_since).days)), True
-
-    # Was frozen, thaw date unknown: the full age is the upper bound, and
-    # nothing more can be said.
-    return age, False
+    # Every period in the freezer, from Decaid's fields or Beanie's events
+    # (T57) - summed, not only the last one.
+    periods, _source, certain = frozen_periods(batch)
+    return max(0, age - frozen_days(periods, roasted, reference)), certain
 
 
 def bean_age_not_checkable(

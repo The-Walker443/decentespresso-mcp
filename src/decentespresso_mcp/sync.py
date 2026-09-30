@@ -54,6 +54,7 @@ from .decaid_mapping import (
     shot_row_from_decaid,
 )
 from .decaid_profile import profile_version
+from .freezing import events_of, mirrored_events
 from .guards import run_rules
 from .metrics import metrics_for_shot, warm_metrics_cache
 from .notify import send as notify
@@ -453,6 +454,20 @@ def _reread_annotations(db: Database, listed: list[dict[str, Any]]) -> int:
     return db.update_annotations(rows)
 
 
+def _with_storage_events(batch: dict[str, Any], fields: dict[str, Any]) -> dict[str, Any]:
+    """``fields``, plus Beanie's event list when they touch the freezer (T57).
+
+    Decaid replaces ``extras`` whole on a PUT, so the rest of it goes along
+    exactly as it was read.
+    """
+    extras = batch.get("extras") if isinstance(batch.get("extras"), dict) else {}
+    events = mirrored_events(events_of(extras.get("storageEvents")), fields,
+                             datetime.now(UTC))
+    if events is None:
+        return fields
+    return {**fields, "extras": {**extras, "storageEvents": events}}
+
+
 def _stamp(value: Any) -> str | None:
     """Normalise ``updatedAt`` the same way it is stored in the database."""
     if not isinstance(value, str) or not value:
@@ -583,7 +598,8 @@ class SyncCoordinator:
         """Change a batch, with read-back."""
         async with self._lock:
             before = await self._find(self._client.bean_batches(), batch_id)
-            await self._client.update_bean_batch(batch_id, dict(fields))
+            await self._client.update_bean_batch(
+                batch_id, _with_storage_events(before, dict(fields)))
             after = await self._find(self._client.bean_batches(), batch_id)
             await asyncio.to_thread(
                 self._db.upsert_bean_batches,
@@ -828,6 +844,11 @@ class SyncCoordinator:
                     f"Decaid has no bean {bean_id!r}. Nothing was created."
                 ) from None
             created = await self._client.create_bean_batch(bean_id, dict(fields))
+            mirrored = _with_storage_events(created, dict(fields))
+            if "extras" in mirrored:
+                # Beanie's history for a batch that starts out frozen (T57).
+                await self._client.update_bean_batch(
+                    str(created["id"]), {"extras": mirrored["extras"]})
             after = await self._client.bean_batch(str(created["id"]))
             await asyncio.to_thread(
                 self._db.upsert_bean_batches,

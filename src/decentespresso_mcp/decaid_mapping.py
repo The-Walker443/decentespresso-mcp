@@ -350,6 +350,9 @@ def batch_row_from_decaid(batch: dict[str, Any], synced_at: str) -> dict[str, An
         "price": _number(batch.get("price")),
         "currency": _text(batch.get("currency")),
         "notes": _text(batch.get("notes")),
+        # Beanie's freeze/thaw history (T57); anything but a list is none.
+        "storage_events": (json.dumps(extras["storageEvents"], separators=(",", ":"))
+                           if isinstance(extras.get("storageEvents"), list) else None),
         "created_at": _iso_or_none(batch.get("createdAt")),
         "updated_at": _iso_or_none(batch.get("updatedAt")),
         "raw_json": json.dumps(batch, ensure_ascii=False, separators=(",", ":")),

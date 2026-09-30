@@ -1,0 +1,71 @@
+diff --git a/src/api/types.ts b/src/api/types.ts
+index 23b312e..028bf54 100644
+--- a/src/api/types.ts
++++ b/src/api/types.ts
+@@ -132,6 +132,10 @@ export interface BeanBatch {
+   weightRemaining?: number | null;
+   storageEvents?: BeanBatchStorageEvent[] | null;
+   frozen?: boolean;
++  // Decaid's own freezer fields, mirrored from storageEvents so other clients
++  // (DYE2, the Decaid schema, archives) see the history too.
++  freezeDate?: string | null;
++  unfreezeDate?: string | null;
+   archived?: boolean;
+ }
+ 
+diff --git a/src/domain/beanFreshness.ts b/src/domain/beanFreshness.ts
+index 8df866c..9ab3816 100644
+--- a/src/domain/beanFreshness.ts
++++ b/src/domain/beanFreshness.ts
+@@ -42,7 +42,8 @@ export function appendBatchStorageEvent(
+     : [...events, { type, at: atIso }];
+   return {
+     storageEvents: nextEvents,
+-    frozen: type === 'frozen'
++    frozen: type === 'frozen',
++    ...decaidFreezeFields(nextEvents)
+   };
+ }
+ 
+@@ -58,7 +59,8 @@ export function editLastBatchStorageEventDate(
+   const nextEvents = [...events.slice(0, -1), { ...latest, at }];
+   return {
+     storageEvents: nextEvents,
+-    frozen: latest.type === 'frozen'
++    frozen: latest.type === 'frozen',
++    ...decaidFreezeFields(nextEvents)
+   };
+ }
+ 
+@@ -81,10 +83,30 @@ export function setBatchStorageEventDates(
+   const last = nextEvents[nextEvents.length - 1];
+   return {
+     storageEvents: nextEvents,
+-    frozen: last?.type === 'frozen'
++    frozen: last?.type === 'frozen',
++    ...decaidFreezeFields(nextEvents)
+   };
+ }
+ 
++// Decaid's freezeDate/unfreezeDate describe one period: the latest freeze and,
++// if it has ended, the thaw after it. Kept in step with the events so a client
++// that only knows Decaid's fields sees the same freezer state as Beanie.
++export function decaidFreezeFields(
++  events: readonly BeanBatchStorageEvent[]
++): Pick<BeanBatch, 'freezeDate' | 'unfreezeDate'> {
++  let freezeDate: string | null = null;
++  let unfreezeDate: string | null = null;
++  for (const event of events) {
++    if (event.type === 'frozen') {
++      freezeDate = event.at;
++      unfreezeDate = null;
++    } else if (freezeDate) {
++      unfreezeDate = event.at;
++    }
++  }
++  return { freezeDate, unfreezeDate };
++}
++
+ export function computeBeanFreshness(
+   batch: BeanBatch | null | undefined,
+   now: Date = new Date()

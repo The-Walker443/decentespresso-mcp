@@ -73,6 +73,7 @@ The drafts stay here for reference; the ones to file are 02, 03, 09 and 12.
 | 11 | streamline | KV contract | [Auto-save writes DYE2's keys, which the contract reserves for DYE2](11-streamline-autosave-writes-dye2-keys.md) |
 | 12 | streamline | T38 | [The auto-save's profile-drift guard never fires](12-streamline-drift-guard-never-fires.md) |
 | 13 | decaid | T47 | [A workflow PUT gives a client no way to know the profile reached the machine](13-workflow-put-no-upload-completion.md) |
+| 14 | beanie | T57 | [Freezing a batch in Beanie leaves Decaid's freezeDate/unfreezeDate unset](14-beanie-freeze-dates.md) - patch attached, licence question first |
 
 Streamline's repository is `allofmeng/streamline_project`, which GitHub
 redirects to `decentespresso/streamline-js`; drafts 11 and 12 refer to the
