@@ -300,6 +300,7 @@ and lists every problem at once, rather than one per restart.
 | `BEAN_AGE_WARN_DAYS` · `RATING_GRACE_HOURS` · `DOSE_TOLERANCE_G` | `42` · `36` · `1.0` | guard thresholds |
 | `PUBLIC_BASE_URL` | — | only for printing the connector URL |
 | `DB_PATH` · `LOG_LEVEL` · `TZ` | `/data/shots.db` · `INFO` · `Europe/Berlin` | storage is always UTC |
+| `MACHINE_TZ` | `TZ` | the tablet's time zone, which Decaid stamps shots in |
 | `HOST` · `PORT` | `0.0.0.0` · `8000` | bind address inside the container |
 
 Syncing by hand, if you ever need to:

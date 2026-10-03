@@ -14,6 +14,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import PurePosixPath, PureWindowsPath
 from urllib.parse import urlparse
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import __version__
 from .guards import (
@@ -172,6 +173,15 @@ class Config:
             problems.append("PUBLIC_BASE_URL must start with http:// or https://")
 
         tz = (src.get("TZ") or "Europe/Berlin").strip() or "Europe/Berlin"
+        for name in ("TZ", "MACHINE_TZ"):
+            zone = (src.get(name) or "").strip()
+            if zone:
+                try:
+                    ZoneInfo(zone)
+                except (ZoneInfoNotFoundError, ValueError):
+                    problems.append(
+                        f"{name}={zone!r} is not a known time zone (e.g. America/Los_Angeles)"
+                    )
         host = (src.get("HOST") or "0.0.0.0").strip() or "0.0.0.0"  # noqa: S104
         port = _int_in_range(src, "PORT", 8000, 1, 65535, problems)
         write_enabled = _bool(src, "WRITE_ENABLED", default=False, problems=problems)

@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from datetime import UTC, datetime
 from typing import Any
@@ -40,7 +41,14 @@ log = logging.getLogger(__name__)
 #: after the last Sunday in October would be an hour out. If this line fails at
 #: startup the time zone database is missing; that is what tzdata is in the
 #: dependencies for.
-MACHINE_TZ = ZoneInfo("Europe/Berlin")
+#:
+#: Decaid stamps `timestamp` in the tablet's local zone, so a machine outside
+#: Berlin needs its own zone here. `MACHINE_TZ` sets it; without it the display
+#: zone `TZ` is used, since owner and machine are usually in the same place;
+#: without either, Berlin as before.
+MACHINE_TZ = ZoneInfo(
+    os.environ.get("MACHINE_TZ") or os.environ.get("TZ") or "Europe/Berlin"
+)
 
 #: Shots imported from the de1app. The number is the start time as Unix time;
 #: the matching in the migration script hangs on it too.

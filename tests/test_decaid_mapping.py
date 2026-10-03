@@ -203,6 +203,25 @@ def test_machine_timezone_is_a_zone_not_an_offset() -> None:
     assert summer.utcoffset() != winter.utcoffset()
 
 
+def test_machine_timezone_follows_machine_tz_then_tz(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Decaid stamps shots in the tablet's local zone; a machine outside Berlin must say so.
+    import importlib
+
+    from decentespresso_mcp import decaid_mapping
+
+    try:
+        monkeypatch.setenv("TZ", "Asia/Tokyo")
+        monkeypatch.setenv("MACHINE_TZ", "America/Los_Angeles")
+        assert str(importlib.reload(decaid_mapping).MACHINE_TZ) == "America/Los_Angeles"
+        monkeypatch.delenv("MACHINE_TZ")
+        assert str(importlib.reload(decaid_mapping).MACHINE_TZ) == "Asia/Tokyo"
+        monkeypatch.delenv("TZ")
+        assert str(importlib.reload(decaid_mapping).MACHINE_TZ) == "Europe/Berlin"
+    finally:
+        monkeypatch.undo()
+        importlib.reload(decaid_mapping)
+
+
 # ------------------------------------------------------------ Zeilenaufbau
 
 
