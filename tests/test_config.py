@@ -230,3 +230,16 @@ def test_a_german_decimal_comma_is_accepted(valid_env: dict[str, str]) -> None:
 def test_an_impossible_threshold_is_refused(valid_env: dict[str, str], name, value) -> None:
     with pytest.raises(ConfigError):
         Config.from_env({**valid_env, name: value})
+
+
+@pytest.mark.parametrize("key", ["TZ", "MACHINE_TZ"])
+def test_unknown_time_zone_is_rejected(valid_env: dict[str, str], key: str) -> None:
+    valid_env[key] = "Pacific/Nowhere"
+    with pytest.raises(ConfigError) as excinfo:
+        Config.from_env(valid_env)
+    assert any(key in p and "time zone" in p for p in excinfo.value.problems)
+
+
+def test_known_machine_time_zone_is_accepted(valid_env: dict[str, str]) -> None:
+    valid_env["MACHINE_TZ"] = "America/Los_Angeles"
+    Config.from_env(valid_env)
